@@ -32,7 +32,8 @@ pub enum Error<E> {
     },
     /// An algorithm parameter is outside its domain.
     InvalidArgument(&'static str),
-    /// The small dense eigenvalue computation did not converge.
+    /// The small dense eigenvalue or singular value computation did not
+    /// converge.
     DenseNoConvergence,
     /// Conjugate gradients met a search direction `p` with `Re⟨p, A·p⟩ <= 0`
     /// (or non-finite): the map is not positive definite on the Krylov space.
@@ -40,6 +41,12 @@ pub enum Error<E> {
     /// The projected least-squares problem of GMRES has an exactly singular
     /// triangular factor: the map is singular on the Krylov space.
     SingularKrylovSpace,
+    /// `svdsolve`'s start check `⟨u, A·v⟩ = ‖Aᴴu‖` (with `v = Aᴴu/‖Aᴴu‖`)
+    /// failed: the adjoint does not belong to the map.
+    IncompatibleAdjoint,
+    /// A map application produced a vector with a non-finite norm during
+    /// the iteration.
+    NonFiniteIterate,
 }
 
 impl<E: fmt::Display> fmt::Display for Error<E> {
@@ -58,12 +65,16 @@ impl<E: fmt::Display> fmt::Display for Error<E> {
             ),
             Error::InvalidArgument(msg) => write!(f, "invalid argument: {msg}"),
             Error::DenseNoConvergence => {
-                f.write_str("small dense eigenvalue problem did not converge")
+                f.write_str("small dense eigenvalue or singular value problem did not converge")
             }
             Error::NotPositiveDefinite => {
                 f.write_str("linear map is not positive definite on the Krylov space")
             }
             Error::SingularKrylovSpace => f.write_str("linear map is singular on the Krylov space"),
+            Error::IncompatibleAdjoint => {
+                f.write_str("adjoint map is not compatible with the linear map")
+            }
+            Error::NonFiniteIterate => f.write_str("linear map produced a non-finite vector"),
         }
     }
 }

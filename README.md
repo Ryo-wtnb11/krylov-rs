@@ -71,6 +71,11 @@ documentation (`src/lib.rs`).
   a start block of size `b` resolves multiplicities up to `b`. The basis needs
   capacity `krylovdim + b - 1`; a call allocates `2b` scratch vectors plus the
   results.
+- `svdsolve(op, x0, howmany, which, &Gkl, ws_u, ws_v)`: largest
+  (`LargestReal`) or smallest (`SmallestReal`) singular triplets of an
+  `AdjointMap` by thick-restart Golub–Kahan–Lanczos. `x0` and `ws_u` live in
+  the codomain, `ws_v` in the domain (one Rust vector type, possibly different
+  spaces). A call allocates the `3·n` returned vectors.
 
 ## Deviations from KrylovKit
 
@@ -135,6 +140,18 @@ documentation (`src/lib.rs`).
 - **Complex Householder pivots** are formed scaled by `1/ν`, so complex
   operators reach the same range limits as real ones (entries whose squares
   stay finite).
+- **`svdsolve`** orthogonalizes each new vector twice against the full basis
+  on both sides (six reductions per step; KrylovKit's CGS2 GKL keeps the
+  right side local and makes one pass on the left). When `(I - VVᴴ)Aᴴu`
+  drops to `tol` the iteration stops with the exact triplets of the
+  invariant pair (`(k+1) × k` bidiagonal); KrylovKit divides by that norm.
+  An invariant subspace smaller than `howmany` returns its triplets
+  (KrylovKit fails indexing). The bidiagonal SVD is an in-crate implicit QR
+  (Golub–Kahan with Wilkinson shifts) instead of LAPACK `bdsqr`.
+  `SmallestReal` on a tall map is not supported in substance: the codomain
+  process targets the zero eigenvalues of `AAᴴ`, which are reported as an
+  unconverged `σ ≈ 0`; use the adjoint map. (KrylovKit reports such a zero
+  as converged although its true residual is `O(σ_min)`.)
 
 ## Vector contract and distributed use
 
