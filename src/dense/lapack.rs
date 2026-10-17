@@ -15,6 +15,10 @@
 //! - `xGEBAL('B')` and `xGESV`: balancing and the Padé solve of the matrix
 //!   exponential (Julia 1.11 `exp!`, which KrylovKit's `expintegrator`
 //!   calls).
+//! - `xHSEQR(job='S', compz='V')`, `xTREXC(compq='V')` and
+//!   `xTREVC(side='R', howmny='A')`: Schur form of the Arnoldi Rayleigh
+//!   quotient, its reordering and the eigenvectors of the Schur factor
+//!   (`linalg.jl:hschur!`, `permuteschur!`, `schur2eigvecs`).
 //!
 //! Workspace sizes are queried (`lwork = -1`) on every call, as Julia does.
 //! The buffers live in a caller-owned [`Work`] that only grows.
@@ -61,9 +65,250 @@ fn size_of_query(x: f64) -> usize {
 macro_rules! lapack_real {
     (
         $t:ty, $stegr:ident, $bdsqr:ident, $syevr:ident, $heevr:ident,
-        $gebal:ident, $cgebal:ident, $gesv:ident, $cgesv:ident
+        $gebal:ident, $cgebal:ident, $gesv:ident, $cgesv:ident,
+        $hseqr:ident, $chseqr:ident, $trexc:ident, $ctrexc:ident, $trevc:ident, $ctrevc:ident
     ) => {
         impl RealOps for $t {
+            fn hseqr(
+                h: &mut [$t],
+                z: &mut [$t],
+                n: usize,
+                ev: &mut [Complex<$t>],
+                w: &mut Work<$t, $t>,
+            ) -> Result<(), ()> {
+                assert!(
+                    h.len() >= n * n && z.len() >= n * n && ev.len() >= n,
+                    "hseqr: buffer too small"
+                );
+                if n == 0 {
+                    return Ok(());
+                }
+                let ni = int(n)?;
+                w.r.resize(2 * n, 0.0);
+                let (wr, wi) = w.r.split_at_mut(n);
+                let mut info = 0;
+                let mut lw = [0.0 as $t];
+                // SAFETY: h and z are n·n (ld n), wr and wi n; the query
+                // (lwork = -1) writes only lw[0].
+                unsafe {
+                    lapack::$hseqr(
+                        b'S', b'V', ni, 1, ni, h, ni, wr, wi, z, ni, &mut lw, -1, &mut info,
+                    );
+                }
+                if info != 0 {
+                    return Err(());
+                }
+                let lwork = size_of_query(f64::from(lw[0])).max(n);
+                w.s.resize(lwork, 0.0);
+                // SAFETY: as above, with work of the queried size.
+                unsafe {
+                    lapack::$hseqr(
+                        b'S',
+                        b'V',
+                        ni,
+                        1,
+                        ni,
+                        h,
+                        ni,
+                        wr,
+                        wi,
+                        z,
+                        ni,
+                        &mut w.s,
+                        int(lwork)?,
+                        &mut info,
+                    );
+                }
+                if info != 0 {
+                    return Err(());
+                }
+                for ((e, &r), &i) in ev.iter_mut().zip(wr.iter()).zip(wi.iter()) {
+                    *e = Complex::new(r, i);
+                }
+                Ok(())
+            }
+
+            fn chseqr(
+                h: &mut [Complex<$t>],
+                z: &mut [Complex<$t>],
+                n: usize,
+                ev: &mut [Complex<$t>],
+                w: &mut Work<Complex<$t>, $t>,
+            ) -> Result<(), ()> {
+                assert!(
+                    h.len() >= n * n && z.len() >= n * n && ev.len() >= n,
+                    "hseqr: buffer too small"
+                );
+                if n == 0 {
+                    return Ok(());
+                }
+                let ni = int(n)?;
+                let mut info = 0;
+                let mut lw = [Complex::new(0.0 as $t, 0.0)];
+                // SAFETY: h and z are n·n (ld n), ev n; the query writes only
+                // lw[0].
+                unsafe {
+                    lapack::$chseqr(
+                        b'S', b'V', ni, 1, ni, h, ni, ev, z, ni, &mut lw, -1, &mut info,
+                    );
+                }
+                if info != 0 {
+                    return Err(());
+                }
+                let lwork = size_of_query(f64::from(lw[0].re)).max(n);
+                w.s.resize(lwork, Complex::new(0.0, 0.0));
+                // SAFETY: as above, with work of the queried size.
+                unsafe {
+                    lapack::$chseqr(
+                        b'S',
+                        b'V',
+                        ni,
+                        1,
+                        ni,
+                        h,
+                        ni,
+                        ev,
+                        z,
+                        ni,
+                        &mut w.s,
+                        int(lwork)?,
+                        &mut info,
+                    );
+                }
+                if info != 0 { Err(()) } else { Ok(()) }
+            }
+
+            fn trexc(
+                t: &mut [$t],
+                q: &mut [$t],
+                n: usize,
+                ifst: usize,
+                ilst: usize,
+                w: &mut Work<$t, $t>,
+            ) -> Result<(), ()> {
+                assert!(
+                    t.len() >= n * n && q.len() >= n * n && ifst < n && ilst < n,
+                    "trexc: bad arguments"
+                );
+                let ni = int(n)?;
+                w.s.resize(n, 0.0);
+                let (mut f, mut l) = ([int(ifst + 1)?], [int(ilst + 1)?]);
+                let mut info = 0;
+                // SAFETY: t and q are n·n (ld n), 1 ≤ ifst, ilst ≤ n, work n.
+                unsafe {
+                    lapack::$trexc(b'V', ni, t, ni, q, ni, &mut f, &mut l, &mut w.s, &mut info);
+                }
+                if info != 0 { Err(()) } else { Ok(()) }
+            }
+
+            fn ctrexc(
+                t: &mut [Complex<$t>],
+                q: &mut [Complex<$t>],
+                n: usize,
+                ifst: usize,
+                ilst: usize,
+            ) -> Result<(), ()> {
+                assert!(
+                    t.len() >= n * n && q.len() >= n * n && ifst < n && ilst < n,
+                    "trexc: bad arguments"
+                );
+                let ni = int(n)?;
+                let mut info = 0;
+                // SAFETY: t and q are n·n (ld n), 1 ≤ ifst, ilst ≤ n.
+                unsafe {
+                    lapack::$ctrexc(
+                        b'V',
+                        ni,
+                        t,
+                        ni,
+                        q,
+                        ni,
+                        &[int(ifst + 1)?],
+                        &[int(ilst + 1)?],
+                        &mut info,
+                    );
+                }
+                if info != 0 { Err(()) } else { Ok(()) }
+            }
+
+            fn trevc(t: &[$t], n: usize, vr: &mut [$t], w: &mut Work<$t, $t>) -> Result<(), ()> {
+                assert!(
+                    t.len() >= n * n && vr.len() >= n * n,
+                    "trevc: buffer too small"
+                );
+                if n == 0 {
+                    return Ok(());
+                }
+                let ni = int(n)?;
+                w.s.resize(3 * n, 0.0);
+                let (mut m, mut info) = (0, 0);
+                let (mut select, mut vl) = ([0i32], [0.0 as $t]);
+                // SAFETY: t and vr are n·n (ld n), work 3n; howmny = 'A' and
+                // side = 'R' read neither select nor vl.
+                unsafe {
+                    lapack::$trevc(
+                        b'R',
+                        b'A',
+                        &mut select,
+                        ni,
+                        t,
+                        ni,
+                        &mut vl,
+                        ni,
+                        vr,
+                        ni,
+                        ni,
+                        &mut m,
+                        &mut w.s,
+                        &mut info,
+                    );
+                }
+                if info != 0 { Err(()) } else { Ok(()) }
+            }
+
+            fn ctrevc(
+                t: &mut [Complex<$t>],
+                n: usize,
+                vr: &mut [Complex<$t>],
+                w: &mut Work<Complex<$t>, $t>,
+            ) -> Result<(), ()> {
+                assert!(
+                    t.len() >= n * n && vr.len() >= n * n,
+                    "trevc: buffer too small"
+                );
+                if n == 0 {
+                    return Ok(());
+                }
+                let ni = int(n)?;
+                w.s.resize(2 * n, Complex::new(0.0, 0.0));
+                w.r.resize(n, 0.0);
+                let (mut m, mut info) = (0, 0);
+                let mut vl = [Complex::new(0.0 as $t, 0.0)];
+                // SAFETY: t and vr are n·n (ld n), work 2n, rwork n; howmny =
+                // 'A' and side = 'R' read neither select nor vl. ZTREVC
+                // modifies the diagonal of t temporarily and restores it.
+                unsafe {
+                    lapack::$ctrevc(
+                        b'R',
+                        b'A',
+                        &[0],
+                        ni,
+                        t,
+                        ni,
+                        &mut vl,
+                        ni,
+                        vr,
+                        ni,
+                        ni,
+                        &mut m,
+                        &mut w.s,
+                        &mut w.r,
+                        &mut info,
+                    );
+                }
+                if info != 0 { Err(()) } else { Ok(()) }
+            }
+
             fn gebal_r(a: &mut [$t], n: usize, scale: &mut [$t]) -> Result<(usize, usize), ()> {
                 assert!(
                     a.len() >= n * n && scale.len() >= n,
@@ -434,8 +679,10 @@ fn gebal_result(n: usize, ilo: i32, ihi: i32, info: i32) -> Result<(usize, usize
 }
 
 lapack_real!(
-    f32, sstegr, sbdsqr, ssyevr, cheevr, sgebal, cgebal, sgesv, cgesv
+    f32, sstegr, sbdsqr, ssyevr, cheevr, sgebal, cgebal, sgesv, cgesv, shseqr, chseqr, strexc,
+    ctrexc, strevc, ctrevc
 );
 lapack_real!(
-    f64, dstegr, dbdsqr, dsyevr, zheevr, dgebal, zgebal, dgesv, zgesv
+    f64, dstegr, dbdsqr, dsyevr, zheevr, dgebal, zgebal, dgesv, zgesv, dhseqr, zhseqr, dtrexc,
+    ztrexc, dtrevc, ztrevc
 );

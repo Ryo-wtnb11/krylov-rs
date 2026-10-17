@@ -36,6 +36,7 @@ fn check<S: TestScalar>(c: &Case, tol_val: f64, tol_res: f64) -> krylov::Converg
         Which::SmallestReal => {}
         Which::LargestReal => exact.reverse(),
         Which::LargestMagnitude => exact.sort_by(|a, b| b.abs().partial_cmp(&a.abs()).unwrap()),
+        w => panic!("Hermitian test with selector {w:?}"),
     }
     for (i, (&v, x)) in vals.iter().zip(&vecs).enumerate() {
         let v = to_f64(v);

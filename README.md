@@ -47,7 +47,8 @@ documentation (`src/lib.rs`).
 ## LAPACK provider
 
 The small projected problems call LAPACK exactly where KrylovKit does
-(`xSTEGR`, `xBDSQR`, `xSYEVR`/`xHEEVR`). krylov depends only on the
+(`xSTEGR`, `xBDSQR`, `xSYEVR`/`xHEEVR`, `xHSEQR`, `xTREXC`, `xTREVC`). krylov
+depends only on the
 [`lapack`](https://crates.io/crates/lapack) declarations and never selects an
 implementation; the final binary must link one, for example:
 
@@ -98,6 +99,19 @@ krylov's own tests use Accelerate on macOS and the system OpenBLAS elsewhere.
   `AdjointMap` by thick-restart Golub–Kahan–Lanczos. `x0` and `ws_u` live in
   the codomain, `ws_v` in the domain (one Rust vector type, possibly different
   spaces). A call allocates the `3·n` returned vectors.
+
+## Stage 3 contents
+
+- Non-Hermitian Krylov–Schur (Arnoldi with thick restarts) with `Arnoldi`
+  settings, selected by `Which` including `LargestImag`/`SmallestImag`
+  (complex vector types only):
+  - `schursolve(op, x0, howmany, which, &Arnoldi, ws)`: partial Schur form
+    `(T, Q, λ, info)`; `T` is quasi-triangular with standardized 2×2 blocks
+    for real vectors, and a complex-conjugate pair is never split.
+  - `arnoldi_eigsolve`: eigenpairs, for complex vector types (complex
+    eigenvectors need complex storage).
+  - `realeigsolve`: real eigenpairs of a real map, for real vector types.
+  A call allocates the `2·n` returned vectors.
 
 ## Deviations from KrylovKit
 
@@ -174,6 +188,32 @@ krylov's own tests use Accelerate on macOS and the system OpenBLAS elsewhere.
   process targets the zero eigenvalues of `AAᴴ`, which are reported as an
   unconverged `σ ≈ 0`; use the adjoint map. (KrylovKit reports such a zero
   as converged although its true residual is `O(σ_min)`.)
+- **Krylov–Schur** (`schursolve`, `arnoldi_eigsolve`, `realeigsolve`):
+  - `realeigsolve` returns `Error::ComplexEigenvalue { index }` when one of
+    the first `howmany` eigenvalues sits in a 2×2 Schur block coupled by more
+    than `tol`; KrylovKit warns and silently drops the imaginary part.
+    Couplings `≤ tol` are dropped as in KrylovKit, and the largest imaginary
+    part dropped is `info.max_imag` (0 for the other two entry points).
+  - The vector type decides what is available at compile time: complex
+    eigenvectors only through `arnoldi_eigsolve` (complex vectors), real
+    eigenpairs only through `realeigsolve` (real vectors; KrylovKit's
+    `RealVec` for real-linear maps on complex vectors is not supported).
+    `LargestImag`/`SmallestImag` with real vectors are an `InvalidArgument`;
+    KrylovKit's `schursolve` fails later trying to split a 2×2 block.
+  - Before `hseqr` the Rayleigh quotient is scaled by a power of four into
+    `[sqrt(SAFMIN)/ULP, its inverse]` (as LAPACK's `xGEEV`/`xGEES` drivers
+    do, including `xGEES`'s repair after unscaling); KrylovKit calls `hseqr`
+    unscaled, which deflates a quotient with entries near `1e-300` to its
+    diagonal. In-range quotients are passed to LAPACK unchanged.
+  - A reordering swap rejected by LAPACK `trexc` is
+    `Error::SchurReorderFailed` (KrylovKit throws `LAPACKException`). A map
+    producing NaN or infinity is `Error::NonFiniteIterate`. With
+    `krylovdim == 1` the first subspace is final (KrylovKit indexes out of
+    bounds), and `realeigsolve` on an invariant subspace smaller than
+    `howmany` returns what it has.
+- **`Which` is `#[non_exhaustive]`**; the Hermitian solvers (`eigsolve`,
+  `block_eigsolve`, `svdsolve`) reject `LargestImag`/`SmallestImag` with
+  `InvalidArgument`, as KrylovKit does.
 
 ## Vector contract and distributed use
 

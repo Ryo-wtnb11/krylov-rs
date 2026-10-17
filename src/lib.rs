@@ -11,7 +11,9 @@
 //! `φ`-function combinations. [`linsolve`] solves `(a₀ + a₁·A)·x = b` by
 //! [`Cg`] or [`Gmres`]. [`block_eigsolve`] handles degenerate
 //! spectra with [`BlockLanczos`]. [`svdsolve`] computes partial SVDs of an
-//! [`AdjointMap`] by [`Gkl`].
+//! [`AdjointMap`] by [`Gkl`]. Non-Hermitian maps use the Krylov–Schur method
+//! with [`Arnoldi`]: [`schursolve`], [`arnoldi_eigsolve`] (complex vectors)
+//! and [`realeigsolve`] (real vectors).
 //!
 //! The small projected problems call LAPACK through the [`lapack`] crate
 //! declarations, as KrylovKit does. krylov does not pick a LAPACK
@@ -72,6 +74,7 @@
 #[cfg(test)]
 extern crate lapack_src as _;
 
+mod arnoldi;
 mod basis;
 mod block_lanczos;
 mod dense;
@@ -85,6 +88,7 @@ mod scalar;
 mod svdsolve;
 mod traits;
 
+pub use arnoldi::{Arnoldi, arnoldi_eigsolve, realeigsolve, schursolve};
 pub use basis::VecBasis;
 pub use block_lanczos::{BlockLanczos, block_eigsolve};
 pub use eigsolve::{ConvergenceInfo, Which, eigsolve};
