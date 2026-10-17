@@ -53,7 +53,7 @@ implementation; the final binary must link one, for example:
 
 ```toml
 [dependencies]
-lapack-src = { version = "0.13", features = ["openblas"] } # or "accelerate", "intel-mkl", "netlib"
+lapack-src = { version = "0.13", features = ["openblas"] } # or "accelerate", "intel-mkl-dynamic-parallel", "netlib"
 ```
 
 ```rust

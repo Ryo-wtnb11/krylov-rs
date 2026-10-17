@@ -16,7 +16,8 @@
 //! The small projected problems call LAPACK through the [`lapack`] crate
 //! declarations, as KrylovKit does. krylov does not pick a LAPACK
 //! implementation: the final binary links one, for example by depending on
-//! `lapack-src` with the `openblas`, `accelerate` or `intel-mkl` feature and
+//! `lapack-src` with the `openblas`, `accelerate` or
+//! `intel-mkl-dynamic-parallel` feature and
 //! naming it once with `extern crate lapack_src as _;`.
 //!
 //! ```
