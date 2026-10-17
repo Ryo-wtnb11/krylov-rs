@@ -241,6 +241,31 @@ fn single_precision() {
     );
     assert!(out.info.converged >= 2);
     check_pairs(&a, &out, 1e-5);
+    // A Complex32 operator of norm ~1e13 (where squares fit but cubes do not).
+    let scale = 1e13;
+    let a = with_spectrum(&mut g, &eigs, true) * Complex64::new(scale, 0.0);
+    let alg = BlockLanczos::new()
+        .krylovdim(20)
+        .tol(1e-4 * scale)
+        .qr_tol(1e-5);
+    let out = run::<Complex32>(&a, &block(&mut g, 40, 2, true), 2, Which::SmallestReal, alg);
+    assert!(out.info.converged >= 2);
+    for v in &out.vals[..2] {
+        assert!((v / scale + 2.0).abs() < 1e-4, "{v}");
+    }
+}
+
+#[test]
+fn zero_qr_tol_drops_exactly_zero_vectors() {
+    let mut g = SplitMix(57);
+    let a = hermitian(&mut g, 30, false);
+    let exact = dense_eigenvalues(&a);
+    let x = random_vec(&mut g, 30, false);
+    let zero = vec![Complex64::new(0.0, 0.0); 30];
+    let alg = BlockLanczos::new().krylovdim(20).tol(1e-10).qr_tol(0.0);
+    let out = run::<f64>(&a, &[x, zero], 1, Which::SmallestReal, alg);
+    check_pairs(&a, &out, 1e-12);
+    assert!((out.vals[0] - exact[0]).abs() < 1e-9);
 }
 
 #[test]
@@ -297,7 +322,7 @@ fn errors() {
             &two,
             1,
             sr,
-            &BlockLanczos::new().krylovdim(1),
+            &BlockLanczos::new().krylovdim(2),
             &mut ws
         )),
         Error::InvalidArgument(_)

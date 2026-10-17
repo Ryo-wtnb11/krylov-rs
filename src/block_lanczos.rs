@@ -114,9 +114,9 @@ impl BlockLanczos {
 /// fewer when the Krylov space is exhausted; values are ordered by `which`;
 /// residual norms are `‖A·xᵢ - λᵢ·xᵢ‖`, and [`ConvergenceInfo::max_imag`] is
 /// the largest anti-Hermitian entry discarded from the diagonal blocks.
-/// Vectors of a new block with norm below `qr_tol` are dropped, so the block
-/// may shrink; when a whole block is dropped the iteration stops (invariant
-/// subspace).
+/// Vectors of a new block with norm below `qr_tol` (or exactly zero) are
+/// dropped, so the block may shrink; when a whole block is dropped the
+/// iteration stops (invariant subspace). `krylovdim` must exceed `x0.len()`.
 ///
 /// The workspace basis needs capacity `>= alg.get_krylovdim() + x0.len() - 1`;
 /// its operator vectors are unused. A call allocates `2·x0.len()` scratch
@@ -140,9 +140,10 @@ where
     if bs0 == 0 {
         return Err(Error::InvalidArgument("start block must not be empty"));
     }
-    if kd < bs0 {
+    if kd <= bs0 {
+        // keep would be a multiple of bs₀ ≥ krylovdim: every restart a no-op.
         return Err(Error::InvalidArgument(
-            "krylovdim must be at least the start block size",
+            "krylovdim must exceed the start block size",
         ));
     }
     if alg.maxiter == 0 {
@@ -514,7 +515,12 @@ fn block_qr<V: Vector>(
             }
             beta = xj.norm()?;
         }
-        let kept = if j == 0 { beta > tol } else { beta >= tol };
+        // `β > 0` keeps `qr_tol == 0` from normalizing a zero vector.
+        let kept = if j == 0 {
+            beta > tol
+        } else {
+            beta >= tol && beta > Real::<V>::zero()
+        };
         if kept {
             b[nb + j * ldb] = V::Scalar::from_real(beta);
             xj.axpby(V::Scalar::zero(), dummy, V::Scalar::from_real(beta.recip()))?;

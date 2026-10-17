@@ -223,6 +223,54 @@ mod tests {
         }
     }
 
+    /// Eigenvalues of `scale·Q·diag(eigs)·Qᴴ` in the scalar type `S`,
+    /// relative to `scale`, against the known spectrum.
+    fn scaled_spectrum_error<S: Scalar>(
+        to: fn(C) -> S,
+        back: fn(S::Real) -> f64,
+        scale: f64,
+    ) -> f64 {
+        let mut s = 21;
+        let n = 15;
+        let eigs: Vec<f64> = (0..n).map(|i| i as f64 / n as f64 - 0.5).collect();
+        let q = unitary(&mut s, n);
+        let dm = DMatrix::from_diagonal(&nalgebra::DVector::from_iterator(
+            n,
+            eigs.iter().map(|&e| C::new(e, 0.0)),
+        ));
+        let am = &q * dm * q.adjoint();
+        let mut a: Vec<S> = DMatrix::from_fn(n, n, |i, j| (am[(i, j)] + am[(j, i)].conj()) * 0.5)
+            .iter()
+            .map(|&z| to(z * scale))
+            .collect();
+        let zr = <S::Real as num_traits::Zero>::zero();
+        let (mut d, mut e, mut z) = (vec![zr; n], vec![zr; n], vec![zr; n * n]);
+        let (mut taus, mut x) = (vec![S::zero(); n], vec![S::zero(); n]);
+        hermitian_tridiag(&mut a, n, &mut d, &mut e, &mut taus, &mut x);
+        tridiag_eigh(&mut d, &mut e, &mut z).unwrap();
+        d.iter()
+            .zip(&eigs)
+            .map(|(&got, &want)| (back(got) / scale - want).abs())
+            .fold(0.0, f64::max)
+    }
+
+    #[test]
+    fn complex_reduction_survives_extreme_scales() {
+        // Squares of the entries stay in range; their cubes do not.
+        for scale in [1e145, 1e-150] {
+            let err = scaled_spectrum_error::<C>(|z| z, |r| r, scale);
+            assert!(err < 1e-13, "Complex64 at {scale:e}: {err}");
+        }
+        for scale in [1e13, 1e-13] {
+            let err = scaled_spectrum_error::<num_complex::Complex32>(
+                |z| num_complex::Complex32::new(z.re as f32, z.im as f32),
+                |r| r as f64,
+                scale,
+            );
+            assert!(err < 1e-5, "Complex32 at {scale:e}: {err}");
+        }
+    }
+
     #[test]
     fn band_restoration_is_a_unitary_similarity() {
         let mut s = 9;
