@@ -1,0 +1,25 @@
+# Lanczos `expintegrator` cases (φ-function combinations, p = nu - 1 or 1);
+# included by generate.jl, which defines `out` and the shared input generators.
+function expintcase(out, name, seed, n, iscomplex, nu, t, krylovdim, tol, eager)
+    g = SplitMix(seed)
+    A = hermitian(g, n, iscomplex)
+    u = Tuple(startvec(g, n, iscomplex) for _ in 1:nu)
+    alg = Lanczos(; krylovdim, tol, maxiter = 100, eager, orth = ClassicalGramSchmidt2())
+    y, info = expintegrator(A, t, u, alg)
+    println(out, "case ", name)
+    println(out, "kind expint")
+    println(out, "complex ", Int(iscomplex))
+    println(out, "seed ", seed, "\nn ", n, "\nnu ", nu)
+    println(out, "t ", repr(real(t)), " ", repr(imag(t)))
+    println(out, "krylovdim ", krylovdim, "\ntol ", repr(tol), "\neager ", Int(eager))
+    println(out, "y_re ", fmt(real.(y)))
+    println(out, "y_im ", fmt(imag.(y)))
+    println(out, "normres ", repr(info.normres))
+    println(out, "converged ", info.converged, "\nnumiter ", info.numiter, "\nnumops ", info.numops)
+    return println(out, "end")
+end
+
+expintcase(out, "expint_real_imag_time_p2", 11, 60, false, 3, -1.0, 12, 1e-12, false)
+expintcase(out, "expint_complex_real_time_p3", 12, 60, true, 4, -3.0im, 15, 1e-12, false)
+expintcase(out, "expint_complex_time_p1_eager", 13, 50, true, 2, complex(-0.5, 2.0), 20, 1e-12, true)
+expintcase(out, "expint_real_imag_time_p4", 14, 40, false, 5, -0.5, 10, 1e-12, false)

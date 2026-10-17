@@ -7,7 +7,8 @@
 //! modelled on [KrylovKit.jl](https://github.com/Jutho/KrylovKit.jl).
 //!
 //! Stage 1 provides Hermitian Lanczos [`eigsolve`] (thick restart) and
-//! [`exponentiate`].
+//! [`exponentiate`]; [`expintegrator`] generalizes the latter to
+//! `φ`-function combinations.
 //!
 //! ```
 //! use krylov::{eigsolve, Lanczos, Vector, Which, Workspace};
@@ -69,7 +70,7 @@ mod traits;
 pub use basis::VecBasis;
 pub use eigsolve::{ConvergenceInfo, Which, eigsolve};
 pub use error::Error;
-pub use exponentiate::{ExpInfo, exponentiate};
+pub use exponentiate::{ExpInfo, expintegrator, exponentiate};
 pub use lanczos::Lanczos;
 pub use orth::Orth;
 pub use scalar::{MatRef, Real, RealScalar, Scalar};
