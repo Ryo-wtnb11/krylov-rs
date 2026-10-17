@@ -5,7 +5,7 @@ mod phi;
 mod tridiag;
 
 pub(crate) use householder::householder;
-pub(crate) use phi::{phi2_last, phi12};
+pub(crate) use phi::{phi_last, phi_upto};
 pub(crate) use tridiag::{arrowhead_to_tridiag, tridiag_eigh};
 
 #[cfg(test)]
@@ -102,29 +102,58 @@ mod tests {
 
     #[test]
     fn phi_functions_are_continuous_across_branches() {
+        let c = |re, im| Complex64::new(re, im);
+        let (mut below, mut above) = ([c(0.0, 0.0); 6], [c(0.0, 0.0); 6]);
         for x in [
-            Complex64::new(1.0 - 1e-12, 0.0),
-            Complex64::new(-1.0 + 1e-12, 0.0),
-            Complex64::new(0.0, 1.0 - 1e-12),
+            c(1.0 - 1e-12, 0.0),
+            c(-1.0 + 1e-12, 0.0),
+            c(0.0, 1.0 - 1e-12),
         ] {
-            let below = phi12(x);
-            let above = phi12(x * (1.0 + 2e-12));
-            assert!((below.0 - above.0).norm() < 1e-11);
-            assert!((below.1 - above.1).norm() < 1e-11);
+            phi_upto(x, &mut below);
+            phi_upto(x * (1.0 + 2e-12), &mut above);
+            for (j, (b, a)) in below.iter().zip(&above).enumerate() {
+                // The recurrence amplifies rounding by about e·j! just above |x| = 1.
+                assert!((b - a).norm() < 1e-11 * [1.0, 1.0, 1.0, 2.0, 5.0, 20.0][j]);
+            }
         }
-        let (p1, p2) = phi12(Complex64::new(0.0, 0.0));
+        let mut phis = [c(0.0, 0.0); 6];
+        phi_upto(c(0.0, 0.0), &mut phis);
         assert_eq!(
-            (p1, p2),
-            (Complex64::new(1.0, 0.0), Complex64::new(0.5, 0.0))
+            phis,
+            [1.0, 1.0, 0.5, 1.0 / 6.0, 1.0 / 24.0, 1.0 / 120.0].map(|v| c(v, 0.0))
         );
-        let x = Complex64::new(3.0, -2.0);
-        let (p1, p2) = phi12(x);
-        assert!((p1 - (x.exp() - 1.0) / x).norm() < 1e-14);
-        assert!((p2 - (x.exp() - 1.0 - x) / (x * x)).norm() < 1e-14);
+        // Closed forms φ_j(x) = (eˣ - Σ_{i<j} xⁱ/i!)/xʲ on both branches.
+        for x in [c(3.0, -2.0), c(0.6, 0.6)] {
+            phi_upto(x, &mut phis);
+            let (mut taylor, mut term) = (c(0.0, 0.0), c(1.0, 0.0));
+            for (j, &got) in phis.iter().enumerate() {
+                let want = (x.exp() - taylor) / x.powu(j as u32);
+                assert!((got - want).norm() <= 1e-12 * want.norm(), "x={x} j={j}");
+                taylor += term;
+                term = term * x / (j as f64 + 1.0);
+            }
+        }
+    }
+
+    /// `e_kᵀ φ_j(xT) e₁`: the `(k, k+j)` entry of
+    /// `exp([[xT, e₁, 0], [0, 0, I_{j-1}], [0, 0, 0]])`.
+    fn phi_last_dense(x: Complex64, t: &nalgebra::DMatrix<f64>, j: usize) -> Complex64 {
+        let k = t.nrows();
+        let mut m = nalgebra::DMatrix::<Complex64>::zeros(k + j, k + j);
+        for r in 0..k {
+            for s in 0..k {
+                m[(r, s)] = x * t[(r, s)];
+            }
+        }
+        m[(0, k)] = Complex64::new(1.0, 0.0);
+        for i in 1..j {
+            m[(k + i - 1, k + i)] = Complex64::new(1.0, 0.0);
+        }
+        m.exp()[(k - 1, k + j - 1)]
     }
 
     #[test]
-    fn phi2_last_entry_series_matches_dense_and_is_relatively_accurate() {
+    fn phi_last_entry_series_matches_dense_and_is_relatively_accurate() {
         let mut s = 3;
         let k = 12;
         let a: Vec<f64> = (0..k).map(|_| lcg(&mut s)).collect();
@@ -134,31 +163,28 @@ mod tests {
             vec![Complex64::new(0.0, 0.0); k],
             vec![Complex64::new(0.0, 0.0); k],
         );
-        // Tiny x: the leading term x^(k-1)·Πβ/(k+1)! dominates; a dense
-        // exponential only resolves this entry to ε·‖exp‖.
-        let x = Complex64::new(-0.01, 0.0);
-        let got = phi2_last(x, &a, &b, &mut s1, &mut s2).unwrap();
-        let fact: f64 = (1..=k + 1).map(|i| i as f64).product();
-        let lead = x.powu(k as u32 - 1) * b[..k - 1].iter().product::<f64>() / fact;
-        assert!((got - lead).norm() <= 1e-2 * lead.norm(), "{got} vs {lead}");
-        for x in [Complex64::new(0.0, -0.7), Complex64::new(1.5, 0.5)] {
-            let got = phi2_last(x, &a, &b, &mut s1, &mut s2).unwrap();
-            // Reference: the (k, k+2) entry of exp([[xT, e1, 0], [0, 0, 1], [0, 0, 0]]).
-            let mut m = nalgebra::DMatrix::<Complex64>::zeros(k + 2, k + 2);
-            for i in 0..k {
-                for j in 0..k {
-                    m[(i, j)] = x * t[(i, j)];
-                }
-            }
-            m[(0, k)] = Complex64::new(1.0, 0.0);
-            m[(k, k + 1)] = Complex64::new(1.0, 0.0);
-            let want = m.exp()[(k - 1, k + 1)];
+        for j in 1..=4 {
+            // Tiny x: the leading term x^(k-1)·Πβ/(k-1+j)! dominates; a dense
+            // exponential only resolves this entry to ε·‖exp‖.
+            let x = Complex64::new(-0.01, 0.0);
+            let got = phi_last(x, j, &a, &b, &mut s1, &mut s2).unwrap();
+            let fact: f64 = (1..k + j).map(|i| i as f64).product();
+            let lead = x.powu(k as u32 - 1) * b[..k - 1].iter().product::<f64>() / fact;
             assert!(
-                (got - want).norm() <= 1e-10 * want.norm(),
-                "x={x}: {got} vs {want}"
+                (got - lead).norm() <= 1e-2 * lead.norm(),
+                "j={j}: {got} vs {lead}"
             );
+            for x in [Complex64::new(0.0, -0.7), Complex64::new(1.5, 0.5)] {
+                let got = phi_last(x, j, &a, &b, &mut s1, &mut s2).unwrap();
+                let want = phi_last_dense(x, &t, j);
+                // The dense exponential resolves this entry only to ε·‖exp‖.
+                assert!(
+                    (got - want).norm() <= 1e-10 * want.norm() + 1e-15,
+                    "x={x} j={j}: {got} vs {want}"
+                );
+            }
+            // Out of the series' range it declines.
+            assert!(phi_last(Complex64::new(10.0, 0.0), j, &a, &b, &mut s1, &mut s2).is_none());
         }
-        // Out of the series' range it declines.
-        assert!(phi2_last(Complex64::new(10.0, 0.0), &a, &b, &mut s1, &mut s2).is_none());
     }
 }

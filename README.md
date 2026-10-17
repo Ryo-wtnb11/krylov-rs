@@ -55,6 +55,13 @@ documentation (`src/lib.rs`).
 - `exponentiate` with `Lanczos`: KrylovKit's `expintegrator` formulation and
   time-step controller (`tol` per unit time, `maxiter` Krylov subspaces).
 
+## Stage 2 contents
+
+- `expintegrator(op, t, u, &Lanczos, ws)`: `Σ_j tʲ·φ_j(t·A)·u_j` for
+  `u = [u₀, u₁, …]`, the solution at `t` of `ẋ = A·x + Σ_j tʲ/j!·u_{j+1}`,
+  `x(0) = u₀`. `exponentiate` is its single-vector case; a call allocates the
+  result plus `len(u) - 2` scratch vectors (none for one or two vectors).
+
 ## Deviations from KrylovKit
 
 - **Orthogonalization default is CGS2** (classical Gram–Schmidt with one
@@ -74,16 +81,22 @@ documentation (`src/lib.rs`).
   eigenproblem uses implicit QL instead of LAPACK `stegr`; `exp`/`φ` of the
   tridiagonal Rayleigh quotient use its eigendecomposition instead of a Padé
   exponential of the augmented matrix. The step controller's error estimate
-  `e_kᵀ φ₂(sΔτ·T) e₁` uses the Taylor series in `T` while `|sΔτ|·‖T‖∞ < k/2`,
-  because for small steps that entry is far below `ε·max|φ₂|`, which is all an
-  eigendecomposition resolves; this keeps the step sequence equal to KrylovKit's.
+  `e_kᵀ φ_{p+1}(sΔτ·T) e₁` uses the Taylor series in `T` while
+  `|sΔτ|·‖T‖∞ < k/2`, because for small steps that entry is far below
+  `ε·max|φ_{p+1}|`, which is all an eigendecomposition resolves; this keeps the
+  step sequence equal to KrylovKit's.
 - **CGS2 Lanczos step** orthogonalizes against the full basis twice; KrylovKit's
   CGS2 recurrence uses the three-term recurrence for its first pass.
 - Restricted inputs, reported as typed errors: `krylovdim >= 1`,
   `maxiter >= 1`, `tol >= 0` (`> 0` for `exponentiate`), finite `t`. With
   `krylovdim == 1`, `eigsolve` cannot restart and returns the first Rayleigh
-  quotient (KrylovKit fails there). `exponentiate` with `t == 0` returns `x`
-  without applying the map.
+  quotient (KrylovKit fails there). `exponentiate`/`expintegrator` with
+  `t == 0` return `u₀` without applying the map; `t = ±∞` is rejected
+  (KrylovKit allows it for `p = 1`); an empty `u` is an `InvalidArgument`.
+- **`expintegrator` with `w_{p+1} = 0` and `p ≥ 2`** (the vector the Krylov
+  space would start from) takes the exact polynomial step
+  `y + Σ_{j<p} (sΔτ)ʲ/j!·w_{j+1}` to `t` without a Krylov space; KrylovKit
+  divides by the zero norm there.
 
 ## Vector contract and distributed use
 
