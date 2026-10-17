@@ -151,6 +151,33 @@ pub fn hermitian(g: &mut SplitMix, n: usize, complex: bool) -> DMatrix<Complex64
     a
 }
 
+/// KrylovKit's `outliers` (see `fixtures/krylovkit/arnoldi.jl`).
+pub fn outliers(g: &mut SplitMix, n: usize, complex: bool) -> DMatrix<Complex64> {
+    let mut a = DMatrix::zeros(n, n);
+    let s = (n as f64).sqrt();
+    for j in 0..n {
+        for i in 0..n {
+            a[(i, j)] = g.scalar(complex) / s;
+        }
+    }
+    let c = Complex64::new;
+    if complex {
+        a[(0, 0)] += c(0.0, 3.0);
+        a[(1, 1)] += c(-2.5, 0.0);
+        a[(2, 2)] += c(2.0, 1.0);
+        a[(3, 3)] += c(-1.5, -1.5);
+    } else {
+        a[(0, 0)] += c(3.0, 0.0);
+        a[(1, 1)] += c(-2.5, 0.0);
+        a[(2, 2)] += c(2.0, 0.0);
+        a[(3, 3)] += c(1.5, 0.0);
+        a[(4, 4)] += c(1.5, 0.0);
+        a[(3, 4)] += c(1.2, 0.0);
+        a[(4, 3)] -= c(1.2, 0.0);
+    }
+    a
+}
+
 pub fn random_vec(g: &mut SplitMix, n: usize, complex: bool) -> Vec<Complex64> {
     (0..n).map(|_| g.scalar(complex)).collect()
 }

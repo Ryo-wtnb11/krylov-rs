@@ -1,13 +1,16 @@
 //! `φ`-function combinations `Σ_j t^j·φ_j(t·A)·u_j` (in particular
-//! `exp(t·A)·x`) for Hermitian `A` by Lanczos with adaptive time steps.
+//! `exp(t·A)·x`) by Lanczos (Hermitian `A`) or Arnoldi (general `A`) with
+//! adaptive time steps.
 
 use core::ops::Mul;
 
 use num_traits::{Float, One, Zero};
 
-use crate::dense::{Work, phi_last, phi_upto};
+use crate::arnoldi::{Arnoldi, Fact as ArnoldiFact};
+use crate::dense::{Work, expm, phi_last, phi_upto};
 use crate::error::Error;
-use crate::lanczos::{Fact, Lanczos};
+use crate::lanczos::{Fact, Lanczos, validate};
+use crate::orth::Orth;
 use crate::scalar::sealed::{Ops as _, RealOps as _};
 use crate::scalar::{Real, Scalar};
 use crate::traits::{Basis, LinearMap, Vector, Workspace};
@@ -28,62 +31,222 @@ pub struct ExpInfo<R> {
     pub max_imag: R,
 }
 
-/// Computes `y = exp(t·A)·x` for a Hermitian map `op`.
+/// Computes `y = exp(t·A)·x`.
 ///
 /// This is [`expintegrator`] with `u = [x]` (KrylovKit v0.10.4
 /// `exponentiate`): the Krylov space is built from `A·x` and
-/// `y = x + t·φ₁(t·A)·A·x` is advanced in time steps. Only the returned
+/// `y = x + t·φ₁(t·A)·A·x` is advanced in time steps. `alg` is [`Lanczos`]
+/// for a Hermitian `op` or [`Arnoldi`] for a general one. Only the returned
 /// vector is allocated.
 #[allow(clippy::type_complexity)]
-pub fn exponentiate<V, B, A>(
+pub fn exponentiate<V, B, A, L>(
     op: &mut A,
     t: V::Scalar,
     x: &V,
-    alg: &Lanczos,
+    alg: &L,
     ws: &mut Workspace<V, B>,
 ) -> Result<(V, ExpInfo<Real<V>>), Error<V::Error>>
 where
     V: Vector,
     B: Basis<V>,
     A: LinearMap<V>,
+    L: KrylovProcess,
 {
     expintegrator(op, t, core::slice::from_ref(x), alg, ws)
 }
 
-/// Computes `y = φ₀(t·A)·u₀ + t·φ₁(t·A)·u₁ + t²·φ₂(t·A)·u₂ + …` for a
-/// Hermitian map `op`, with `φ₀ = exp` and `φ_{j+1}(z) = (φ_j(z) - 1/j!)/z`.
+/// Computes `y = φ₀(t·A)·u₀ + t·φ₁(t·A)·u₁ + t²·φ₂(t·A)·u₂ + …` with
+/// `φ₀ = exp` and `φ_{j+1}(z) = (φ_j(z) - 1/j!)/z`.
 ///
 /// `y = x(t)` solves `ẋ = A·x + Σ_{j≥0} tʲ/j!·u_{j+1}` with `x(0) = u₀`.
-/// Follows KrylovKit v0.10.4 `expintegrator(A, t, u, ::Lanczos)` with
-/// `p = max(len(u) - 1, 1)`: from the current `w₁ = y` it forms
-/// `w_{j+1} = A·w_j + Σ_l (sτ₀)ˡ/l!·u_{j+l}` (`p` applications), builds the
-/// Krylov space from `w_{p+1}` and advances `y` in time steps chosen so that
-/// the local error estimate stays below `tol` per unit time; `maxiter` bounds
-/// the number of Krylov subspaces (time steps), and the last one is forced to
-/// reach `t`. `t` may be complex (use a complex vector type for real-time
-/// evolution `t = -iτ`). `u` must be non-empty, `tol` positive and `t` finite.
-/// When `w_{p+1} = 0` with `p ≥ 2`, `y` is the exact polynomial in `t` and is
-/// returned without a Krylov space (KrylovKit divides by zero there).
+/// Follows KrylovKit v0.10.4 `expintegrator(A, t, u, ::Union{Lanczos,
+/// Arnoldi})` with `p = max(len(u) - 1, 1)`: from the current `w₁ = y` it
+/// forms `w_{j+1} = A·w_j + Σ_l (sτ₀)ˡ/l!·u_{j+l}` (`p` applications), builds
+/// the Krylov space from `w_{p+1}` and advances `y` in time steps chosen so
+/// that the local error estimate stays below `tol` per unit time; `maxiter`
+/// bounds the number of Krylov subspaces (time steps), and the last one is
+/// forced to reach `t`. `t` may be complex (use a complex vector type for
+/// real-time evolution `t = -iτ`). `u` must be non-empty, `tol` positive and
+/// `t` finite. When `w_{p+1} = 0` with `p ≥ 2`, `y` is the exact polynomial
+/// in `t` and is returned without a Krylov space (KrylovKit divides by zero
+/// there).
+///
+/// `alg` selects the process: [`Lanczos`] (Hermitian `op`) evaluates the
+/// `φ` functions of the tridiagonal Rayleigh quotient through its
+/// eigendecomposition; [`Arnoldi`] (general `op`) takes the dense
+/// exponential of the `(k+p+1)²` augmented Hessenberg matrix, as KrylovKit.
 ///
 /// The workspace basis needs capacity `>= alg.get_krylovdim()`. The returned
 /// vector and `p - 1` scratch vectors are allocated (`p` per call).
 #[allow(clippy::type_complexity)]
-pub fn expintegrator<V, B, A>(
+pub fn expintegrator<V, B, A, L>(
     op: &mut A,
     t: V::Scalar,
     u: &[V],
-    alg: &Lanczos,
+    alg: &L,
     ws: &mut Workspace<V, B>,
 ) -> Result<(V, ExpInfo<Real<V>>), Error<V::Error>>
 where
     V: Vector,
     B: Basis<V>,
     A: LinearMap<V>,
+    L: KrylovProcess,
 {
-    let Some(u0) = u.first() else {
+    if u.is_empty() {
         return Err(Error::InvalidArgument("u must not be empty"));
-    };
-    let eta = alg.validate(ws)?;
+    }
+    alg.expintegrator(op, t, u, ws)
+}
+
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for super::Lanczos {}
+    impl Sealed for super::Arnoldi {}
+}
+
+/// The Krylov process of [`expintegrator`] and [`exponentiate`]:
+/// [`Lanczos`] or [`Arnoldi`]. Sealed.
+pub trait KrylovProcess: sealed::Sealed {
+    #[doc(hidden)]
+    #[allow(clippy::type_complexity)]
+    fn expintegrator<V, B, A>(
+        &self,
+        op: &mut A,
+        t: V::Scalar,
+        u: &[V],
+        ws: &mut Workspace<V, B>,
+    ) -> Result<(V, ExpInfo<Real<V>>), Error<V::Error>>
+    where
+        V: Vector,
+        B: Basis<V>,
+        A: LinearMap<V>;
+}
+
+impl KrylovProcess for Lanczos {
+    fn expintegrator<V, B, A>(
+        &self,
+        op: &mut A,
+        t: V::Scalar,
+        u: &[V],
+        ws: &mut Workspace<V, B>,
+    ) -> Result<(V, ExpInfo<Real<V>>), Error<V::Error>>
+    where
+        V: Vector,
+        B: Basis<V>,
+        A: LinearMap<V>,
+    {
+        let eta = self.validate(ws)?;
+        let s = Settings {
+            kd: self.get_krylovdim(),
+            maxiter: self.get_maxiter(),
+            orth: self.get_orth(),
+            eager: self.get_eager(),
+            eta,
+        };
+        integrate::<_, _, _, LanczosProc<V::Scalar>>(op, t, u, ws, s)
+    }
+}
+
+impl KrylovProcess for Arnoldi {
+    fn expintegrator<V, B, A>(
+        &self,
+        op: &mut A,
+        t: V::Scalar,
+        u: &[V],
+        ws: &mut Workspace<V, B>,
+    ) -> Result<(V, ExpInfo<Real<V>>), Error<V::Error>>
+    where
+        V: Vector,
+        B: Basis<V>,
+        A: LinearMap<V>,
+    {
+        let eta = validate(self.get_krylovdim(), self.get_maxiter(), self.get_tol(), ws)?;
+        let s = Settings {
+            kd: self.get_krylovdim(),
+            maxiter: self.get_maxiter(),
+            orth: self.get_orth(),
+            eager: self.get_eager(),
+            eta,
+        };
+        integrate::<_, _, _, ArnoldiProc<V::Scalar>>(op, t, u, ws, s)
+    }
+}
+
+struct Settings<R> {
+    kd: usize,
+    maxiter: usize,
+    orth: Orth,
+    eager: bool,
+    eta: R,
+}
+
+/// What the step controller needs from a Krylov process: the factorization,
+/// and the projected `φ` column `φ_p(sΔτ·H)e₁` and error-estimate entry
+/// `e_kᵀφ_{p+1}(sΔτ·H)e₁` of its Rayleigh quotient `H`.
+trait Process<S: Scalar>: Sized {
+    fn new(kd: usize, orth: Orth, p: usize) -> Self;
+    /// Starts a new Krylov space from `scale·ws.w`.
+    fn start<V, B, A>(
+        &mut self,
+        ws: &mut Workspace<V, B>,
+        op: &mut A,
+        scale: S::Real,
+    ) -> Result<(), Error<V::Error>>
+    where
+        V: Vector<Scalar = S>,
+        B: Basis<V>,
+        A: LinearMap<V>;
+    fn expand<V, B, A>(
+        &mut self,
+        ws: &mut Workspace<V, B>,
+        op: &mut A,
+    ) -> Result<(), Error<V::Error>>
+    where
+        V: Vector<Scalar = S>,
+        B: Basis<V>,
+        A: LinearMap<V>;
+    fn len(&self) -> usize;
+    fn normres(&self) -> S::Real;
+    fn numops(&self) -> usize;
+    fn max_imag(&self) -> S::Real;
+    /// Prepares the current Rayleigh quotient for [`Process::err`] calls.
+    fn project<E>(&mut self) -> Result<(), Error<E>>;
+    /// Local error estimate `Δτᵖ·β·‖r‖·|e_kᵀ φ_{p+1}(sΔτ H) e₁|`.
+    fn err<E>(&mut self, sgn: S, dtau: S::Real, beta: S::Real) -> Result<S::Real, Error<E>>;
+    /// `y ← y + Σ_{j<p} (sΔτ)ʲ/j!·w_{j+1}
+    ///        + β(sΔτ)ᵖ·(V·φ_p(sΔτ H)e₁ + (e_kᵀ φ_{p+1}(sΔτ H) e₁)·r)`
+    /// for the `dtau` of the last [`Process::err`] call.
+    fn advance<V, B>(
+        &mut self,
+        ws: &Workspace<V, B>,
+        y: &mut V,
+        w: &[V],
+        sgn: S,
+        dtau: S::Real,
+        beta: S::Real,
+    ) -> Result<(), V::Error>
+    where
+        V: Vector<Scalar = S>,
+        B: Basis<V>;
+}
+
+/// The step controller of KrylovKit `expintegrator`, shared by both processes.
+#[allow(clippy::type_complexity)]
+fn integrate<V, B, A, P>(
+    op: &mut A,
+    t: V::Scalar,
+    u: &[V],
+    ws: &mut Workspace<V, B>,
+    s: Settings<Real<V>>,
+) -> Result<(V, ExpInfo<Real<V>>), Error<V::Error>>
+where
+    V: Vector,
+    B: Basis<V>,
+    A: LinearMap<V>,
+    P: Process<V::Scalar>,
+{
+    let u0 = &u[0];
+    let eta = s.eta;
     if eta.is_nan() || eta <= Real::<V>::zero() {
         return Err(Error::InvalidArgument("tol must be positive"));
     }
@@ -96,8 +259,8 @@ where
         }
     }
     let p = (u.len() - 1).max(1);
-    let kd = alg.get_krylovdim();
-    let maxiter = alg.get_maxiter();
+    let kd = s.kd;
+    let maxiter = s.maxiter;
     let zero = Real::<V>::zero();
     let one = Real::<V>::one();
 
@@ -114,7 +277,7 @@ where
     if tau == zero {
         return Ok((y, info));
     }
-    // w_2 … w_p; w_{p+1} lives in ws.w and becomes the Lanczos start.
+    // w_2 … w_p; w_{p+1} lives in ws.w and becomes the Krylov start.
     let mut w = (1..p)
         .map(|_| u0.similar())
         .collect::<Result<Vec<_>, _>>()
@@ -127,21 +290,14 @@ where
     let mut tau0 = zero;
     let mut totalerr = zero;
 
-    let mut fact = Fact::<V::Scalar>::new(kd, alg.get_orth());
+    let mut proc = P::new(kd, s.orth, p);
+    let mut numops = 0;
     let mut numiter = 0;
-    let mut lam = vec![zero; kd];
-    let mut e = vec![zero; kd];
-    let mut z = vec![zero; kd * kd];
-    let mut lw = Work::default();
-    let mut c = Vec::with_capacity(kd);
-    let mut s1 = vec![V::Scalar::zero(); kd];
-    let mut s2 = vec![V::Scalar::zero(); kd];
-    let mut phis = vec![V::Scalar::zero(); p + 2];
 
     'rebuild: loop {
         let st0 = sgn * V::Scalar::from_real(tau0);
         let beta =
-            rebuild(op, &y, u, &mut w, &mut ws.w, st0, &mut fact.numops).map_err(Error::Vector)?;
+            rebuild(op, &y, u, &mut w, &mut ws.w, st0, &mut numops).map_err(Error::Vector)?;
         if p == 1 && beta < eta {
             // y is a fixed point (A·y + u₁ = 0) up to tolerance.
             info.normres = beta;
@@ -154,13 +310,12 @@ where
             info.normres = totalerr;
             break;
         }
-        fact.start(ws, op, None, one / beta)
-            .map_err(Error::Vector)?;
+        proc.start(ws, op, one / beta)?;
         numiter += 1;
 
         loop {
-            let k = fact.len();
-            let normres = fact.normres();
+            let k = proc.len();
+            let normres = proc.normres();
             if k == kd {
                 if numiter < maxiter {
                     dtau = dtau.min(tau - tau0);
@@ -168,33 +323,31 @@ where
                 } else {
                     dtau = tau - tau0;
                 }
-                eig(&fact, &mut lam, &mut e, &mut z, &mut lw)?;
-                let (lam, z) = (&lam[..k], &z[..k * k]);
-                let mut eps = err(sgn, dtau, beta, &fact, lam, z, &mut s1, &mut s2, &mut phis);
+                proc.project()?;
+                let mut eps = proc.err(sgn, dtau, beta)?;
                 let mut omega = eps / (dtau * eta);
                 let mut q = Real::<V>::from_usize(k) / (one + one);
                 while numiter < maxiter && omega >= one && dtau > dtau_min {
                     let (eps_prev, dtau_prev) = (eps, dtau);
                     dtau = (dtau * (gamma / omega).powf(one / (q + one))).max(dtau_min);
-                    eps = err(sgn, dtau, beta, &fact, lam, z, &mut s1, &mut s2, &mut phis);
+                    eps = proc.err(sgn, dtau, beta)?;
                     omega = eps / (dtau * eta);
                     q = zero.max((eps / eps_prev).ln() / (dtau / dtau_prev).ln() - one);
                 }
                 tau0 = if numiter < maxiter { tau0 + dtau } else { tau };
                 totalerr += eps;
-                advance(ws, &mut y, &w, &mut c, &mut phis, sgn, dtau, beta, lam, z)
+                proc.advance(ws, &mut y, &w, sgn, dtau, beta)
                     .map_err(Error::Vector)?;
                 if omega < gamma {
                     dtau *= (gamma / omega).powf(one / (q + one));
                 }
-            } else if normres <= (tau - tau0) * eta || alg.get_eager() {
+            } else if normres <= (tau - tau0) * eta || s.eager {
                 let dt = tau - tau0;
-                eig(&fact, &mut lam, &mut e, &mut z, &mut lw)?;
-                let (lam, z) = (&lam[..k], &z[..k * k]);
-                let eps = err(sgn, dt, beta, &fact, lam, z, &mut s1, &mut s2, &mut phis);
+                proc.project()?;
+                let eps = proc.err(sgn, dt, beta)?;
                 if eps / (dt * eta) < one {
                     totalerr += eps;
-                    advance(ws, &mut y, &w, &mut c, &mut phis, sgn, dt, beta, lam, z)
+                    proc.advance(ws, &mut y, &w, sgn, dt, beta)
                         .map_err(Error::Vector)?;
                     tau0 = tau;
                 }
@@ -207,13 +360,243 @@ where
             if k == kd {
                 continue 'rebuild;
             }
-            fact.expand(ws, op).map_err(Error::Vector)?;
+            proc.expand(ws, op)?;
         }
     }
     info.numiter = numiter;
-    info.numops = fact.numops;
-    info.max_imag = fact.max_imag;
+    info.numops = numops + proc.numops();
+    info.max_imag = proc.max_imag();
     Ok((y, info))
+}
+
+/// Lanczos: `φ` functions of the tridiagonal `T` through its
+/// eigendecomposition `T = Z·Λ·Zᵀ` (stage 1).
+struct LanczosProc<S: Scalar> {
+    fact: Fact<S>,
+    lam: Vec<S::Real>,
+    e: Vec<S::Real>,
+    z: Vec<S::Real>,
+    lw: Work<S::Real, S::Real>,
+    c: Vec<S>,
+    s1: Vec<S>,
+    s2: Vec<S>,
+    phis: Vec<S>,
+}
+
+impl<S: Scalar> Process<S> for LanczosProc<S> {
+    fn new(kd: usize, orth: Orth, p: usize) -> Self {
+        let zero = S::Real::zero();
+        Self {
+            fact: Fact::new(kd, orth),
+            lam: vec![zero; kd],
+            e: vec![zero; kd],
+            z: vec![zero; kd * kd],
+            lw: Work::default(),
+            c: Vec::with_capacity(kd),
+            s1: vec![S::zero(); kd],
+            s2: vec![S::zero(); kd],
+            phis: vec![S::zero(); p + 2],
+        }
+    }
+    fn start<V, B, A>(
+        &mut self,
+        ws: &mut Workspace<V, B>,
+        op: &mut A,
+        scale: S::Real,
+    ) -> Result<(), Error<V::Error>>
+    where
+        V: Vector<Scalar = S>,
+        B: Basis<V>,
+        A: LinearMap<V>,
+    {
+        self.fact.start(ws, op, None, scale).map_err(Error::Vector)
+    }
+    fn expand<V, B, A>(
+        &mut self,
+        ws: &mut Workspace<V, B>,
+        op: &mut A,
+    ) -> Result<(), Error<V::Error>>
+    where
+        V: Vector<Scalar = S>,
+        B: Basis<V>,
+        A: LinearMap<V>,
+    {
+        self.fact.expand(ws, op).map_err(Error::Vector)
+    }
+    fn len(&self) -> usize {
+        self.fact.len()
+    }
+    fn normres(&self) -> S::Real {
+        self.fact.normres()
+    }
+    fn numops(&self) -> usize {
+        self.fact.numops
+    }
+    fn max_imag(&self) -> S::Real {
+        self.fact.max_imag
+    }
+    fn project<E>(&mut self) -> Result<(), Error<E>> {
+        eig(
+            &self.fact,
+            &mut self.lam,
+            &mut self.e,
+            &mut self.z,
+            &mut self.lw,
+        )
+    }
+    fn err<E>(&mut self, sgn: S, dtau: S::Real, beta: S::Real) -> Result<S::Real, Error<E>> {
+        let k = self.fact.len();
+        Ok(err(
+            sgn,
+            dtau,
+            beta,
+            &self.fact,
+            &self.lam[..k],
+            &self.z[..k * k],
+            &mut self.s1,
+            &mut self.s2,
+            &mut self.phis,
+        ))
+    }
+    fn advance<V, B>(
+        &mut self,
+        ws: &Workspace<V, B>,
+        y: &mut V,
+        w: &[V],
+        sgn: S,
+        dtau: S::Real,
+        beta: S::Real,
+    ) -> Result<(), V::Error>
+    where
+        V: Vector<Scalar = S>,
+        B: Basis<V>,
+    {
+        let k = self.fact.len();
+        advance(
+            ws,
+            y,
+            w,
+            &mut self.c,
+            &mut self.phis,
+            sgn,
+            dtau,
+            beta,
+            &self.lam[..k],
+            &self.z[..k * k],
+        )
+    }
+}
+
+/// Arnoldi: `exp` of the augmented matrix
+/// `[[sΔτ·H, e₁, 0], [0, 0, I_p], [0, 0, 0]]` of size `k + p + 1`
+/// (KrylovKit `expintegrator.jl`, `H[1, K+1] = 1`, `H[K+i, K+i+1] = 1`),
+/// whose column `k + p` holds `φ_p(sΔτ·H)e₁` in its first `k` rows and
+/// whose entry `[k, k + p + 1]` is `e_kᵀφ_{p+1}(sΔτ·H)e₁` (1-based).
+struct ArnoldiProc<S: Scalar> {
+    fact: ArnoldiFact<S>,
+    p: usize,
+    aug: Vec<S>,
+    exph: Vec<S>,
+}
+
+impl<S: Scalar> ArnoldiProc<S> {
+    fn dim(&self) -> usize {
+        self.fact.k + self.p + 1
+    }
+}
+
+impl<S: Scalar> Process<S> for ArnoldiProc<S> {
+    fn new(kd: usize, orth: Orth, p: usize) -> Self {
+        Self {
+            fact: ArnoldiFact::new(kd, orth),
+            p,
+            aug: vec![S::zero(); (kd + p + 1) * (kd + p + 1)],
+            exph: Vec::new(),
+        }
+    }
+    fn start<V, B, A>(
+        &mut self,
+        ws: &mut Workspace<V, B>,
+        op: &mut A,
+        scale: S::Real,
+    ) -> Result<(), Error<V::Error>>
+    where
+        V: Vector<Scalar = S>,
+        B: Basis<V>,
+        A: LinearMap<V>,
+    {
+        ws.basis.truncate(0);
+        self.fact.push(ws, op, None, scale)
+    }
+    fn expand<V, B, A>(
+        &mut self,
+        ws: &mut Workspace<V, B>,
+        op: &mut A,
+    ) -> Result<(), Error<V::Error>>
+    where
+        V: Vector<Scalar = S>,
+        B: Basis<V>,
+        A: LinearMap<V>,
+    {
+        let scale = S::Real::one() / self.fact.normres();
+        self.fact.push(ws, op, None, scale)
+    }
+    fn len(&self) -> usize {
+        self.fact.k
+    }
+    fn normres(&self) -> S::Real {
+        self.fact.normres()
+    }
+    fn numops(&self) -> usize {
+        self.fact.numops
+    }
+    fn max_imag(&self) -> S::Real {
+        S::Real::zero()
+    }
+    fn project<E>(&mut self) -> Result<(), Error<E>> {
+        Ok(())
+    }
+    fn err<E>(&mut self, sgn: S, dtau: S::Real, beta: S::Real) -> Result<S::Real, Error<E>> {
+        let (k, p, n, ld) = (self.fact.k, self.p, self.dim(), self.fact.ld);
+        let x = sgn * S::from_real(dtau);
+        let aug = &mut self.aug[..n * n];
+        aug.fill(S::zero());
+        for j in 0..k {
+            for i in 0..k {
+                aug[i + j * n] = self.fact.h[i + j * ld] * x;
+            }
+        }
+        aug[k * n] = S::one();
+        for i in 1..=p {
+            aug[(k + i - 1) + (k + i) * n] = S::one();
+        }
+        self.exph = expm(aug, n).map_err(|()| Error::DenseNoConvergence)?;
+        let e = self.exph[(k - 1) + (k + p) * n];
+        Ok(powu(dtau, p) * beta * self.fact.normres() * e.modulus())
+    }
+    fn advance<V, B>(
+        &mut self,
+        ws: &Workspace<V, B>,
+        y: &mut V,
+        w: &[V],
+        sgn: S,
+        dtau: S::Real,
+        beta: S::Real,
+    ) -> Result<(), V::Error>
+    where
+        V: Vector<Scalar = S>,
+        B: Basis<V>,
+    {
+        let (k, p, n) = (self.fact.k, self.p, self.dim());
+        let x = sgn * S::from_real(dtau);
+        poly(y, w, x)?;
+        let col = (k + p - 1) * n;
+        let corr = self.exph[(k - 1) + (k + p) * n];
+        let a = S::from_real(beta) * powu(x, p);
+        ws.basis
+            .combine_into(&self.exph[col..col + k], y, a, S::one())?;
+        y.axpby(a * corr, &ws.w, S::one())
+    }
 }
 
 /// Forms `w_{j+1} = A·w_j + Σ_{l=0}^{p-j} (sτ₀)ˡ/l!·u_{j+l}` for `j = 1..=p`

@@ -92,24 +92,35 @@ impl Lanczos {
         &self,
         ws: &Workspace<V, B>,
     ) -> Result<Real<V>, Error<E>> {
-        if self.krylovdim == 0 {
-            return Err(Error::InvalidArgument("krylovdim must be at least 1"));
-        }
-        if self.maxiter == 0 {
-            return Err(Error::InvalidArgument("maxiter must be at least 1"));
-        }
-        if self.tol.is_nan() || self.tol < 0.0 {
-            return Err(Error::InvalidArgument("tol must be non-negative"));
-        }
-        let capacity = ws.basis.capacity();
-        if capacity < self.krylovdim {
-            return Err(Error::InsufficientCapacity {
-                needed: self.krylovdim,
-                capacity,
-            });
-        }
-        Ok(Real::<V>::from_f64(self.tol))
+        validate(self.krylovdim, self.maxiter, self.tol, ws)
     }
+}
+
+/// Checks the settings shared by Lanczos and Arnoldi against the workspace
+/// and returns `tol` in the vector's real type.
+pub(crate) fn validate<E, V: Vector, B: Basis<V>>(
+    krylovdim: usize,
+    maxiter: usize,
+    tol: f64,
+    ws: &Workspace<V, B>,
+) -> Result<Real<V>, Error<E>> {
+    if krylovdim == 0 {
+        return Err(Error::InvalidArgument("krylovdim must be at least 1"));
+    }
+    if maxiter == 0 {
+        return Err(Error::InvalidArgument("maxiter must be at least 1"));
+    }
+    if tol.is_nan() || tol < 0.0 {
+        return Err(Error::InvalidArgument("tol must be non-negative"));
+    }
+    let capacity = ws.basis.capacity();
+    if capacity < krylovdim {
+        return Err(Error::InsufficientCapacity {
+            needed: krylovdim,
+            capacity,
+        });
+    }
+    Ok(Real::<V>::from_f64(tol))
 }
 
 /// Tridiagonal Rayleigh quotient `T` with `A·V = V·T + w·e_kᵀ`, plus scalar
