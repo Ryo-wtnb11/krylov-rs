@@ -14,31 +14,99 @@ use num_traits::{Float, One, Zero};
 
 use crate::scalar::{RealScalar, Scalar};
 
-/// `exp(A)` of the `n × n` column-major `a`, or `Err` for non-finite input
-/// or an exactly singular Padé denominator (Julia: `SingularException`).
+/// Caller-owned scratch and result of [`expm_into`], sized once for the
+/// largest `n` of a call so that repeated evaluations (the step-size trials
+/// of the exponential integrator) allocate nothing.
+pub(crate) struct ExpmWork<S: Scalar> {
+    x: Vec<S>,
+    a2: Vec<S>,
+    a4: Vec<S>,
+    a6: Vec<S>,
+    p: Vec<S>,
+    u: Vec<S>,
+    v: Vec<S>,
+    t2: Vec<S>,
+    tmp: Vec<S>,
+    ipiv: Vec<i32>,
+    scale: Vec<S::Real>,
+    perm: Vec<usize>,
+}
+
+impl<S: Scalar> ExpmWork<S> {
+    /// Scratch for matrices up to `nmax × nmax`.
+    pub(crate) fn new(nmax: usize) -> Self {
+        let m = || Vec::with_capacity(nmax * nmax);
+        Self {
+            x: m(),
+            a2: m(),
+            a4: m(),
+            a6: m(),
+            p: m(),
+            u: m(),
+            v: m(),
+            t2: m(),
+            tmp: m(),
+            ipiv: Vec::with_capacity(nmax),
+            scale: Vec::with_capacity(nmax),
+            perm: Vec::with_capacity(nmax),
+        }
+    }
+
+    /// The result of the last successful [`expm_into`] (`n × n`).
+    pub(crate) fn result(&self) -> &[S] {
+        &self.x
+    }
+
+    fn size(&mut self, n: usize) {
+        for b in [
+            &mut self.x,
+            &mut self.a2,
+            &mut self.a4,
+            &mut self.a6,
+            &mut self.p,
+            &mut self.u,
+            &mut self.v,
+            &mut self.t2,
+            &mut self.tmp,
+        ] {
+            b.clear();
+            b.resize(n * n, S::zero());
+        }
+        self.ipiv.clear();
+        self.ipiv.resize(n, 0);
+        self.scale.clear();
+        self.scale.resize(n, S::Real::one());
+        self.perm.clear();
+        self.perm.extend(0..n);
+    }
+}
+
+/// `exp(A)` of the `n × n` column-major `a` into `w.result()`; `a` is used as
+/// scratch (balanced and scaled in place). `Err` for non-finite input or an
+/// exactly singular Padé denominator (Julia: `SingularException`).
 ///
 /// Julia's `exp!` diverts Hermitian input to an eigendecomposition; that
 /// branch is not ported because its consumer, the augmented matrix of the
 /// exponential integrator, is never Hermitian.
-pub(crate) fn expm<S: Scalar>(a: &[S], n: usize) -> Result<Vec<S>, ()> {
-    expm_impl(a, n).map(|(x, _, _)| x)
+pub(crate) fn expm_into<S: Scalar>(a: &mut [S], n: usize, w: &mut ExpmWork<S>) -> Result<(), ()> {
+    expm_impl(a, n, w).map(|_| ())
 }
 
-/// [`expm`] that also returns the Padé degree and the squaring count.
-fn expm_impl<S: Scalar>(a: &[S], n: usize) -> Result<(Vec<S>, usize, usize), ()> {
+/// [`expm_into`] that also returns the Padé degree and the squaring count.
+fn expm_impl<S: Scalar>(a: &mut [S], n: usize, w: &mut ExpmWork<S>) -> Result<(usize, usize), ()> {
     assert_eq!(a.len(), n * n, "expm: shape mismatch");
     if !a.iter().all(|x| x.all_finite()) {
         return Err(());
     }
+    w.size(n);
     if n == 0 {
-        return Ok((Vec::new(), 0, 0));
+        return Ok((0, 0));
     }
-    let mut a = a.to_vec();
-    let bal = Balance::new(&mut a, n)?;
-    let na = opnorm1(&a, n);
+    let bal = Balance::new(a, n, &mut w.scale, &mut w.perm)?;
+    let na = opnorm1(a, n);
     // Julia compares `nA::T` with Float64 literals, i.e. in f64.
     let na64 = num_traits::ToPrimitive::to_f64(&na).unwrap_or(f64::NAN);
-    let (mut x, degree, si) = if na64 <= 2.1 {
+    let (degree, si) = if na64 <= 2.1 {
         let c: &[f64] = if na64 > 0.95 {
             &[
                 17643225600.,
@@ -61,24 +129,30 @@ fn expm_impl<S: Scalar>(a: &[S], n: usize) -> Result<(Vec<S>, usize, usize), ()>
         } else {
             &[120., 60., 12., 1.]
         };
-        let c: Vec<S> = c.iter().map(|&v| real::<S>(v)).collect();
-        let a2 = matmul(&a, &a, n);
+        let (cs, len) = (c, c.len());
+        let c = |i: usize| real::<S>(cs[i]);
+        matmul_into(a, a, n, &mut w.a2);
         // U = C[2]·I + C[4]·A², V = C[1]·I + C[3]·A², then higher even
         // powers; U ← A·U; X = (V - U) \ (V + U).
-        let mut p = a2.clone();
-        let mut u: Vec<S> = p.iter().map(|&v| c[3] * v).collect();
-        let mut v: Vec<S> = p.iter().map(|&v| c[2] * v).collect();
-        add_identity(&mut u, n, c[1]);
-        add_identity(&mut v, n, c[0]);
-        for k in 2..c.len() / 2 {
-            p = matmul(&p, &a2, n);
-            for ((ui, vi), &pi) in u.iter_mut().zip(v.iter_mut()).zip(&p) {
-                *ui += c[2 * k + 1] * pi;
-                *vi += c[2 * k] * pi;
+        w.p.copy_from_slice(&w.a2);
+        for ((ui, vi), &pi) in w.u.iter_mut().zip(w.v.iter_mut()).zip(&w.p) {
+            *ui = c(3) * pi;
+            *vi = c(2) * pi;
+        }
+        add_identity(&mut w.u, n, c(1));
+        add_identity(&mut w.v, n, c(0));
+        for k in 2..len / 2 {
+            matmul_into(&w.p, &w.a2, n, &mut w.tmp);
+            core::mem::swap(&mut w.p, &mut w.tmp);
+            for ((ui, vi), &pi) in w.u.iter_mut().zip(w.v.iter_mut()).zip(&w.p) {
+                *ui += c(2 * k + 1) * pi;
+                *vi += c(2 * k) * pi;
             }
         }
-        let u = matmul(&a, &u, n);
-        (pade_solve(&u, &v, n)?, c.len() - 1, 0)
+        matmul_into(a, &w.u, n, &mut w.tmp);
+        core::mem::swap(&mut w.u, &mut w.tmp);
+        pade_solve(w, n)?;
+        (len - 1, 0)
     } else {
         // si: number of exact halvings of nA/5.4 down to <= 1. Julia uses
         // ceil(log2(nA/5.4)); the two can differ where libm's log2 rounds
@@ -96,11 +170,11 @@ fn expm_impl<S: Scalar>(a: &[S], n: usize) -> Result<(Vec<S>, usize, usize), ()>
             factor *= real_r::<S::Real>(0.5);
         }
         if si > 0 {
-            for x in &mut a {
+            for x in a.iter_mut() {
                 *x = x.mul_real(factor);
             }
         }
-        let cc: Vec<S> = [
+        const CC: [f64; 14] = [
             64764752532480000.,
             32382376266240000.,
             7771770303897600.,
@@ -115,45 +189,42 @@ fn expm_impl<S: Scalar>(a: &[S], n: usize) -> Result<(Vec<S>, usize, usize), ()>
             16380.,
             182.,
             1.,
-        ]
-        .iter()
-        .map(|&v| real::<S>(v))
-        .collect();
-        let a2 = matmul(&a, &a, n);
-        let a4 = matmul(&a2, &a2, n);
-        let a6 = matmul(&a2, &a4, n);
-        let comb = |c6: S, c4: S, c2: S| -> Vec<S> {
-            a6.iter()
-                .zip(&a4)
-                .zip(&a2)
-                .map(|((&x6, &x4), &x2)| c6 * x6 + c4 * x4 + c2 * x2)
-                .collect()
+        ];
+        let cc = |i: usize| real::<S>(CC[i]);
+        matmul_into(a, a, n, &mut w.a2);
+        matmul_into(&w.a2, &w.a2, n, &mut w.a4);
+        matmul_into(&w.a2, &w.a4, n, &mut w.a6);
+        let comb = |out: &mut [S], a6: &[S], a4: &[S], a2: &[S], c6: S, c4: S, c2: S| {
+            for (o, ((&x6, &x4), &x2)) in out.iter_mut().zip(a6.iter().zip(a4).zip(a2)) {
+                *o = c6 * x6 + c4 * x4 + c2 * x2;
+            }
         };
         // U = A·(A6·(c14 A6 + c12 A4 + c10 A2) + c8 A6 + c6 A4 + c4 A2 + c2 I)
-        let t1 = comb(cc[13], cc[11], cc[9]);
-        let mut t2 = comb(cc[7], cc[5], cc[3]);
-        add_identity(&mut t2, n, cc[1]);
-        let mut u0 = matmul(&a6, &t1, n);
-        for (x, y) in u0.iter_mut().zip(&t2) {
+        comb(&mut w.p, &w.a6, &w.a4, &w.a2, cc(13), cc(11), cc(9));
+        comb(&mut w.t2, &w.a6, &w.a4, &w.a2, cc(7), cc(5), cc(3));
+        add_identity(&mut w.t2, n, cc(1));
+        matmul_into(&w.a6, &w.p, n, &mut w.tmp);
+        for (x, y) in w.tmp.iter_mut().zip(&w.t2) {
             *x += *y;
         }
-        let u = matmul(&a, &u0, n);
+        matmul_into(a, &w.tmp, n, &mut w.u);
         // V = A6·(c13 A6 + c11 A4 + c9 A2) + c7 A6 + c5 A4 + c3 A2 + c1 I
-        let t1 = comb(cc[12], cc[10], cc[8]);
-        let mut t2 = comb(cc[6], cc[4], cc[2]);
-        add_identity(&mut t2, n, cc[0]);
-        let mut v = matmul(&a6, &t1, n);
-        for (x, y) in v.iter_mut().zip(&t2) {
+        comb(&mut w.p, &w.a6, &w.a4, &w.a2, cc(12), cc(10), cc(8));
+        comb(&mut w.t2, &w.a6, &w.a4, &w.a2, cc(6), cc(4), cc(2));
+        add_identity(&mut w.t2, n, cc(0));
+        matmul_into(&w.a6, &w.p, n, &mut w.v);
+        for (x, y) in w.v.iter_mut().zip(&w.t2) {
             *x += *y;
         }
-        let mut x = pade_solve(&u, &v, n)?;
+        pade_solve(w, n)?;
         for _ in 0..si {
-            x = matmul(&x, &x, n);
+            matmul_into(&w.x, &w.x, n, &mut w.tmp);
+            core::mem::swap(&mut w.x, &mut w.tmp);
         }
-        (x, 13, si)
+        (13, si)
     };
-    bal.undo(&mut x, n);
-    Ok((x, degree, si))
+    bal.undo(&mut w.x, n, &w.scale, &w.perm);
+    Ok((degree, si))
 }
 
 fn real<S: Scalar>(v: f64) -> S {
@@ -170,9 +241,9 @@ fn add_identity<S: Scalar>(m: &mut [S], n: usize, c: S) {
     }
 }
 
-/// Column-major `a·b`.
-fn matmul<S: Scalar>(a: &[S], b: &[S], n: usize) -> Vec<S> {
-    let mut c = vec![S::zero(); n * n];
+/// Column-major `c ← a·b`.
+fn matmul_into<S: Scalar>(a: &[S], b: &[S], n: usize, c: &mut [S]) {
+    c.fill(S::zero());
     for j in 0..n {
         for k in 0..n {
             let bkj = b[k + j * n];
@@ -184,7 +255,6 @@ fn matmul<S: Scalar>(a: &[S], b: &[S], n: usize) -> Vec<S> {
             }
         }
     }
-    c
 }
 
 /// `‖A‖₁`, the largest column sum of moduli.
@@ -200,30 +270,32 @@ fn opnorm1<S: Scalar>(a: &[S], n: usize) -> S::Real {
     m
 }
 
-/// `(V - U) \ (V + U)`.
-fn pade_solve<S: Scalar>(u: &[S], v: &[S], n: usize) -> Result<Vec<S>, ()> {
-    let mut den: Vec<S> = v.iter().zip(u).map(|(&v, &u)| v - u).collect();
-    let mut num: Vec<S> = v.iter().zip(u).map(|(&v, &u)| v + u).collect();
-    let mut ipiv = vec![0i32; n];
-    S::gesv(&mut den, &mut num, n, n, &mut ipiv)?;
-    Ok(num)
+/// `x ← (V - U) \ (V + U)`, with `tmp` as the LU scratch.
+fn pade_solve<S: Scalar>(w: &mut ExpmWork<S>, n: usize) -> Result<(), ()> {
+    for (((d, x), &v), &u) in w.tmp.iter_mut().zip(w.x.iter_mut()).zip(&w.v).zip(&w.u) {
+        *d = v - u;
+        *x = v + u;
+    }
+    S::gesv(&mut w.tmp, &mut w.x, n, n, &mut w.ipiv)
 }
 
-/// Balancing `D⁻¹·Pᵀ·A·P·D` from `xGEBAL('B')`, kept to undo it.
-struct Balance<R> {
+/// Balancing `D⁻¹·Pᵀ·A·P·D` from `xGEBAL('B')`, kept to undo it; the factors
+/// and the permutation live in the caller's `scale` and `perm`.
+struct Balance {
     ilo: usize,
     ihi: usize,
-    scale: Vec<R>,
-    perm: Vec<usize>,
 }
 
-impl<R: RealScalar> Balance<R> {
+impl Balance {
     /// LAPACK `xGEBAL('B')` on `a`; the permutation indices LAPACK stores in
     /// `scale` outside `ilo..=ihi` go to `perm` (0-based).
-    fn new<S: Scalar<Real = R>>(a: &mut [S], n: usize) -> Result<Self, ()> {
-        let mut scale = vec![R::one(); n];
-        let (ilo, ihi) = S::gebal(a, n, &mut scale)?;
-        let mut perm: Vec<usize> = (0..n).collect();
+    fn new<S: Scalar>(
+        a: &mut [S],
+        n: usize,
+        scale: &mut [S::Real],
+        perm: &mut [usize],
+    ) -> Result<Self, ()> {
+        let (ilo, ihi) = S::gebal(a, n, scale)?;
         for (j, p) in perm.iter_mut().enumerate() {
             if j < ilo || j > ihi {
                 let idx = num_traits::ToPrimitive::to_usize(&scale[j]).ok_or(())?;
@@ -233,22 +305,17 @@ impl<R: RealScalar> Balance<R> {
                 *p = idx - 1;
             }
         }
-        Ok(Self {
-            ilo,
-            ihi,
-            scale,
-            perm,
-        })
+        Ok(Self { ilo, ihi })
     }
 
     /// Julia `exp!`: `X ← D·X·D⁻¹`, then the lower permutations in reverse
     /// and the upper ones in forward order.
-    fn undo<S: Scalar<Real = R>>(&self, x: &mut [S], n: usize) {
+    fn undo<S: Scalar>(&self, x: &mut [S], n: usize, scale: &[S::Real], perm: &[usize]) {
         for j in self.ilo..=self.ihi {
             // Real factors scale component-wise, as Julia's `X[j,i] *= scj`
             // does, so an overflowed `Inf + 0i` entry stays `Inf + 0i`. The
             // GEBAL factors are powers of two, so 1/scale is exact.
-            let (sc, inv) = (self.scale[j], R::one() / self.scale[j]);
+            let (sc, inv) = (scale[j], S::Real::one() / scale[j]);
             for i in 0..n {
                 x[j + i * n] = x[j + i * n].mul_real(sc);
             }
@@ -264,11 +331,11 @@ impl<R: RealScalar> Balance<R> {
                 x.swap(i + k * n, j + k * n);
             }
         };
-        for j in (0..self.ilo).rev() {
-            rcswap(x, j, self.perm[j]);
+        for (j, &pj) in perm[..self.ilo].iter().enumerate().rev() {
+            rcswap(x, j, pj);
         }
-        for j in self.ihi + 1..n {
-            rcswap(x, j, self.perm[j]);
+        for (j, &pj) in perm.iter().enumerate().skip(self.ihi + 1) {
+            rcswap(x, j, pj);
         }
     }
 }
@@ -296,13 +363,41 @@ mod tests {
     fn ours(a: &DMatrix<Complex64>, complex: bool) -> (DMatrix<Complex64>, usize, usize) {
         let n = a.nrows();
         if complex {
-            let (x, d, s) = expm_impl(a.as_slice(), n).unwrap();
-            (DMatrix::from_column_slice(n, n, &x), d, s)
+            let mut w = ExpmWork::new(n);
+            let (d, s) = expm_impl(&mut a.as_slice().to_vec(), n, &mut w).unwrap();
+            (DMatrix::from_column_slice(n, n, w.result()), d, s)
         } else {
             let ar: Vec<f64> = a.iter().map(|z| z.re).collect();
-            let (x, d, s) = expm_impl(&ar, n).unwrap();
-            let x: Vec<Complex64> = x.iter().map(|&v| Complex64::new(v, 0.0)).collect();
+            let mut w = ExpmWork::new(n);
+            let (d, s) = expm_impl(&mut ar.clone(), n, &mut w).unwrap();
+            let x: Vec<Complex64> = w.result().iter().map(|&v| Complex64::new(v, 0.0)).collect();
             (DMatrix::from_column_slice(n, n, &x), d, s)
+        }
+    }
+
+    /// `exp(A)` with a fresh workspace.
+    fn expm<S: Scalar>(a: &[S], n: usize) -> Result<Vec<S>, ()> {
+        let mut w = ExpmWork::new(n);
+        expm_into(&mut a.to_vec(), n, &mut w)?;
+        Ok(w.result().to_vec())
+    }
+
+    #[test]
+    fn reused_workspace_matches_a_fresh_one() {
+        // Sizes up and down and both branches through one workspace: the
+        // result must not depend on what the workspace held before.
+        let mut g = 31u64;
+        let mut w = ExpmWork::new(9);
+        for (n, scale) in [(9, 0.1), (3, 4.0), (9, 30.0), (1, 0.5), (6, 1.0)] {
+            for complex in [false, true] {
+                let a: Vec<Complex64> = random(&mut g, n, complex)
+                    .map(|z| z * scale)
+                    .iter()
+                    .copied()
+                    .collect();
+                expm_into(&mut a.clone(), n, &mut w).unwrap();
+                assert_eq!(w.result(), &expm(&a, n).unwrap()[..], "{n} {scale}");
+            }
         }
     }
 
@@ -353,7 +448,7 @@ mod tests {
                     base.clone()
                 };
                 let mut tmp: Vec<Complex64> = a0.iter().copied().collect();
-                Balance::new(&mut tmp, n).unwrap();
+                Balance::new(&mut tmp, n, &mut vec![1.0; n], &mut vec![0; n]).unwrap();
                 let s = target / opnorm1(&tmp, n);
                 let a = &a0 * Complex64::new(s, 0.0);
                 let (x, d, si) = ours(&a, complex);
@@ -512,7 +607,7 @@ mod tests {
         let p = [3, 0, 5, 1, 4, 2];
         let pt = DMatrix::from_fn(n, n, |i, j| t[(p[i], p[j])]);
         let mut tmp: Vec<Complex64> = pt.iter().copied().collect();
-        let bal = Balance::new(&mut tmp, n).unwrap();
+        let bal = Balance::new(&mut tmp, n, &mut vec![1.0; n], &mut vec![0; n]).unwrap();
         assert!(bal.ilo > 0 || bal.ihi < n - 1, "permutation exercised");
         let (x, _, _) = ours(&pt, false);
         assert!(rel(&x, &taylor(&pt)) < 1e-13);

@@ -121,7 +121,9 @@ krylov's own tests use Accelerate on macOS and the system OpenBLAS elsewhere.
   sealed `KrylovProcess` trait). The step controller is shared; Arnoldi takes
   the dense exponential of KrylovKit's `(k+p+1)²` augmented Hessenberg
   matrix (a port of Julia 1.11 `exp!` on LAPACK `gebal`/`gesv`) per
-  step-size trial. A call allocates the same `p` vectors as with `Lanczos`.
+  step-size trial. A call allocates the same `p` vectors as with `Lanczos`,
+  and the dense scratch once, for the largest `(k+p+1)²` (KrylovKit allocates
+  it per trial).
 
 ## Deviations from KrylovKit
 
