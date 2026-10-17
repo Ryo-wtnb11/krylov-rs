@@ -258,6 +258,34 @@ pub fn dense_expv(a: &DMatrix<Complex64>, t: Complex64, x: &[Complex64]) -> Vec<
     y.iter().copied().collect()
 }
 
+/// `Σ_j tʲ φ_j(tA) u_j` as the first `n` entries of `exp(t·M)·[u₀; e₁]` with
+/// `M = [[A, U], [0, N]]`, `U = [u₁ … u_p]` and `N` the lower shift: the
+/// augmented state `[x; c]` with `c_j(t) = t^{j-1}/(j-1)!` solves
+/// `ẋ = A·x + Σ_j c_j·u_j`.
+pub fn dense_phi_comb(
+    a: &DMatrix<Complex64>,
+    t: Complex64,
+    u: &[Vec<Complex64>],
+) -> Vec<Complex64> {
+    let n = a.nrows();
+    let p = (u.len() - 1).max(1);
+    let mut m = DMatrix::<Complex64>::zeros(n + p, n + p);
+    m.view_mut((0, 0), (n, n)).copy_from(a);
+    for (j, uj) in u.iter().enumerate().skip(1) {
+        for i in 0..n {
+            m[(i, n + j - 1)] = uj[i];
+        }
+    }
+    for j in 1..p {
+        m[(n + j, n + j - 1)] = Complex64::new(1.0, 0.0);
+    }
+    let mut z0 = nalgebra::DVector::<Complex64>::zeros(n + p);
+    z0.rows_mut(0, n).copy_from_slice(&u[0]);
+    z0[n] = Complex64::new(1.0, 0.0);
+    let y = (m * t).exp() * z0;
+    y.rows(0, n).iter().copied().collect()
+}
+
 pub fn norm(x: &[Complex64]) -> f64 {
     x.iter().map(|z| z.norm_sqr()).sum::<f64>().sqrt()
 }
