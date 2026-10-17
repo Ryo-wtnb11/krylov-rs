@@ -9,13 +9,18 @@ use crate::scalar::sealed::RealOps as _;
 /// `φ_{j+1}(x) = (φ_j(x) - 1/j!)/x`: the only two entries expintegrator reads.
 ///
 /// For `|x| < p + 1` both come from the Taylor series
-/// `φ_j(x) = Σ_n xⁿ/(n+j)!`, whose terms then decrease from the first, so
-/// the sum cannot cancel badly. Otherwise the recurrence runs up from
-/// `exp(x)`; with `|x| ≥ p + 1 > j` each step `φ_j - 1/j!` keeps most of
-/// `φ_j`. A fixed radius 1 instead lost about `j!` ulps of `φ_j` just above
-/// it (#4), and a wider series radius loses digits to cancellation of
-/// terms near `e^{|x|}`. Both entries stay within about 10 ulps of a
-/// 1024-bit oracle for `p ≤ 8` (`tests/fixtures/phi`).
+/// `φ_j(x) = Σ_n xⁿ/(n+j)!`, whose terms then decrease from the first; its
+/// cancellation factor `Σ|terms|/|φ_p(x)| = φ_p(|x|)/|φ_p(x)|` is largest
+/// as `x → -(p+1)` and stays below about 12 for `p ≤ 12`. Otherwise the
+/// recurrence runs up from `exp(x)`; with `|x| ≥ p + 1 > j` each step
+/// `φ_j - 1/j!` keeps most of `φ_j`. The error is a few ulps times the
+/// conditioning of `φ_j` at `x` (`tests/fixtures/phi`). A fixed radius 1
+/// instead lost about `j!` ulps of `φ_j` just above it (#4), and a wider
+/// series radius loses digits to cancellation of terms near `e^{|x|}`.
+///
+/// When `e^{Re x}` overflows the result is infinite, even where `φ_j(x)` (about
+/// `e^x/x^j`) would be representable; expintegrator then rejects the step
+/// as non-finite (#13) and takes a shorter one.
 pub(crate) fn phi_pair<S: Scalar>(x: S, p: usize) -> (S, S) {
     // An exactly real argument (real t on a Hermitian map) is evaluated in
     // real arithmetic: complex `exp`, products and quotients turn an
