@@ -104,10 +104,43 @@ fn random_complex_hermitian_cgs2_and_mgs2() {
     }
 }
 
+/// Every converged value is an eigenvalue of the known spectrum, returned no
+/// more often than its multiplicity, with orthonormal eigenvectors whose
+/// residuals are small.
+fn check_against_spectrum(
+    a: &DMatrix<Complex64>,
+    eigs: &[f64],
+    vals: &[f64],
+    vecs: &[DVec<Complex64>],
+    converged: usize,
+    tol: f64,
+) {
+    for &v in &vals[..converged] {
+        let mult = eigs.iter().filter(|&&e| (e - v).abs() < 1e-6).count();
+        let returned = vals[..converged]
+            .iter()
+            .filter(|&&w| (w - v).abs() < 1e-6)
+            .count();
+        assert!(mult >= 1, "{v} is not an eigenvalue");
+        assert!(
+            returned <= mult,
+            "{v} returned {returned} times, multiplicity {mult}"
+        );
+        assert!(eigs.iter().any(|&e| (e - v).abs() < tol));
+    }
+    for (&v, x) in vals[..converged].iter().zip(vecs) {
+        assert!(residual(a, v, &to_c64(x)) < tol);
+    }
+    assert!(orthogonality_error(&vecs[..converged]) < 1e-10);
+}
+
 #[test]
 fn degenerate_and_clustered_spectra() {
     let mut g = SplitMix(13);
-    // Degenerate: a single start vector sees each eigenspace once.
+    // Degenerate lowest level (multiplicity 3). In exact arithmetic a single
+    // start vector sees each eigenspace once; in floating point, rounding
+    // noise from orthogonalization can seed further copies (KrylovKit
+    // documents the same). Only platform-independent properties are asserted.
     let mut eigs: Vec<f64> = (0..80).map(|i| i as f64 * 0.1).collect();
     eigs[1] = eigs[0];
     eigs[2] = eigs[0];
@@ -116,7 +149,7 @@ fn degenerate_and_clustered_spectra() {
     let alg = Lanczos::new().krylovdim(20).tol(1e-10);
     let x = to_dvec::<Complex64>(&x0);
     let mut ws = Workspace::with_capacity(&x, 20).unwrap();
-    let (vals, _, info) = eigsolve(
+    let (vals, vecs, info) = eigsolve(
         &mut DenseOp::new(&a),
         &x,
         2,
@@ -126,10 +159,18 @@ fn degenerate_and_clustered_spectra() {
     )
     .unwrap();
     assert!(info.converged >= 2);
-    assert!((vals[0] - 0.0).abs() < 1e-9);
+    check_against_spectrum(&a, &eigs, &vals, &vecs, info.converged, 1e-9);
+    // The two lowest distinct levels are found, in order.
+    let mut distinct: Vec<f64> = Vec::new();
+    for &v in &vals[..info.converged] {
+        if distinct.last().is_none_or(|&d| (v - d).abs() > 1e-6) {
+            distinct.push(v);
+        }
+    }
+    assert!(distinct.len() >= 2, "{vals:?}");
     assert!(
-        (vals[1] - 0.3).abs() < 1e-9,
-        "degenerate copy must not appear: {vals:?}"
+        distinct[0].abs() < 1e-9 && (distinct[1] - 0.3).abs() < 1e-9,
+        "{vals:?}"
     );
 
     // Clustered at the bottom of the spectrum.
