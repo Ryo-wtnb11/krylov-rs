@@ -3,21 +3,10 @@
 use num_traits::{One, Zero};
 
 use crate::error::Error;
+use crate::orth::{Orth, orthogonalize};
 use crate::scalar::sealed::RealOps as _;
 use crate::scalar::{Real, Scalar};
 use crate::traits::{Basis, LinearMap, Vector, Workspace};
-
-/// Orthogonalization scheme for new Krylov vectors.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum Orth {
-    /// Classical Gram–Schmidt with one full reorthogonalization: two
-    /// [`Basis::project`] calls and one norm per iteration.
-    #[default]
-    Cgs2,
-    /// Modified Gram–Schmidt with one full reorthogonalization (KrylovKit's
-    /// default): `2·len` sequential inner products per iteration.
-    Mgs2,
-}
 
 /// Lanczos algorithm settings for Hermitian (real symmetric or complex
 /// Hermitian) linear maps.
@@ -211,26 +200,7 @@ impl<S: Scalar> Fact<S> {
         self.scratch.clear();
         self.scratch.resize(k, S::zero());
         let (basis, w, h, s) = (&ws.basis, &mut ws.w, &mut self.h[..], &mut self.scratch[..]);
-        match self.orth {
-            Orth::Cgs2 => {
-                basis.project(w, h)?;
-                basis.combine_into(h, w, -S::one(), S::one())?;
-                basis.project(w, s)?;
-                basis.combine_into(s, w, -S::one(), S::one())?;
-                for (hi, si) in h.iter_mut().zip(s.iter()) {
-                    *hi += *si;
-                }
-            }
-            Orth::Mgs2 => {
-                for _ in 0..2 {
-                    for (i, hi) in h.iter_mut().enumerate() {
-                        let c = basis.inner_at(i, w, s)?;
-                        basis.axpy_at(i, -c, w, s)?;
-                        *hi += c;
-                    }
-                }
-            }
-        }
+        orthogonalize(basis, w, h, s, self.orth)?;
         let alpha = h[k - 1];
         let im = num_traits::Float::abs(alpha.im());
         if im > self.max_imag {

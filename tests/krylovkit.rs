@@ -1,8 +1,9 @@
 //! Comparison with KrylovKit.jl on identical inputs.
 //!
-//! `fixtures/krylovkit/fixtures.txt` is produced by
-//! `fixtures/krylovkit/generate.jl` (KrylovKit pinned in its Manifest; the
-//! version and tree hash are on the first line of the fixture file). Both
+//! `fixtures/krylovkit/<family>.txt` is produced by
+//! `fixtures/krylovkit/generate.jl` from `<family>.jl` (KrylovKit pinned in
+//! its Manifest; the version and tree hash are on the first line of each
+//! fixture file). Both
 //! sides use CGS2, the same matrices, start vectors and options.
 
 mod common;
@@ -13,12 +14,19 @@ use common::*;
 use krylov::{Lanczos, Which, Workspace, eigsolve, exponentiate};
 use num_complex::Complex64;
 
-const FIXTURES: &str = include_str!("fixtures/krylovkit/fixtures.txt");
+const FIXTURES: [&str; 2] = [
+    include_str!("fixtures/krylovkit/eigsolve.txt"),
+    include_str!("fixtures/krylovkit/exponentiate.txt"),
+];
 
 fn cases() -> Vec<HashMap<String, String>> {
     let mut out = Vec::new();
     let mut cur = HashMap::new();
-    for line in FIXTURES.lines().filter(|l| !l.starts_with('#')) {
+    for line in FIXTURES
+        .iter()
+        .flat_map(|f| f.lines())
+        .filter(|l| !l.starts_with('#'))
+    {
         if line == "end" {
             out.push(std::mem::take(&mut cur));
             continue;

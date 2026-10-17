@@ -62,6 +62,7 @@ mod eigsolve;
 mod error;
 mod exponentiate;
 mod lanczos;
+mod orth;
 mod scalar;
 mod traits;
 
@@ -69,6 +70,7 @@ pub use basis::VecBasis;
 pub use eigsolve::{ConvergenceInfo, Which, eigsolve};
 pub use error::Error;
 pub use exponentiate::{ExpInfo, exponentiate};
-pub use lanczos::{Lanczos, Orth};
+pub use lanczos::Lanczos;
+pub use orth::Orth;
 pub use scalar::{MatRef, Real, RealScalar, Scalar};
 pub use traits::{Basis, LinearMap, Vector, Workspace};
