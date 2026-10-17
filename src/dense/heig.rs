@@ -1,91 +1,10 @@
-//! Small dense Hermitian eigenproblems and block thick-restart restoration.
+//! Block thick-restart restoration (the dense Hermitian eigenproblem itself
+//! is LAPACK `xSYEVR`/`xHEEVR` through `Ops::heig`).
 
 use num_traits::{Float, Zero};
 
 use super::householder;
 use crate::scalar::Scalar;
-
-/// Reduces the `n × n` Hermitian `a` (column-major, full storage) to real
-/// symmetric tridiagonal form `T = Q·A·Qᴴ` by Householder similarities.
-///
-/// On return `d[..n]` and `e[..n-1]` hold the diagonal and the (non-negative)
-/// off-diagonal of `T`; the reflectors stay below the subdiagonal of `a`
-/// with their scales in `taus[..n-1]`, for [`apply_qh`]. `x` is scratch of
-/// length `n`. With [`tridiag_eigh`](super::tridiag_eigh) this replaces
-/// LAPACK's `eigen(Hermitian)` used by KrylovKit.
-pub(crate) fn hermitian_tridiag<S: Scalar>(
-    a: &mut [S],
-    n: usize,
-    d: &mut [S::Real],
-    e: &mut [S::Real],
-    taus: &mut [S],
-    x: &mut [S],
-) {
-    for j in 0..n.saturating_sub(1) {
-        let m = n - j - 1;
-        let v = &mut x[..m];
-        v.copy_from_slice(&a[j * n + j + 1..(j + 1) * n]);
-        let mut nu = S::Real::zero();
-        for vi in v.iter() {
-            nu += vi.re() * vi.re() + vi.im() * vi.im();
-        }
-        e[j] = nu.sqrt();
-        let beta = householder(v);
-        taus[j] = beta.unwrap_or_else(S::zero);
-        if let Some(b) = beta {
-            // A ← H·A·Hᴴ on the trailing block, H = I - β·v·vᴴ on rows j+1..n.
-            for c in j + 1..n {
-                let col = &mut a[c * n + j + 1..(c + 1) * n];
-                let mut mu = S::zero();
-                for (vi, ai) in v.iter().zip(col.iter()) {
-                    mu += vi.conj() * *ai;
-                }
-                mu *= b;
-                for (vi, ai) in v.iter().zip(col.iter_mut()) {
-                    *ai -= mu * *vi;
-                }
-            }
-            for r in j + 1..n {
-                let mut w = S::zero();
-                for (t, vi) in v.iter().enumerate() {
-                    w += a[(j + 1 + t) * n + r] * *vi;
-                }
-                w *= b.conj();
-                for (t, vi) in v.iter().enumerate() {
-                    a[(j + 1 + t) * n + r] -= w * vi.conj();
-                }
-            }
-        }
-        a[j * n + j + 2..(j + 1) * n].copy_from_slice(&v[1..]);
-    }
-    for j in 0..n {
-        d[j] = a[j * n + j].re();
-    }
-}
-
-/// `y ← Qᴴ·y` for the `Q` of [`hermitian_tridiag`] (`y` is `n × ncols`,
-/// column-major), turning eigenvectors of `T` into eigenvectors of `A`.
-pub(crate) fn apply_qh<S: Scalar>(a: &[S], n: usize, taus: &[S], y: &mut [S]) {
-    for j in (0..n.saturating_sub(1)).rev() {
-        let b = taus[j].conj();
-        if b == S::zero() {
-            continue;
-        }
-        let tail = &a[j * n + j + 2..(j + 1) * n]; // v[1..]; v[0] = 1
-        for col in y.chunks_exact_mut(n) {
-            let col = &mut col[j + 1..];
-            let mut mu = col[0];
-            for (vi, ci) in tail.iter().zip(&col[1..]) {
-                mu += vi.conj() * *ci;
-            }
-            mu *= b;
-            col[0] -= mu;
-            for (vi, ci) in tail.iter().zip(col[1..].iter_mut()) {
-                *ci -= mu * *vi;
-            }
-        }
-    }
-}
 
 /// Restores block-band form after a block thick restart.
 ///
@@ -159,7 +78,8 @@ pub(crate) fn arrowhead_to_band<S: Scalar>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dense::tridiag_eigh;
+    use crate::dense::Work;
+    use crate::scalar::sealed::Ops;
     use nalgebra::DMatrix;
     use num_complex::Complex64 as C;
 
@@ -199,13 +119,9 @@ mod tests {
                 let am = &q * dm * q.adjoint();
                 let am = (&am + am.adjoint()) * C::new(0.5, 0.0);
                 let mut a: Vec<C> = am.iter().copied().collect();
-                let (mut d, mut e, mut z) = (vec![0.0; n], vec![0.0; n], vec![0.0; n * n]);
-                let (mut taus, mut x) = (vec![C::new(0.0, 0.0); n], vec![C::new(0.0, 0.0); n]);
-                hermitian_tridiag(&mut a, n, &mut d, &mut e, &mut taus, &mut x);
-                assert!(e[..n - 1].iter().all(|&v| v >= 0.0));
-                tridiag_eigh(&mut d, &mut e, &mut z).unwrap();
-                let mut u: Vec<C> = z.iter().map(|&v| C::new(v, 0.0)).collect();
-                apply_qh(&a, n, &taus, &mut u);
+                let mut d = vec![0.0; n];
+                let mut u = vec![C::new(0.0, 0.0); n * n];
+                C::heig(&mut a, n, &mut d, &mut u, &mut Work::default()).unwrap();
                 let um = DMatrix::from_column_slice(n, n, &u);
                 let mut exact = eigs.clone();
                 exact.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -244,10 +160,9 @@ mod tests {
             .map(|&z| to(z * scale))
             .collect();
         let zr = <S::Real as num_traits::Zero>::zero();
-        let (mut d, mut e, mut z) = (vec![zr; n], vec![zr; n], vec![zr; n * n]);
-        let (mut taus, mut x) = (vec![S::zero(); n], vec![S::zero(); n]);
-        hermitian_tridiag(&mut a, n, &mut d, &mut e, &mut taus, &mut x);
-        tridiag_eigh(&mut d, &mut e, &mut z).unwrap();
+        let mut d = vec![zr; n];
+        let mut z = vec![S::zero(); n * n];
+        S::heig(&mut a, n, &mut d, &mut z, &mut Work::default()).unwrap();
         d.iter()
             .zip(&eigs)
             .map(|(&got, &want)| (back(got) / scale - want).abs())
@@ -255,7 +170,7 @@ mod tests {
     }
 
     #[test]
-    fn complex_reduction_survives_extreme_scales() {
+    fn complex_eigenproblem_survives_extreme_scales() {
         // Squares of the entries stay in range; their cubes do not.
         for scale in [1e145, 1e-150] {
             let err = scaled_spectrum_error::<C>(|z| z, |r| r, scale);

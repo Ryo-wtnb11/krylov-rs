@@ -13,7 +13,15 @@
 //! spectra with [`BlockLanczos`]. [`svdsolve`] computes partial SVDs of an
 //! [`AdjointMap`] by [`Gkl`].
 //!
+//! The small projected problems call LAPACK through the [`lapack`] crate
+//! declarations, as KrylovKit does. krylov does not pick a LAPACK
+//! implementation: the final binary links one, for example by depending on
+//! `lapack-src` with the `openblas`, `accelerate` or
+//! `intel-mkl-dynamic-parallel` feature and
+//! naming it once with `extern crate lapack_src as _;`.
+//!
 //! ```
+//! # extern crate lapack_src as _;
 //! use krylov::{eigsolve, Lanczos, Vector, Which, Workspace};
 //!
 //! // A minimal host vector.
@@ -59,6 +67,10 @@
 //! ```
 
 #![warn(missing_docs)]
+
+// The test binaries link the dev-dependency provider; the library never does.
+#[cfg(test)]
+extern crate lapack_src as _;
 
 mod basis;
 mod block_lanczos;

@@ -2,6 +2,9 @@
 //! dense nalgebra oracles.
 #![allow(dead_code)]
 
+// krylov declares LAPACK; the test binary links the dev-dependency provider.
+extern crate lapack_src as _;
+
 use std::cell::Cell;
 
 use krylov::{RealScalar, Scalar, Vector};

@@ -32,8 +32,8 @@ pub enum Error<E> {
     },
     /// An algorithm parameter is outside its domain.
     InvalidArgument(&'static str),
-    /// The small dense eigenvalue or singular value computation did not
-    /// converge.
+    /// The small dense eigenvalue or singular value computation (LAPACK)
+    /// failed: no convergence, or non-finite entries in the projected matrix.
     DenseNoConvergence,
     /// Conjugate gradients met a search direction `p` with `Re⟨p, A·p⟩ <= 0`
     /// (or non-finite): the map is not positive definite on the Krylov space.

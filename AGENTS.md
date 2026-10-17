@@ -5,10 +5,14 @@
   restarts. It never owns large vector arithmetic, linear-map internals,
   backend adapters (symtn, tenferro, CUDA, MPI live with their owners),
   threading, caches or global state.
-- **Dependencies.** Runtime: `num-traits` and `num-complex` only. The small
-  dense computations are implemented here. Dev-dependencies may include one
-  dense reference library for test oracles. Anything else needs explicit
-  approval.
+- **Dependencies.** Runtime: `num-traits`, `num-complex` and `lapack`
+  (declarations only). The library never selects a LAPACK provider; the final
+  binary links one, and the tests use a target-specific `lapack-src`
+  dev-dependency (Accelerate on macOS, system OpenBLAS elsewhere). The small
+  dense problems call LAPACK where KrylovKit does; crate code is kept only
+  where KrylovKit has its own Julia code (Givens, φ functions, Householder
+  restart restoration). Dev-dependencies may include one dense reference
+  library for test oracles. Anything else needs explicit approval.
 - **Design authority.** The fixed design document (krylov design v2,
   2026-10-17) defines the traits, error type, result semantics and the staged
   scope. Changing a trait or a result semantic is a design decision, not an

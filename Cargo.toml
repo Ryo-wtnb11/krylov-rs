@@ -12,8 +12,18 @@ categories = ["mathematics", "science", "algorithms"]
 publish = false
 
 [dependencies]
+# Declarations only; the final binary links a LAPACK provider (see README).
+lapack = "0.20"
 num-complex = "0.4.6"
 num-traits = { version = "0.2.19", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 nalgebra = "0.35.0"
+
+# Test-only LAPACK providers: Accelerate on macOS, the system OpenBLAS elsewhere.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+lapack-src = { version = "0.13", features = ["accelerate"] }
+
+[target.'cfg(not(target_os = "macos"))'.dev-dependencies]
+lapack-src = { version = "0.13", features = ["openblas"] }
+openblas-src = { version = "0.10", default-features = false, features = ["system"] }

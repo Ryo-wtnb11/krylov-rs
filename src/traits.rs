@@ -24,12 +24,13 @@ use crate::scalar::{MatRef, Real, Scalar};
 /// - the results of [`inner`](Vector::inner), [`norm`](Vector::norm) and
 ///   [`Basis::project`] are bitwise identical on every rank (reduced, then
 ///   replicated);
-/// - every rank runs the same binary with the same libm;
+/// - every rank runs the same binary with the same libm and the same LAPACK
+///   build (provider, version and thread count);
 /// - an error is returned on every rank, not only on some (otherwise the
 ///   others block in the next reduction).
 ///
-/// Under this contract all scalar decisions are deterministic. `eigsolve` and
-/// the tridiagonal eigensolver branch only on arithmetic and `sqrt`;
+/// Under this contract all scalar decisions are deterministic. Outside LAPACK,
+/// `eigsolve` branches only on arithmetic and `sqrt`;
 /// `exponentiate`'s step acceptance additionally branches on libm `exp`,
 /// `ln` and `powf`, which is why the same libm is required.
 pub trait Vector: Sized {

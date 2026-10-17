@@ -1,6 +1,6 @@
-//! Bidiagonal SVD and thick-restart restoration of GKL.
+//! Bidiagonal SVD (LAPACK `xBDSQR`) and thick-restart restoration of GKL.
 
-use super::householder;
+use super::{Work, householder};
 use crate::scalar::RealScalar;
 
 /// Rotation `(c, s)` with `c·y + s·z = hypot(y, z)` and `-s·y + c·z = 0`.
@@ -23,174 +23,33 @@ fn rot_cols<R: RealScalar>(m: &mut [R], n: usize, j: usize, k: usize, c: R, s: R
     }
 }
 
-/// Rows `j, k` of the `n × n` column-major `m`, same combination.
-fn rot_rows<R: RealScalar>(m: &mut [R], n: usize, j: usize, k: usize, c: R, s: R) {
-    for col in 0..n {
-        let (a, b) = (m[j + col * n], m[k + col * n]);
-        m[j + col * n] = c * a + s * b;
-        m[k + col * n] = c * b - s * a;
-    }
-}
-
-/// SVD `B = U·diag(s)·Vᵀ` of the real upper bidiagonal `n × n` matrix `b`
-/// (column-major, destroyed) by implicit QR with Wilkinson shifts
-/// (Golub–Kahan step with zero-diagonal chasing; Golub & Van Loan,
-/// Algorithm 8.6.2). Stands in for LAPACK `bdsqr`, which KrylovKit v0.10.4
-/// calls in `src/dense/linalg.jl:bidiagsvd!`.
+/// SVD `B = U·diag(d)·Vᵀ` of the real `n × n` lower (`lower`) or upper
+/// bidiagonal matrix with diagonal `d` and off-diagonal `e[..n-1]`, by LAPACK
+/// `xBDSQR` as KrylovKit v0.10.4 `src/dense/linalg.jl:bidiagsvd!` calls it.
 ///
-/// `s` gets the singular values in descending order and `u`, `v` (`n × n`,
-/// overwritten) the singular vectors as columns. Only `+ − × ÷` and `sqrt`
-/// decide branches. `Err` after the iteration budget (e.g. NaN input).
+/// `d` gets the singular values in descending order and `u`, `v` (`n × n`,
+/// overwritten) the singular vectors as columns; `e` is destroyed.
 pub(crate) fn bidiag_svd<R: RealScalar>(
-    b: &mut [R],
+    lower: bool,
+    d: &mut [R],
+    e: &mut [R],
     u: &mut [R],
     v: &mut [R],
-    s: &mut [R],
+    w: &mut Work<R, R>,
 ) -> Result<(), ()> {
-    let n = s.len();
-    debug_assert!(b.len() == n * n && u.len() == n * n && v.len() == n * n);
+    let n = d.len();
     for m in [&mut *u, &mut *v] {
-        m.fill(R::zero());
+        m[..n * n].fill(R::zero());
         for i in 0..n {
             m[i + i * n] = R::one();
         }
     }
-    let at = |i: usize, j: usize| i + j * n;
-    // Scale to max |entry| = 1 so that the squares in the shift cannot
-    // overflow; the singular values are scaled back at the end.
-    let mut scale = R::zero();
-    for i in 0..n {
-        scale = scale.max(b[at(i, i)].abs());
-        if i + 1 < n {
-            scale = scale.max(b[at(i, i + 1)].abs());
+    // v holds Vᵀ on return from LAPACK; transpose it in place.
+    R::bdsqr(lower, d, e, v, u, w)?;
+    for j in 0..n {
+        for i in 0..j {
+            v.swap(i + j * n, j + i * n);
         }
-    }
-    if scale.is_nan() {
-        return Err(());
-    }
-    if scale > R::zero() {
-        for x in b.iter_mut() {
-            *x /= scale;
-        }
-    }
-    let eps = R::epsilon();
-    let mut budget = 6 * n * n + 60;
-    loop {
-        for i in 0..n.saturating_sub(1) {
-            if b[at(i, i + 1)].abs() <= eps * (b[at(i, i)].abs() + b[at(i + 1, i + 1)].abs()) {
-                b[at(i, i + 1)] = R::zero();
-            }
-        }
-        // Unreduced block lo..=hi: all its superdiagonal entries nonzero.
-        let mut hi = n.saturating_sub(1);
-        while hi > 0 && b[at(hi - 1, hi)] == R::zero() {
-            hi -= 1;
-        }
-        if hi == 0 {
-            break;
-        }
-        let mut lo = hi - 1;
-        while lo > 0 && b[at(lo - 1, lo)] != R::zero() {
-            lo -= 1;
-        }
-        if budget == 0 {
-            return Err(());
-        }
-        budget -= 1;
-        if let Some(i) = (lo..hi).find(|&i| b[at(i, i)].abs() <= eps) {
-            // Zero diagonal: rotate row i away against the rows below.
-            b[at(i, i)] = R::zero();
-            for j in i + 1..=hi {
-                let (c, sn) = rot(b[at(j, j)], b[at(i, j)]);
-                rot_rows(b, n, j, i, c, sn);
-                rot_cols(u, n, j, i, c, sn);
-                b[at(i, j)] = R::zero();
-            }
-            continue;
-        }
-        if b[at(hi, hi)].abs() <= eps {
-            // Zero last diagonal: rotate column hi away against the left.
-            b[at(hi, hi)] = R::zero();
-            for j in (lo..hi).rev() {
-                let (c, sn) = rot(b[at(j, j)], b[at(j, hi)]);
-                rot_cols(b, n, j, hi, c, sn);
-                rot_cols(v, n, j, hi, c, sn);
-                b[at(j, hi)] = R::zero();
-            }
-            continue;
-        }
-        // Wilkinson shift from the trailing 2×2 block of BᵀB.
-        let m = hi;
-        let (dm, dm1, em1) = (b[at(m, m)], b[at(m - 1, m - 1)], b[at(m - 1, m)]);
-        let em2 = if m - 1 > lo {
-            b[at(m - 2, m - 1)]
-        } else {
-            R::zero()
-        };
-        let ta = dm1 * dm1 + em2 * em2;
-        let tb = dm1 * em1;
-        let tc = dm * dm + em1 * em1;
-        let half = R::from_f64(0.5);
-        let delta = (ta - tc) * half;
-        let root = delta.hypot2(tb);
-        let den = if delta >= R::zero() {
-            delta + root
-        } else {
-            delta - root
-        };
-        let mu = if den == R::zero() {
-            tc
-        } else {
-            tc - tb * tb / den
-        };
-        let mut y = b[at(lo, lo)] * b[at(lo, lo)] - mu;
-        let mut z = b[at(lo, lo)] * b[at(lo, lo + 1)];
-        for k in lo..hi {
-            let (c, sn) = rot(y, z);
-            rot_cols(b, n, k, k + 1, c, sn);
-            rot_cols(v, n, k, k + 1, c, sn);
-            if k > lo {
-                b[at(k - 1, k + 1)] = R::zero();
-            }
-            y = b[at(k, k)];
-            z = b[at(k + 1, k)];
-            let (c, sn) = rot(y, z);
-            rot_rows(b, n, k, k + 1, c, sn);
-            rot_cols(u, n, k, k + 1, c, sn);
-            b[at(k + 1, k)] = R::zero();
-            if k + 1 < hi {
-                y = b[at(k, k + 1)];
-                z = b[at(k, k + 2)];
-            }
-        }
-    }
-    for i in 0..n {
-        let d = b[at(i, i)];
-        if d.is_nan() {
-            return Err(());
-        }
-        if d < R::zero() {
-            for x in &mut v[i * n..(i + 1) * n] {
-                *x = -*x;
-            }
-        }
-        s[i] = d.abs() * scale;
-    }
-    // Stable descending order, applied to the columns of u and v.
-    let mut perm: Vec<usize> = (0..n).collect();
-    perm.sort_by(|&a, &c| {
-        s[c].partial_cmp(&s[a])
-            .unwrap_or(core::cmp::Ordering::Equal)
-    });
-    for m in [&mut *u, &mut *v] {
-        let old = m.to_vec();
-        for (new, &o) in perm.iter().enumerate() {
-            m[new * n..(new + 1) * n].copy_from_slice(&old[o * n..(o + 1) * n]);
-        }
-    }
-    let old = s.to_vec();
-    for (new, &o) in perm.iter().enumerate() {
-        s[new] = old[o];
     }
     Ok(())
 }
@@ -201,7 +60,7 @@ pub(crate) fn bidiag_svd<R: RealScalar>(
 ///
 /// Givens rotations from the left reduce `B̃` to `Q·[R; 0]` with `R` upper
 /// bidiagonal, whose SVD [`bidiag_svd`] computes; `P = Q[:, ..k]·U_R`.
-/// `scratch` needs `(k+1)² + k²` entries.
+/// `scratch` needs `(k+1)² + k² + 2k` entries.
 pub(crate) fn lower_rect_bidiag_svd<R: RealScalar>(
     alpha: &[R],
     beta: &[R],
@@ -209,29 +68,29 @@ pub(crate) fn lower_rect_bidiag_svd<R: RealScalar>(
     y: &mut [R],
     s: &mut [R],
     scratch: &mut [R],
+    w: &mut Work<R, R>,
 ) -> Result<(), ()> {
     let k = alpha.len();
     let k1 = k + 1;
     let (q, rest) = scratch.split_at_mut(k1 * k1);
-    let (r, _) = rest.split_at_mut(k * k);
+    let (ur, rest) = rest.split_at_mut(k * k);
+    let (re, _) = rest.split_at_mut(k.max(1));
     q.fill(R::zero());
     for i in 0..k1 {
         q[i + i * k1] = R::one();
     }
-    r.fill(R::zero());
     // Row i holds only its diagonal entry `a`; row i+1 holds β_i and α_{i+1}.
     let mut a = alpha.first().copied().unwrap_or(R::zero());
     for i in 0..k {
         let (c, sn) = rot(a, beta[i]);
-        r[i + i * k] = a.hypot2(beta[i]);
+        s[i] = a.hypot2(beta[i]);
         if i + 1 < k {
-            r[i + (i + 1) * k] = sn * alpha[i + 1];
+            re[i] = sn * alpha[i + 1];
             a = c * alpha[i + 1];
         }
         rot_cols(q, k1, i, i + 1, c, sn);
     }
-    let mut ur = vec![R::zero(); k * k];
-    bidiag_svd(r, &mut ur, y, s)?;
+    bidiag_svd(false, &mut s[..k], re, ur, y, w)?;
     for j in 0..k {
         for row in 0..k1 {
             let mut acc = R::zero();
@@ -369,9 +228,9 @@ mod tests {
     fn check(d: &[f64], e: &[f64]) {
         let n = d.len();
         let bm = upper(d, e);
-        let mut b: Vec<f64> = bm.iter().copied().collect();
-        let (mut u, mut v, mut s) = (vec![0.0; n * n], vec![0.0; n * n], vec![0.0; n]);
-        bidiag_svd(&mut b, &mut u, &mut v, &mut s).unwrap();
+        let (mut s, mut ee) = (d.to_vec(), e.to_vec());
+        let (mut u, mut v) = (vec![0.0; n * n], vec![0.0; n * n]);
+        bidiag_svd(false, &mut s, &mut ee, &mut u, &mut v, &mut Work::default()).unwrap();
         let um = DMatrix::from_column_slice(n, n, &u);
         let vm = DMatrix::from_column_slice(n, n, &v);
         let sm = DMatrix::from_diagonal(&nalgebra::DVector::from_column_slice(&s));
@@ -411,9 +270,9 @@ mod tests {
         check(&graded, &graded[1..]);
         check(&[0.0; 5], &[0.0; 4]);
         check(&[2.0; 6], &[1e-170; 5]);
-        let mut b = vec![f64::NAN, 1.0, 0.0, 1.0];
-        let (mut u, mut v, mut s) = (vec![0.0; 4], vec![0.0; 4], vec![0.0; 2]);
-        assert!(bidiag_svd(&mut b, &mut u, &mut v, &mut s).is_err());
+        let (mut s, mut e) = (vec![f64::NAN, 1.0], vec![1.0]);
+        let (mut u, mut v) = (vec![0.0; 4], vec![0.0; 4]);
+        assert!(bidiag_svd(false, &mut s, &mut e, &mut u, &mut v, &mut Work::default()).is_err());
     }
 
     #[test]
@@ -435,8 +294,10 @@ mod tests {
                 }
             });
             let (mut p, mut y, mut s) = (vec![0.0; (k + 1) * k], vec![0.0; k * k], vec![0.0; k]);
-            let mut scratch = vec![0.0; (k + 1) * (k + 1) + k * k];
-            lower_rect_bidiag_svd(&alpha, &beta, &mut p, &mut y, &mut s, &mut scratch).unwrap();
+            let mut scratch = vec![0.0; (k + 1) * (k + 1) + k * k + 2 * k];
+            let mut w = Work::default();
+            lower_rect_bidiag_svd(&alpha, &beta, &mut p, &mut y, &mut s, &mut scratch, &mut w)
+                .unwrap();
             let pm = DMatrix::from_column_slice(k + 1, k, &p);
             let ym = DMatrix::from_column_slice(k, k, &y);
             let sm = DMatrix::from_diagonal(&nalgebra::DVector::from_column_slice(&s));
