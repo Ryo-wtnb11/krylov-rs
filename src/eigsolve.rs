@@ -190,7 +190,7 @@ where
 
 /// Stable reordering of ascending eigenpairs by `which`, like Julia's
 /// `sortperm(D; by, rev)`.
-fn sort_eig<R: RealScalar>(
+pub(crate) fn sort_eig<R: RealScalar>(
     which: Which,
     d: &mut [R],
     u: &mut [R],
