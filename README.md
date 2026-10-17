@@ -311,7 +311,7 @@ need a relaxed truncation schedule and explicitly computed residuals
 
 ## Status
 
-Pre-release. Not published on crates.io; the API may change.
+Pre-1.0: the API may change between minor versions.
 
 ## License
 
