@@ -92,37 +92,35 @@ where
     A: LinearMap<V>,
     L: KrylovProcess,
 {
-    if u.is_empty() {
-        return Err(Error::InvalidArgument("u must not be empty"));
-    }
-    alg.expintegrator(op, t, u, ws)
+    sealed::Sealed::expintegrator(alg, op, t, u, ws)
 }
 
 mod sealed {
-    pub trait Sealed {}
-    impl Sealed for super::Lanczos {}
-    impl Sealed for super::Arnoldi {}
+    use super::*;
+
+    pub trait Sealed {
+        #[allow(clippy::type_complexity)]
+        fn expintegrator<V, B, A>(
+            &self,
+            op: &mut A,
+            t: V::Scalar,
+            u: &[V],
+            ws: &mut Workspace<V, B>,
+        ) -> Result<(V, ExpInfo<Real<V>>), Error<V::Error>>
+        where
+            V: Vector,
+            B: Basis<V>,
+            A: LinearMap<V>;
+    }
 }
 
 /// The Krylov process of [`expintegrator`] and [`exponentiate`]:
 /// [`Lanczos`] or [`Arnoldi`]. Sealed.
-pub trait KrylovProcess: sealed::Sealed {
-    #[doc(hidden)]
-    #[allow(clippy::type_complexity)]
-    fn expintegrator<V, B, A>(
-        &self,
-        op: &mut A,
-        t: V::Scalar,
-        u: &[V],
-        ws: &mut Workspace<V, B>,
-    ) -> Result<(V, ExpInfo<Real<V>>), Error<V::Error>>
-    where
-        V: Vector,
-        B: Basis<V>,
-        A: LinearMap<V>;
-}
+pub trait KrylovProcess: sealed::Sealed {}
+impl KrylovProcess for Lanczos {}
+impl KrylovProcess for Arnoldi {}
 
-impl KrylovProcess for Lanczos {
+impl sealed::Sealed for Lanczos {
     fn expintegrator<V, B, A>(
         &self,
         op: &mut A,
@@ -147,7 +145,7 @@ impl KrylovProcess for Lanczos {
     }
 }
 
-impl KrylovProcess for Arnoldi {
+impl sealed::Sealed for Arnoldi {
     fn expintegrator<V, B, A>(
         &self,
         op: &mut A,
@@ -245,7 +243,11 @@ where
     A: LinearMap<V>,
     P: Process<V::Scalar>,
 {
-    let u0 = &u[0];
+    // Here, not in `expintegrator`: a generic `L: KrylovProcess` bound
+    // still reaches the sealed method directly.
+    let Some(u0) = u.first() else {
+        return Err(Error::InvalidArgument("u must not be empty"));
+    };
     let eta = s.eta;
     if eta.is_nan() || eta <= Real::<V>::zero() {
         return Err(Error::InvalidArgument("tol must be positive"));

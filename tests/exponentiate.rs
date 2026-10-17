@@ -760,3 +760,25 @@ fn arnoldi_errors() {
         Error::NonFiniteIterate
     );
 }
+
+/// The sealed entry point stays callable through a generic bound; it must
+/// reject an empty `u` like the public function.
+fn sealed_entry<L: KrylovProcess>(alg: &L) -> Error<std::convert::Infallible> {
+    let a = DMatrix::<Complex64>::identity(3, 3);
+    let x = DVec(vec![1.0f64; 3]);
+    let mut ws = Workspace::with_capacity(&x, 3).unwrap();
+    let empty: &[DVec<f64>] = &[];
+    alg.expintegrator(&mut DenseOp::<f64>::new(&a), 1.0, empty, &mut ws)
+        .map(|_| ())
+        .unwrap_err()
+}
+
+#[test]
+fn sealed_entry_rejects_empty_u() {
+    for e in [
+        sealed_entry(&Lanczos::new().krylovdim(3)),
+        sealed_entry(&Arnoldi::new().krylovdim(3)),
+    ] {
+        assert!(matches!(e, Error::InvalidArgument(_)));
+    }
+}
