@@ -71,8 +71,8 @@ where
 /// in `t` and is returned without a Krylov space (KrylovKit divides by zero
 /// there). A non-finite (overflowed or NaN) step error estimate rejects the
 /// step, which KrylovKit accepts when the estimate is NaN; if it stays
-/// non-finite at the smallest allowed step, or the result is not finite,
-/// the call fails with [`Error::NonFiniteIterate`] instead of returning a
+/// non-finite at the smallest allowed step, or a step's update
+/// coefficients or the Krylov start norm are not finite, the call fails with [`Error::NonFiniteIterate`] instead of returning a
 /// non-finite `y`.
 ///
 /// `alg` selects the process: [`Lanczos`] (Hermitian `op`) evaluates the
@@ -226,7 +226,7 @@ trait Process<S: Scalar>: Sized {
         sgn: S,
         dtau: S::Real,
         beta: S::Real,
-    ) -> Result<(), V::Error>
+    ) -> Result<(), Error<V::Error>>
     where
         V: Vector<Scalar = S>,
         B: Basis<V>;
@@ -349,8 +349,7 @@ where
                 }
                 tau0 = if numiter < maxiter { tau0 + dtau } else { tau };
                 totalerr += eps;
-                proc.advance(ws, &mut y, &w, sgn, dtau, beta)
-                    .map_err(Error::Vector)?;
+                proc.advance(ws, &mut y, &w, sgn, dtau, beta)?;
                 if omega < gamma {
                     dtau *= (gamma / omega).powf(one / (q + one));
                 }
@@ -360,8 +359,7 @@ where
                 let eps = proc.err(sgn, dt, beta)?;
                 if eps / (dt * eta) < one {
                     totalerr += eps;
-                    proc.advance(ws, &mut y, &w, sgn, dt, beta)
-                        .map_err(Error::Vector)?;
+                    proc.advance(ws, &mut y, &w, sgn, dt, beta)?;
                     tau0 = tau;
                 }
             }
@@ -375,11 +373,6 @@ where
             }
             proc.expand(ws, op)?;
         }
-    }
-    if !y.norm().map_err(Error::Vector)?.is_finite() {
-        // The last step's estimate can be finite (e.g. ‖r‖ = 0) while the
-        // accumulated result overflows.
-        return Err(Error::NonFiniteIterate);
     }
     info.numiter = numiter;
     info.numops = numops + proc.numops();
@@ -484,7 +477,7 @@ impl<S: Scalar> Process<S> for LanczosProc<S> {
         sgn: S,
         dtau: S::Real,
         beta: S::Real,
-    ) -> Result<(), V::Error>
+    ) -> Result<(), Error<V::Error>>
     where
         V: Vector<Scalar = S>,
         B: Basis<V>,
@@ -600,20 +593,23 @@ impl<S: Scalar> Process<S> for ArnoldiProc<S> {
         sgn: S,
         dtau: S::Real,
         beta: S::Real,
-    ) -> Result<(), V::Error>
+    ) -> Result<(), Error<V::Error>>
     where
         V: Vector<Scalar = S>,
         B: Basis<V>,
     {
         let (k, p, n) = (self.fact.k, self.p, self.dim());
         let x = sgn * S::from_real(dtau);
-        poly(y, w, x)?;
         let col = (k + p - 1) * n;
+        let c = &self.exph[col..col + k];
         let corr = self.exph[(k - 1) + (k + p) * n];
         let a = S::from_real(beta) * powu(x, p);
+        check_step(a, c, corr)?;
+        poly(y, w, x).map_err(Error::Vector)?;
         ws.basis
-            .combine_into(&self.exph[col..col + k], y, a, S::one())?;
-        y.axpby(a * corr, &ws.w, S::one())
+            .combine_into(c, y, a, S::one())
+            .map_err(Error::Vector)?;
+        y.axpby(a * corr, &ws.w, S::one()).map_err(Error::Vector)
     }
 }
 
@@ -722,11 +718,10 @@ fn advance<V: Vector, B: Basis<V>>(
     beta: Real<V>,
     lam: &[Real<V>],
     z: &[Real<V>],
-) -> Result<(), V::Error> {
+) -> Result<(), Error<V::Error>> {
     let k = lam.len();
     let p = phis.len() - 2;
     let x = sgn * V::Scalar::from_real(dtau);
-    poly(y, w, x)?;
     c.clear();
     c.resize(k, V::Scalar::zero());
     let mut corr = V::Scalar::zero();
@@ -739,6 +734,22 @@ fn advance<V: Vector, B: Basis<V>>(
         corr += phis[p + 1].mul_real(z[(k - 1) + i * k] * z[i * k]);
     }
     let a = V::Scalar::from_real(beta) * powu(x, p);
-    ws.basis.combine_into(c, y, a, V::Scalar::one())?;
+    check_step(a, c, corr)?;
+    poly(y, w, x).map_err(Error::Vector)?;
+    ws.basis
+        .combine_into(c, y, a, V::Scalar::one())
+        .map_err(Error::Vector)?;
     y.axpby(a * corr, &ws.w, V::Scalar::one())
+        .map_err(Error::Vector)
+}
+
+/// Rejects a step whose `k + 1` update coefficients `a·c_j`, `a·corr` are
+/// not finite. Checked here, not through `y.norm()`: a user norm may
+/// overflow (`√⟨y, y⟩`) for a finite `y`.
+fn check_step<S: Scalar, E>(a: S, c: &[S], corr: S) -> Result<(), Error<E>> {
+    if c.iter().chain([&corr]).all(|&v| (a * v).all_finite()) {
+        Ok(())
+    } else {
+        Err(Error::NonFiniteIterate)
+    }
 }

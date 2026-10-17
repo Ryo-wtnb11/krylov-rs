@@ -153,6 +153,13 @@ krylov's own tests use Accelerate on macOS and the system OpenBLAS elsewhere.
   space would start from) takes the exact polynomial step
   `y + Σ_{j<p} (sΔτ)ʲ/j!·w_{j+1}` to `t` without a Krylov space; KrylovKit
   divides by the zero norm there.
+- **`expintegrator` non-finite steps.** A NaN step error estimate rejects
+  the step like an overflowed one (KrylovKit's `ω >= 1` test accepts NaN).
+  An estimate still non-finite at the smallest allowed step (or the forced
+  last step), a non-finite Krylov start norm `β`, or non-finite step update
+  coefficients return `Error::NonFiniteIterate` instead of a NaN/∞ result.
+  For complex vectors with real `t`, the Lanczos `φ` functions are evaluated
+  in real arithmetic, so an overflow stays `∞ + 0i`.
 - **`linsolve`**: GMRES forms the restart residual from the dense Givens
   product (no basis rotation, capacity `krylovdim` instead of `+ 1`).
   `numops` counts every application, including CG's residual recompute and

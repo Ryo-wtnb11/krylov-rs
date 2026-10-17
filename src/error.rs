@@ -46,8 +46,9 @@ pub enum Error<E> {
     IncompatibleAdjoint,
     /// A map application produced a vector with a non-finite norm during
     /// the iteration. In `expintegrator`/`exponentiate` also: the time-step
-    /// error estimate stays non-finite at the smallest allowed step, or the
-    /// result is not finite (typically `exp(t·A)` overflows).
+    /// error estimate stays non-finite at the smallest allowed step, or a
+    /// step's update coefficients are not finite (typically `exp(t·A)`
+    /// overflows).
     NonFiniteIterate,
     /// Reordering the small Schur form was rejected by LAPACK `xTREXC`
     /// (a swap of nearly equal or ill-conditioned 2×2 blocks).
