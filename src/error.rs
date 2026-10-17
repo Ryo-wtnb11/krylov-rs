@@ -44,6 +44,9 @@ pub enum Error<E> {
     /// `svdsolve`'s start check `⟨u, A·v⟩ = ‖Aᴴu‖` (with `v = Aᴴu/‖Aᴴu‖`)
     /// failed: the adjoint does not belong to the map.
     IncompatibleAdjoint,
+    /// A map application produced a vector with a non-finite norm during
+    /// the iteration.
+    NonFiniteIterate,
 }
 
 impl<E: fmt::Display> fmt::Display for Error<E> {
@@ -71,6 +74,7 @@ impl<E: fmt::Display> fmt::Display for Error<E> {
             Error::IncompatibleAdjoint => {
                 f.write_str("adjoint map is not compatible with the linear map")
             }
+            Error::NonFiniteIterate => f.write_str("linear map produced a non-finite vector"),
         }
     }
 }

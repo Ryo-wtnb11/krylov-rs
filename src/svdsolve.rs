@@ -13,8 +13,8 @@ use crate::traits::{AdjointMap, Basis, Vector, Workspace};
 
 /// Golub–Kahan–Lanczos settings for [`svdsolve`].
 ///
-/// Mirrors KrylovKit's `GKL`: `krylovdim` (default 30) is the maximal Krylov
-/// dimension, `maxiter` (default 100) the number of Krylov subspaces built
+/// Mirrors KrylovKit's `GKL`: `krylovdim` (default 30, at least 2) is the
+/// maximal Krylov dimension, `maxiter` (default 100) the number of Krylov subspaces built
 /// (restarts + 1), `tol` (default `1e-12`) an absolute bound on the residual
 /// norms (met when strictly smaller), `eager` (default `false`) evaluates the
 /// projected problem after every expansion, and `orth` (default
@@ -137,7 +137,7 @@ impl<S: Scalar> Fact<S> {
         src: Option<&V>,
         nrm: S::Real,
         tol: S::Real,
-    ) -> Result<Option<S::Real>, V::Error>
+    ) -> Result<Option<S::Real>, Error<V::Error>>
     where
         V: Vector<Scalar = S>,
         BU: Basis<V>,
@@ -146,11 +146,15 @@ impl<S: Scalar> Fact<S> {
     {
         let inv = S::from_real(S::Real::one() / nrm);
         let src = src.unwrap_or(&ws_u.w);
-        ws_u.basis.push(src, inv)?;
-        ws_u.v.axpby(inv, src, S::zero())?;
-        op.apply_adjoint_into(&ws_u.v, &mut ws_v.w)?;
+        ws_u.basis.push(src, inv).map_err(Error::Vector)?;
+        ws_u.v.axpby(inv, src, S::zero()).map_err(Error::Vector)?;
+        op.apply_adjoint_into(&ws_u.v, &mut ws_v.w)
+            .map_err(Error::Vector)?;
         self.numops += 1;
-        let (alpha, _) = self.orth(&ws_v.basis, &mut ws_v.w)?;
+        let (alpha, _) = self.orth(&ws_v.basis, &mut ws_v.w).map_err(Error::Vector)?;
+        if !alpha.is_finite() {
+            return Err(Error::NonFiniteIterate);
+        }
         if alpha <= tol {
             return Ok(None);
         }
@@ -165,7 +169,7 @@ impl<S: Scalar> Fact<S> {
         ws_u: &mut Workspace<V, BU>,
         ws_v: &mut Workspace<V, BV>,
         alpha: S::Real,
-    ) -> Result<S, V::Error>
+    ) -> Result<S, Error<V::Error>>
     where
         V: Vector<Scalar = S>,
         BU: Basis<V>,
@@ -173,11 +177,16 @@ impl<S: Scalar> Fact<S> {
         A: AdjointMap<V>,
     {
         let inv = S::from_real(S::Real::one() / alpha);
-        ws_v.basis.push(&ws_v.w, inv)?;
-        ws_v.v.axpby(inv, &ws_v.w, S::zero())?;
-        op.apply_into(&ws_v.v, &mut ws_u.w)?;
+        ws_v.basis.push(&ws_v.w, inv).map_err(Error::Vector)?;
+        ws_v.v
+            .axpby(inv, &ws_v.w, S::zero())
+            .map_err(Error::Vector)?;
+        op.apply_into(&ws_v.v, &mut ws_u.w).map_err(Error::Vector)?;
         self.numops += 1;
-        let (beta, coupling) = self.orth(&ws_u.basis, &mut ws_u.w)?;
+        let (beta, coupling) = self.orth(&ws_u.basis, &mut ws_u.w).map_err(Error::Vector)?;
+        if !beta.is_finite() || !coupling.all_finite() {
+            return Err(Error::NonFiniteIterate);
+        }
         self.alpha.push(alpha);
         self.beta.push(beta);
         Ok(coupling)
@@ -203,9 +212,11 @@ impl<S: Scalar> Fact<S> {
 /// the adjoint side). Then the triplets of the current space are returned,
 /// possibly fewer than `howmany`; none if already `Aᴴ·x0` vanishes. In the
 /// adjoint-side case `(U, V)` is an invariant pair: the triplets come from
-/// the `(k+1) × k` bidiagonal `B̃` with `A·V = U·B̃`, have zero residual and
-/// all count as converged, and `Aᴴ·leftᵢ = σᵢ·rightᵢ` holds up to the
-/// dropped norm `<= tol` (KrylovKit has no such stop and divides by it).
+/// the `(k+1) × k` bidiagonal `B̃` with `A·V = U·B̃`, have zero residual
+/// (so they count as converged whenever `tol > 0`), and
+/// `Aᴴ·leftᵢ = σᵢ·rightᵢ` holds up to the dropped norm `<= tol` (KrylovKit
+/// has no such stop and divides by it). A non-finite norm during the
+/// iteration (e.g. NaN from the map) is [`Error::NonFiniteIterate`].
 ///
 /// For `SmallestReal` the codomain should not be larger than the domain:
 /// the process lives in the codomain and approximates `AAᴴ`, whose zero
@@ -236,8 +247,10 @@ where
     A: AdjointMap<V>,
 {
     let kd = alg.krylovdim;
-    if kd == 0 {
-        return Err(Error::InvalidArgument("krylovdim must be at least 1"));
+    if kd < 2 {
+        // A thick restart keeps (3·krylovdim + 2·converged)/5 >= 1 vectors
+        // only from krylovdim 2 on; with 1 it would silently ignore maxiter.
+        return Err(Error::InvalidArgument("krylovdim must be at least 2"));
     }
     if alg.maxiter == 0 {
         return Err(Error::InvalidArgument("maxiter must be at least 1"));
@@ -294,15 +307,14 @@ where
     };
     // KrylovKit `gkl.jl:initialize`, including its check that `A` and `Aᴴ`
     // belong together: ⟨u, A·v⟩ must reproduce α = ‖Aᴴu‖.
-    let Some(alpha) = fact
-        .push_u(op, ws_u, ws_v, Some(x0), beta0, tol)
-        .map_err(ve)?
-    else {
+    let Some(alpha) = fact.push_u(op, ws_u, ws_v, Some(x0), beta0, tol)? else {
         return Ok((Vec::new(), Vec::new(), Vec::new(), empty(fact.numops)));
     };
-    let coupling = fact.push_v(op, ws_u, ws_v, alpha).map_err(ve)?;
+    let coupling = fact.push_v(op, ws_u, ws_v, alpha)?;
     let sqrt_eps = Real::<V>::epsilon().sqrt();
     let mismatch = (coupling - V::Scalar::from_real(alpha)).modulus();
+    // α and the coupling are finite here (push_u/push_v reject NaN/Inf),
+    // so this comparison cannot pass vacuously.
     if mismatch > sqrt_eps * alpha.max(coupling.modulus()) {
         return Err(Error::IncompatibleAdjoint);
     }
@@ -377,9 +389,9 @@ where
             }
         }
         if k < kd {
-            match fact.push_u(op, ws_u, ws_v, None, beta, tol).map_err(ve)? {
+            match fact.push_u(op, ws_u, ws_v, None, beta, tol)? {
                 Some(alpha) => {
-                    fact.push_v(op, ws_u, ws_v, alpha).map_err(ve)?;
+                    fact.push_v(op, ws_u, ws_v, alpha)?;
                 }
                 None => exhausted = true,
             }

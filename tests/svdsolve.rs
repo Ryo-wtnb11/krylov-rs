@@ -18,6 +18,8 @@ struct RectOp<S> {
     // Adjoint actually applied; `a.adjoint()` unless a test breaks it.
     adj: DMatrix<Complex64>,
     applications: usize,
+    // Outputs become NaN once this many applications were made.
+    nan_after: Option<usize>,
     _s: std::marker::PhantomData<S>,
 }
 
@@ -27,6 +29,7 @@ impl<S: TestScalar> RectOp<S> {
             a: a.clone(),
             adj: a.adjoint(),
             applications: 0,
+            nan_after: None,
             _s: Default::default(),
         }
     }
@@ -41,10 +44,19 @@ fn apply<S: TestScalar>(m: &DMatrix<Complex64>, x: &DVec<S>, y: &mut DVec<S>) {
     }
 }
 
+impl<S: TestScalar> RectOp<S> {
+    fn poison(&self, out: &mut DVec<S>) {
+        if self.nan_after.is_some_and(|k| self.applications > k) {
+            out.0[0] = S::from_c64(Complex64::new(f64::NAN, 0.0));
+        }
+    }
+}
+
 impl<S: TestScalar> LinearMap<DVec<S>> for RectOp<S> {
     fn apply_into(&mut self, x: &DVec<S>, y: &mut DVec<S>) -> Result<(), std::convert::Infallible> {
         self.applications += 1;
         apply(&self.a, x, y);
+        self.poison(y);
         Ok(())
     }
 }
@@ -57,6 +69,7 @@ impl<S: TestScalar> AdjointMap<DVec<S>> for RectOp<S> {
     ) -> Result<(), std::convert::Infallible> {
         self.applications += 1;
         apply(&self.adj, y, x);
+        self.poison(x);
         Ok(())
     }
 }
@@ -217,8 +230,9 @@ fn tall_map_smallest_values_keep_an_unconverged_zero() {
     // m - n zero eigenvalues SmallestReal then targets (from any x0, rounding
     // seeds them). That zero belongs to no right singular vector
     // (‖A·r‖ >= σ_min for every unit r), so it stays first and is honestly
-    // reported unconverged. KrylovKit 0.10.4 reports it as converged on this
-    // input although ‖A·r - σ·l‖ ≈ 2.7.
+    // reported unconverged. (On this input with maxiter 100, KrylovKit 0.10.4
+    // marks it converged although ‖A·r - σ·l‖ ≈ 2.7; at this test's maxiter 5
+    // it has not yet done so.)
     let mut g = SplitMix(23);
     let a = rectangular(&mut g, 60, 30, false);
     let x0 = random_vec(&mut g, 60, false);
@@ -354,6 +368,30 @@ fn typed_errors() {
     );
     let neg = call(&mut op, &x0, 1, Which::LargestReal, &alg.tol(-1.0));
     assert!(matches!(neg, Err(Error::InvalidArgument(_))));
+    // krylovdim 1 cannot restart.
+    let one = call(
+        &mut op,
+        &x0,
+        1,
+        Which::LargestReal,
+        &Gkl::new().krylovdim(1),
+    );
+    assert!(matches!(one, Err(Error::InvalidArgument(_))));
+    // A map that turns NaN after a few applications.
+    let mut nan_op = RectOp::<Complex64>::new(&a);
+    nan_op.nan_after = Some(5);
+    assert_eq!(
+        call(&mut nan_op, &x0, 1, Which::LargestReal, &alg),
+        Err(Error::NonFiniteIterate)
+    );
+    // NaN from the very first application of A (the adjoint check must not
+    // pass on NaN).
+    let mut nan_op = RectOp::<Complex64>::new(&a);
+    nan_op.nan_after = Some(1);
+    assert_eq!(
+        call(&mut nan_op, &x0, 1, Which::LargestReal, &alg),
+        Err(Error::NonFiniteIterate)
+    );
 }
 
 // KrylovKit fixtures (`fixtures/krylovkit/svdsolve.txt`, from `svdsolve.jl`).
