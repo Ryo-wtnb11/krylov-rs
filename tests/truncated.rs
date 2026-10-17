@@ -257,9 +257,10 @@ fn both(g: &mut SplitMix, l: &DMatrix<Complex64>, terms: usize, tau: f64) -> [Ru
 
 #[test]
 fn truncation_bounds_the_rank_of_a_low_rank_flow() {
-    // A rank-one start: the exact flow stays rank one, and each Krylov vector
-    // has rank at most 2k + 1. Truncating rounding noise keeps every vector
-    // well below full rank; without truncation the noise fills it.
+    // A rank-one start X₀ = c·dᵀ: the exact flow stays rank one, and a Krylov
+    // vector built from Aʲ·X₀ with j ≤ k lies in span{Lⁱ·c}·span{(Lᵀ)ʲ·d}ᵀ,
+    // so its rank is at most k + 1. Truncating rounding noise keeps every
+    // vector well below full rank; without truncation the noise fills it.
     let l = laplacian(N, 0.3, 0.0);
     for tau in [TOL / 10.0, TOL] {
         let mut g = SplitMix(81);

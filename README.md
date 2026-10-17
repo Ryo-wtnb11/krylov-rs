@@ -277,7 +277,9 @@ goes inside those methods:
 - `LinearMap::apply_into`: truncate the product, as with any tensor-network
   map.
 - `Vector::axpby(a, x, b)` with `a ≠ 0` and `b ≠ 0`, and
-  `Basis::combine_into` / `Basis::rotate`: truncate the combination. A real
+  `Basis::combine_into`: truncate the combination. (`exponentiate` and
+  `expintegrator` never call `Basis::rotate`; only the restart solvers
+  below do, and those are unsupported under truncation.) A real
   tensor-network `Basis` should implement `combine_into` as one truncated
   sum (for an MPS, bond `kχ` before truncation); the default `VecBasis` loops
   over `axpby` and so truncates once per term.
