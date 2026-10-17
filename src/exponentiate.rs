@@ -7,7 +7,7 @@ use core::ops::Mul;
 use num_traits::{Float, One, Zero};
 
 use crate::arnoldi::{Arnoldi, Fact as ArnoldiFact};
-use crate::dense::{Work, expm, phi_last, phi_pair};
+use crate::dense::{ExpmWork, Work, expm_into, phi_last, phi_pair};
 use crate::error::Error;
 use crate::lanczos::{Fact, Lanczos, validate};
 use crate::orth::Orth;
@@ -81,7 +81,9 @@ where
 /// exponential of the `(k+p+1)²` augmented Hessenberg matrix, as KrylovKit.
 ///
 /// The workspace basis needs capacity `>= alg.get_krylovdim()`. The returned
-/// vector and `p - 1` scratch vectors are allocated (`p` per call).
+/// vector and `p - 1` scratch vectors are allocated (`p` per call); the small
+/// dense scratch is allocated once per call, independent of the number of
+/// time steps and step-size trials.
 #[allow(clippy::type_complexity)]
 pub fn expintegrator<V, B, A, L>(
     op: &mut A,
@@ -507,7 +509,7 @@ struct ArnoldiProc<S: Scalar> {
     fact: ArnoldiFact<S>,
     p: usize,
     aug: Vec<S>,
-    exph: Vec<S>,
+    exph: ExpmWork<S>,
 }
 
 impl<S: Scalar> ArnoldiProc<S> {
@@ -522,7 +524,7 @@ impl<S: Scalar> Process<S> for ArnoldiProc<S> {
             fact: ArnoldiFact::new(kd, orth),
             p,
             aug: vec![S::zero(); (kd + p + 1) * (kd + p + 1)],
-            exph: Vec::new(),
+            exph: ExpmWork::new(kd + p + 1),
         }
     }
     fn start<V, B, A>(
@@ -581,8 +583,8 @@ impl<S: Scalar> Process<S> for ArnoldiProc<S> {
         for i in 1..=p {
             aug[(k + i - 1) + (k + i) * n] = S::one();
         }
-        self.exph = expm(aug, n).map_err(|()| Error::DenseNoConvergence)?;
-        let e = self.exph[(k - 1) + (k + p) * n];
+        expm_into(aug, n, &mut self.exph).map_err(|()| Error::DenseNoConvergence)?;
+        let e = self.exph.result()[(k - 1) + (k + p) * n];
         Ok(powu(dtau, p) * beta * self.fact.normres() * e.modulus())
     }
     fn advance<V, B>(
@@ -601,8 +603,8 @@ impl<S: Scalar> Process<S> for ArnoldiProc<S> {
         let (k, p, n) = (self.fact.k, self.p, self.dim());
         let x = sgn * S::from_real(dtau);
         let col = (k + p - 1) * n;
-        let c = &self.exph[col..col + k];
-        let corr = self.exph[(k - 1) + (k + p) * n];
+        let c = &self.exph.result()[col..col + k];
+        let corr = self.exph.result()[(k - 1) + (k + p) * n];
         let a = S::from_real(beta) * powu(x, p);
         check_step(a, c, corr)?;
         poly(y, w, x).map_err(Error::Vector)?;
