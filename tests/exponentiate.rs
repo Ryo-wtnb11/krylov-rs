@@ -861,42 +861,6 @@ fn overflowing_result_is_a_typed_error() {
     }
 }
 
-/// A vector with the naive norm `√⟨x, x⟩` accumulated in its own precision,
-/// as in the crate example: it overflows for a finite `x` with
-/// `‖x‖ > √max`.
-#[derive(Clone, Debug)]
-struct Naive<S>(Vec<S>);
-
-impl<S: TestScalar> krylov::Vector for Naive<S> {
-    type Scalar = S;
-    type Error = std::convert::Infallible;
-    fn similar(&self) -> Result<Self, Self::Error> {
-        Ok(Naive(vec![S::zero(); self.0.len()]))
-    }
-    fn copy_from(&mut self, x: &Self) -> Result<(), Self::Error> {
-        self.0.copy_from_slice(&x.0);
-        Ok(())
-    }
-    fn inner(&self, y: &Self) -> Result<S, Self::Error> {
-        Ok(self
-            .0
-            .iter()
-            .zip(&y.0)
-            .fold(S::zero(), |s, (a, b)| s + a.cj() * *b))
-    }
-    fn norm(&self) -> Result<S::Real, Self::Error> {
-        // ⟨x, x⟩ overflows in `S` itself; only the result is widened.
-        let s = self.inner(self)?.to_c64().re.sqrt();
-        Ok(<S::Real as num_traits::NumCast>::from(s).unwrap())
-    }
-    fn axpby(&mut self, a: S, x: &Self, b: S) -> Result<(), Self::Error> {
-        for (s, x) in self.0.iter_mut().zip(&x.0) {
-            *s = a * *x + b * *s;
-        }
-        Ok(())
-    }
-}
-
 #[test]
 fn large_finite_result_with_a_naive_norm_is_returned() {
     // y = e^{λt}·x is finite, but ‖y‖² overflows the vector's own norm.

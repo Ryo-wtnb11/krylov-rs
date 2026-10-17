@@ -204,7 +204,7 @@ where
         return Err(Error::ZeroStartVector);
     }
     ws.basis.truncate(0);
-    st.recurrence(op, ws, nb).map_err(Error::Vector)?;
+    st.recurrence(op, ws, nb)?;
     let mut norm_r = frobenius(&st.r[..st.rs]).map_err(Error::Vector)?;
 
     let ld = kmax;
@@ -251,7 +251,7 @@ where
             }
         }
         if k < kd {
-            exhausted = !st.expand(op, ws).map_err(Error::Vector)?;
+            exhausted = !st.expand(op, ws)?;
             if !exhausted {
                 norm_r = frobenius(&st.r[..st.rs]).map_err(Error::Vector)?;
             }
@@ -374,10 +374,11 @@ impl<V: Vector> State<'_, V> {
         &mut self,
         op: &mut A,
         ws: &mut Workspace<V, B>,
-    ) -> Result<bool, V::Error> {
+    ) -> Result<bool, Error<V::Error>> {
+        let ve = Error::Vector;
         let (rs, ldb) = (self.rs, self.x.len());
         for (xi, ri) in self.x.iter_mut().zip(&self.r[..rs]) {
-            xi.copy_from(ri)?;
+            xi.copy_from(ri).map_err(ve)?;
         }
         let (mut nb, drift) = block_qr(
             &mut self.x[..rs],
@@ -385,7 +386,8 @@ impl<V: Vector> State<'_, V> {
             self.qr_tol,
             &mut self.bq,
             ldb,
-        )?;
+        )
+        .map_err(ve)?;
         if drift {
             // A small pivot may let the block drift into span(V): orthogonalize
             // against the basis, redo the QR and recompute B = Xᴴ·R exactly.
@@ -394,7 +396,7 @@ impl<V: Vector> State<'_, V> {
                 self.h.resize(ws.basis.len(), V::Scalar::zero());
                 self.s.clear();
                 self.s.resize(ws.basis.len(), V::Scalar::zero());
-                orthogonalize(&ws.basis, xi, &mut self.h, &mut self.s, self.orth)?;
+                orthogonalize(&ws.basis, xi, &mut self.h, &mut self.s, self.orth).map_err(ve)?;
             }
             nb = block_qr(
                 &mut self.x[..nb],
@@ -402,11 +404,12 @@ impl<V: Vector> State<'_, V> {
                 self.qr_tol,
                 &mut self.bq,
                 ldb,
-            )?
+            )
+            .map_err(ve)?
             .0;
             for c in 0..rs {
                 for a in 0..nb {
-                    self.bq[a + c * ldb] = self.x[a].inner(&self.r[c])?;
+                    self.bq[a + c * ldb] = self.x[a].inner(&self.r[c]).map_err(ve)?;
                 }
             }
         }
@@ -434,20 +437,24 @@ impl<V: Vector> State<'_, V> {
         op: &mut A,
         ws: &mut Workspace<V, B>,
         nb: usize,
-    ) -> Result<(), V::Error> {
+    ) -> Result<(), Error<V::Error>> {
+        let ve = Error::Vector;
         let k0 = ws.basis.len();
         for xi in &self.x[..nb] {
-            ws.basis.push(xi, V::Scalar::one())?;
+            ws.basis.push(xi, V::Scalar::one()).map_err(ve)?;
         }
         let k = k0 + nb;
         for (i, (xi, ri)) in self.x[..nb].iter().zip(&mut self.r[..nb]).enumerate() {
-            op.apply_into(xi, ri)?;
+            op.apply_into(xi, ri).map_err(ve)?;
             self.numops += 1;
             self.h.clear();
             self.h.resize(k, V::Scalar::zero());
             self.s.clear();
             self.s.resize(k, V::Scalar::zero());
-            orthogonalize(&ws.basis, ri, &mut self.h, &mut self.s, self.orth)?;
+            orthogonalize(&ws.basis, ri, &mut self.h, &mut self.s, self.orth).map_err(ve)?;
+            if !self.h.iter().all(|c| c.all_finite()) {
+                return Err(Error::NonFiniteIterate);
+            }
             self.m[i * nb..(i + 1) * nb].copy_from_slice(&self.h[k0..k]);
         }
         let half = V::Scalar::from_real(Real::<V>::from_f64(0.5));

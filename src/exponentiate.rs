@@ -420,7 +420,7 @@ impl<S: Scalar> Process<S> for LanczosProc<S> {
         B: Basis<V>,
         A: LinearMap<V>,
     {
-        self.fact.start(ws, op, None, scale).map_err(Error::Vector)
+        self.fact.start(ws, op, None, scale)
     }
     fn expand<V, B, A>(
         &mut self,
@@ -432,7 +432,7 @@ impl<S: Scalar> Process<S> for LanczosProc<S> {
         B: Basis<V>,
         A: LinearMap<V>,
     {
-        self.fact.expand(ws, op).map_err(Error::Vector)
+        self.fact.expand(ws, op)
     }
     fn len(&self) -> usize {
         self.fact.len()
