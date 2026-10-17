@@ -1,8 +1,6 @@
 //! Block thick-restart restoration (the dense Hermitian eigenproblem itself
 //! is LAPACK `xSYEVR`/`xHEEVR` through `Ops::heig`).
 
-use num_traits::{Float, Zero};
-
 use super::householder;
 use crate::scalar::Scalar;
 
@@ -31,13 +29,10 @@ pub(crate) fn arrowhead_to_band<S: Scalar>(
         // Reflector on columns 0..=j from conj(h[row, ..=j]), stored reversed
         // so that the pivot (column j) is first.
         let v = &mut refl[..=j];
-        let mut nu = S::Real::zero();
         for (t, vt) in v.iter_mut().enumerate() {
             *vt = h[row + (j - t) * ld].conj();
-            nu += vt.re() * vt.re() + vt.im() * vt.im();
         }
-        let nu = nu.sqrt();
-        let beta = householder(v);
+        let (nu, beta) = householder(v);
         h[row + j * ld] = S::from_real(nu);
         for c in 0..j {
             h[row + c * ld] = S::zero();

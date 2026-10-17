@@ -40,14 +40,7 @@ pub(crate) fn arrowhead_to_tridiag<R: RealScalar>(
         for (c, vc) in v.iter_mut().enumerate() {
             *vc = h[(j + 1) + (j - c) * ld];
         }
-        let nu = {
-            let mut s = R::zero();
-            for x in v.iter() {
-                s += *x * *x;
-            }
-            s.sqrt()
-        };
-        let beta_h = householder(v);
+        let (nu, beta_h) = householder(v);
         h[(j + 1) + j * ld] = nu;
         for c in 0..j {
             h[(j + 1) + c * ld] = R::zero();

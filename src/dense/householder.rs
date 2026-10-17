@@ -4,8 +4,12 @@ use num_traits::{Float, One, Zero};
 
 use crate::scalar::Scalar;
 
-/// Turns `x` into a Householder vector `u` (`u[0] = 1`) and returns `β` such
-/// that `(I - β u uᴴ)·x_old = ‖x_old‖·e₀`; `None` when no reflection is needed.
+/// Turns `x` into a Householder vector `u` (`u[0] = 1`) and returns
+/// `(‖x_old‖, β)` such that `(I - β u uᴴ)·x_old = ‖x_old‖·e₀`; `β` is `None`
+/// (and `x` unchanged) when no reflection is needed, i.e. `x` already is
+/// `‖x‖·e₀`, up to components below `√(min positive)·‖x‖`. Callers write this
+/// `‖x_old‖` into their reduced matrix rather than re-forming `√Σxᵢ²`, which
+/// would underflow or overflow where the reflector does not.
 ///
 /// Port of KrylovKit v0.10.4 `src/dense/reflector.jl:_householder!` with the
 /// pivot at the first entry, plus the range safeguards of LAPACK `xLARFG`:
@@ -15,8 +19,10 @@ use crate::scalar::Scalar;
 /// LAPACK's reflector itself is not used: it maps `x` to `-sign(Re x₀)·‖x‖·e₀`
 /// and for complex `x` leaves a complex `β`, while every caller here relies on
 /// `+‖x‖·e₀`.
-pub(crate) fn householder<S: Scalar>(x: &mut [S]) -> Option<S> {
-    let (first, rest) = x.split_first_mut()?;
+pub(crate) fn householder<S: Scalar>(x: &mut [S]) -> (S::Real, Option<S>) {
+    let Some((first, rest)) = x.split_first_mut() else {
+        return (S::Real::zero(), None);
+    };
     let biggest = |v: &S| v.re().abs().max(v.im().abs());
     let s = rest.iter().map(biggest).fold(biggest(first), S::Real::max);
     let small = s > S::Real::zero() && s < S::Real::min_positive_value().sqrt();
@@ -28,6 +34,15 @@ pub(crate) fn householder<S: Scalar>(x: &mut [S]) -> Option<S> {
     };
     // Multiplying by 1 is exact, so in-range input is evaluated as before.
     let sc = |v: S| v.mul_real(f1).mul_real(f2);
+    let nrm = {
+        let all = core::iter::once(&*first).chain(rest.iter());
+        let mut t = S::Real::zero();
+        for v in all {
+            let v = sc(*v);
+            t += v.re() * v.re() + v.im() * v.im();
+        }
+        t.sqrt() / f1 / f2
+    };
     let mut sigma = S::Real::zero();
     for r in rest.iter() {
         let r = sc(*r);
@@ -36,7 +51,7 @@ pub(crate) fn householder<S: Scalar>(x: &mut [S]) -> Option<S> {
     let vi = sc(*first);
     let nu = (vi.re() * vi.re() + vi.im() * vi.im() + sigma).sqrt();
     if sigma == S::Real::zero() && vi == S::from_real(nu) {
-        return None;
+        return (nrm, None);
     }
     let nu_s = S::from_real(nu);
     let piv = if vi.re() < S::Real::zero() {
@@ -50,6 +65,13 @@ pub(crate) fn householder<S: Scalar>(x: &mut [S]) -> Option<S> {
         let inv_nu = S::from_real(nu.recip());
         ((vi - vi.conj()) - S::from_real(sigma) * inv_nu) / (vi.conj() * inv_nu + S::one())
     };
+    if biggest(&piv) < S::Real::min_positive_value() {
+        // x is ν·e₀ up to components below √(min positive)·ν, far under
+        // rounding: the identity is the reflector. The exact one would need
+        // u ~ ν/‖x₁‖ and β ~ ‖x₁‖²/ν², which leave the range (and the
+        // pivot has already lost its digits).
+        return (nrm, None);
+    }
     // The pivot is O(σ/ν) when x is nearly aligned with e₀; complex
     // division forms |piv|², which then underflows although each quotient
     // is representable (Julia's `/` scales, num-complex's does not).
@@ -64,7 +86,7 @@ pub(crate) fn householder<S: Scalar>(x: &mut [S]) -> Option<S> {
         *r = (sc(*r) / piv_g).mul_real(g1).mul_real(g2);
     }
     *first = S::one();
-    Some(-piv.conj() / nu_s)
+    (nrm, Some(-piv.conj() / nu_s))
 }
 
 /// `2ᵏ` as two factors that are each representable (`2ᵏ` alone is not for
@@ -92,7 +114,7 @@ mod tests {
             .fold(0.0, f64::max);
         let xs: Vec<Complex64> = xs.iter().map(|z| z / m).collect();
         let nrm = xs.iter().map(|z| z.norm_sqr()).sum::<f64>().sqrt();
-        let Some(beta) = householder(&mut u) else {
+        let (_, Some(beta)) = householder(&mut u) else {
             // No reflection: x must already be ‖x‖·e₀.
             return xs
                 .iter()
@@ -137,6 +159,9 @@ mod tests {
                 c(-2.2e-19, 0.0),
             ],
             vec![c(3.2e-12, 1.3e-25), c(-6.4e-32, 1.2e-32)],
+            // Traced (svdsolve restart): σ is subnormal in f32, so the
+            // pivot -σ/(x₀+ν) underflows to 0.
+            vec![c(1.0, 0.0), c(3e-23, 0.0), c(-2e-23, 0.0)],
             // Mixed scales near underflow and overflow, and ordinary input.
             vec![c(tiny, 0.0), c(-tiny, tiny), c(3.0 * tiny, 0.0)],
             vec![c(-tiny, 2.0 * tiny), c(tiny * 1e3, 0.0)],

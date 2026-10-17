@@ -106,7 +106,7 @@ impl<V: Vector> Basis<V> for VecBasis<V> {
         for j in 0..keep {
             let (head, tail) = self.q.split_at_mut((j + 1) * m);
             let col = &mut head[j * m + j..];
-            let Some(beta) = householder(col) else {
+            let (_, Some(beta)) = householder(col) else {
                 continue;
             };
             let u = &*col; // u[0] = 1, reflector h = I - β u uᴴ on rows j..m
