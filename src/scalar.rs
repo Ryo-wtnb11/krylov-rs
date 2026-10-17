@@ -78,6 +78,35 @@ pub(crate) mod sealed {
             nrhs: usize,
             ipiv: &mut [i32],
         ) -> Result<(), ()>;
+        /// Whether the type is complex (its Schur factors are triangular).
+        const COMPLEX: bool;
+        /// Raw LAPACK `xHSEQR(job='S', compz='V')` on the `n × n` upper
+        /// Hessenberg `h` (column-major): `h ← T`, `z ← z·Q`, eigenvalues in
+        /// `ev` (a real complex pair `+im` first).
+        fn hseqr_raw(
+            h: &mut [Self],
+            z: &mut [Self],
+            n: usize,
+            ev: &mut [Complex<R>],
+            w: &mut Work<Self, R>,
+        ) -> Result<(), ()>;
+        /// LAPACK `xTREXC(compq='V')`, 0-based block positions. `Err` when
+        /// the real swap is rejected as too ill-conditioned (`info = 1`).
+        fn trexc(
+            t: &mut [Self],
+            q: &mut [Self],
+            n: usize,
+            ifst: usize,
+            ilst: usize,
+            w: &mut Work<Self, R>,
+        ) -> Result<(), ()>;
+        /// LAPACK `xTREVC(side='R', howmny='A')` on the Schur factor `t`.
+        fn trevc(
+            t: &mut [Self],
+            n: usize,
+            vr: &mut [Self],
+            w: &mut Work<Self, R>,
+        ) -> Result<(), ()>;
     }
 
     /// Internal real helpers; seals [`RealScalar`](super::RealScalar).
@@ -162,6 +191,50 @@ pub(crate) mod sealed {
             nrhs: usize,
             ipiv: &mut [i32],
         ) -> Result<(), ()>;
+        /// Real `xHSEQR(job='S', compz='V')` on the `n × n` Hessenberg `h`.
+        fn hseqr(
+            h: &mut [Self],
+            z: &mut [Self],
+            n: usize,
+            ev: &mut [Complex<Self>],
+            w: &mut Work<Self, Self>,
+        ) -> Result<(), ()>;
+        /// Complex `xHSEQR(job='S', compz='V')`.
+        fn chseqr(
+            h: &mut [Complex<Self>],
+            z: &mut [Complex<Self>],
+            n: usize,
+            ev: &mut [Complex<Self>],
+            w: &mut Work<Complex<Self>, Self>,
+        ) -> Result<(), ()>;
+        /// Real `xTREXC(compq='V')`, 0-based `ifst`/`ilst`.
+        fn trexc(
+            t: &mut [Self],
+            q: &mut [Self],
+            n: usize,
+            ifst: usize,
+            ilst: usize,
+            w: &mut Work<Self, Self>,
+        ) -> Result<(), ()>;
+        /// Complex `xTREXC(compq='V')`, 0-based `ifst`/`ilst`.
+        fn ctrexc(
+            t: &mut [Complex<Self>],
+            q: &mut [Complex<Self>],
+            n: usize,
+            ifst: usize,
+            ilst: usize,
+        ) -> Result<(), ()>;
+        /// Real `xTREVC(side='R', howmny='A')`: right eigenvectors of the
+        /// quasi-triangular `t` into `vr` (`n × n`).
+        fn trevc(t: &[Self], n: usize, vr: &mut [Self], w: &mut Work<Self, Self>)
+        -> Result<(), ()>;
+        /// Complex `xTREVC(side='R', howmny='A')`.
+        fn ctrevc(
+            t: &mut [Complex<Self>],
+            n: usize,
+            vr: &mut [Complex<Self>],
+            w: &mut Work<Complex<Self>, Self>,
+        ) -> Result<(), ()>;
     }
 }
 
@@ -212,6 +285,34 @@ macro_rules! real_scalar {
                 ipiv: &mut [i32],
             ) -> Result<(), ()> {
                 <$t as sealed::RealOps>::gesv_r(a, b, n, nrhs, ipiv)
+            }
+            const COMPLEX: bool = false;
+            fn hseqr_raw(
+                h: &mut [Self],
+                z: &mut [Self],
+                n: usize,
+                ev: &mut [Complex<$t>],
+                w: &mut crate::dense::Work<Self, $t>,
+            ) -> Result<(), ()> {
+                <$t as sealed::RealOps>::hseqr(h, z, n, ev, w)
+            }
+            fn trexc(
+                t: &mut [Self],
+                q: &mut [Self],
+                n: usize,
+                ifst: usize,
+                ilst: usize,
+                w: &mut crate::dense::Work<Self, $t>,
+            ) -> Result<(), ()> {
+                <$t as sealed::RealOps>::trexc(t, q, n, ifst, ilst, w)
+            }
+            fn trevc(
+                t: &mut [Self],
+                n: usize,
+                vr: &mut [Self],
+                w: &mut crate::dense::Work<Self, $t>,
+            ) -> Result<(), ()> {
+                <$t as sealed::RealOps>::trevc(t, n, vr, w)
             }
         }
         impl Scalar for $t {
@@ -264,6 +365,34 @@ macro_rules! real_scalar {
                 ipiv: &mut [i32],
             ) -> Result<(), ()> {
                 <$t as sealed::RealOps>::gesv_c(a, b, n, nrhs, ipiv)
+            }
+            const COMPLEX: bool = true;
+            fn hseqr_raw(
+                h: &mut [Self],
+                z: &mut [Self],
+                n: usize,
+                ev: &mut [Complex<$t>],
+                w: &mut crate::dense::Work<Self, $t>,
+            ) -> Result<(), ()> {
+                <$t as sealed::RealOps>::chseqr(h, z, n, ev, w)
+            }
+            fn trexc(
+                t: &mut [Self],
+                q: &mut [Self],
+                n: usize,
+                ifst: usize,
+                ilst: usize,
+                _w: &mut crate::dense::Work<Self, $t>,
+            ) -> Result<(), ()> {
+                <$t as sealed::RealOps>::ctrexc(t, q, n, ifst, ilst)
+            }
+            fn trevc(
+                t: &mut [Self],
+                n: usize,
+                vr: &mut [Self],
+                w: &mut crate::dense::Work<Self, $t>,
+            ) -> Result<(), ()> {
+                <$t as sealed::RealOps>::ctrevc(t, n, vr, w)
             }
         }
         impl Scalar for Complex<$t> {

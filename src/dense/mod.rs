@@ -7,6 +7,7 @@ mod heig;
 mod householder;
 mod lapack;
 mod phi;
+mod schur;
 mod tridiag;
 
 pub(crate) use bidiag::{arrowhead_to_bidiag, bidiag_svd, lower_rect_bidiag_svd};
@@ -15,6 +16,7 @@ pub(crate) use heig::arrowhead_to_band;
 pub(crate) use householder::householder;
 pub(crate) use lapack::Work;
 pub(crate) use phi::{phi_last, phi_upto};
+pub(crate) use schur::{hschur, permute_schur, schur_eigvals, schur_eigvecs};
 pub(crate) use tridiag::arrowhead_to_tridiag;
 
 #[cfg(test)]

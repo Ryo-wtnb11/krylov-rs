@@ -47,6 +47,16 @@ pub enum Error<E> {
     /// A map application produced a vector with a non-finite norm during
     /// the iteration.
     NonFiniteIterate,
+    /// Reordering the small Schur form was rejected by LAPACK `xTREXC`
+    /// (a swap of nearly equal or ill-conditioned 2×2 blocks).
+    SchurReorderFailed,
+    /// `realeigsolve`: the eigenvalue at `index` (0-based, in `which` order)
+    /// of the requested ones is complex, i.e. its 2×2 Schur block couples by
+    /// more than `tol`.
+    ComplexEigenvalue {
+        /// Position of the first eigenvalue of the complex pair.
+        index: usize,
+    },
 }
 
 impl<E: fmt::Display> fmt::Display for Error<E> {
@@ -75,6 +85,10 @@ impl<E: fmt::Display> fmt::Display for Error<E> {
                 f.write_str("adjoint map is not compatible with the linear map")
             }
             Error::NonFiniteIterate => f.write_str("linear map produced a non-finite vector"),
+            Error::SchurReorderFailed => f.write_str("reordering the small Schur form failed"),
+            Error::ComplexEigenvalue { index } => {
+                write!(f, "requested eigenvalue {index} is complex, not real")
+            }
         }
     }
 }

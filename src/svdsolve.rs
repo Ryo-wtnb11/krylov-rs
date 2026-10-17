@@ -258,7 +258,7 @@ where
     if alg.tol.is_nan() || alg.tol < 0.0 {
         return Err(Error::InvalidArgument("tol must be non-negative"));
     }
-    if which == Which::LargestMagnitude {
+    if !matches!(which, Which::LargestReal | Which::SmallestReal) {
         return Err(Error::InvalidArgument(
             "svdsolve targets LargestReal or SmallestReal singular values",
         ));

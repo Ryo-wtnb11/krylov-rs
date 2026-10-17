@@ -163,6 +163,7 @@ where
             capacity,
         });
     }
+    crate::eigsolve::real_spectrum(which)?;
     if howmany > kd {
         return Err(Error::HowmanyTooLarge {
             howmany,

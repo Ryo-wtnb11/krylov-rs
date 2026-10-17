@@ -9,8 +9,13 @@ use crate::scalar::sealed::{Ops as _, RealOps as _};
 use crate::scalar::{MatRef, Real, RealScalar};
 use crate::traits::{Basis, LinearMap, Vector, Workspace};
 
-/// Which eigenvalues `eigsolve` targets (KrylovKit `:LM`, `:LR`, `:SR`).
+/// Which eigenvalues to target (KrylovKit `:LM`, `:LR`, `:SR`, `:LI`, `:SI`).
+///
+/// The imaginary-part selectors need complex arithmetic: the Hermitian
+/// solvers ([`eigsolve`], `block_eigsolve`, `svdsolve`) and the real-vector
+/// Arnoldi solvers reject them with [`Error::InvalidArgument`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Which {
     /// Largest magnitude.
     LargestMagnitude,
@@ -18,6 +23,26 @@ pub enum Which {
     LargestReal,
     /// Smallest (most negative) real part.
     SmallestReal,
+    /// Largest (most positive) imaginary part.
+    LargestImag,
+    /// Smallest (most negative) imaginary part.
+    SmallestImag,
+}
+
+impl Which {
+    pub(crate) fn is_imag(self) -> bool {
+        matches!(self, Which::LargestImag | Which::SmallestImag)
+    }
+}
+
+/// The `InvalidArgument` of a Hermitian solver given `LargestImag`/`SmallestImag`.
+pub(crate) fn real_spectrum<E>(which: Which) -> Result<(), Error<E>> {
+    if which.is_imag() {
+        return Err(Error::InvalidArgument(
+            "LargestImag/SmallestImag select complex eigenvalues; Hermitian solvers have real ones",
+        ));
+    }
+    Ok(())
 }
 
 /// Convergence information of [`eigsolve`].
@@ -67,6 +92,7 @@ where
     A: LinearMap<V>,
 {
     let tol = alg.validate(ws)?;
+    real_spectrum(which)?;
     let kd = alg.get_krylovdim();
     if howmany > kd {
         return Err(Error::HowmanyTooLarge {
@@ -204,7 +230,8 @@ pub(crate) fn sort_eig<R: RealScalar, T: Copy>(
     let key = |x: R| match which {
         Which::LargestMagnitude => -x.abs(),
         Which::LargestReal => -x,
-        Which::SmallestReal => x,
+        // Imaginary-part selectors are rejected before any sort of real values.
+        Which::SmallestReal | Which::LargestImag | Which::SmallestImag => x,
     };
     perm.sort_by(|&a, &b| {
         key(d[a])

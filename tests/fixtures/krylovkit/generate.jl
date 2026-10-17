@@ -41,7 +41,7 @@ startvec(g, n, iscomplex) = iscomplex ? [complex(unif(g), unif(g)) for _ in 1:n]
 info = Pkg.dependencies()[Base.UUID("0b1a1467-8014-51b9-945f-bf0ae24f4b77")]
 fmt(xs) = join((repr(Float64(x)) for x in xs), " ")
 
-for family in ("eigsolve", "exponentiate", "expint", "linsolve", "block", "svdsolve", "expm")
+for family in ("eigsolve", "exponentiate", "expint", "linsolve", "block", "svdsolve", "expm", "arnoldi")
     global out = IOBuffer()
     println(out, "# KrylovKit ", info.version, " git-tree-sha1 ", info.tree_hash)
     include(joinpath(@__DIR__, family * ".jl"))
