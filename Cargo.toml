@@ -1,0 +1,14 @@
+[package]
+name = "krylov"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+description = "Krylov subspace algorithms (Lanczos eigensolver, exponential integrator) over user-defined vector types, modelled on KrylovKit.jl"
+repository = "https://github.com/Ryo-wtnb11/krylov-rs"
+readme = "README.md"
+keywords = ["krylov", "lanczos", "eigenvalues", "linear-algebra", "tensor-network"]
+categories = ["mathematics", "science", "algorithms"]
+publish = false
+
+[dependencies]
