@@ -129,20 +129,21 @@ impl<S: Scalar> Fact<S> {
     /// `Aᴴu` lies in the span of the right basis and `(U, V)` is an invariant
     /// pair, `A·V = U·B̃` with the `(k+1) × k` lower bidiagonal `B̃`.
     #[allow(clippy::too_many_arguments)]
-    fn push_u<V, BU, BV, A>(
+    fn push_u<V, W, BU, BV, A>(
         &mut self,
         op: &mut A,
-        ws_u: &mut Workspace<V, BU>,
+        ws_u: &mut Workspace<W, BU>,
         ws_v: &mut Workspace<V, BV>,
-        src: Option<&V>,
+        src: Option<&W>,
         nrm: S::Real,
         tol: S::Real,
     ) -> Result<Option<S::Real>, Error<V::Error>>
     where
         V: Vector<Scalar = S>,
-        BU: Basis<V>,
+        W: Vector<Scalar = S, Error = V::Error>,
+        BU: Basis<W>,
         BV: Basis<V>,
-        A: AdjointMap<V>,
+        A: AdjointMap<V, W>,
     {
         let inv = S::from_real(S::Real::one() / nrm);
         let src = src.unwrap_or(&ws_u.w);
@@ -163,18 +164,19 @@ impl<S: Scalar> Fact<S> {
 
     /// Appends `v = ws_v.w/α` and computes `r = (I - UUᴴ)A·v`; records `α`,
     /// `β = ‖r‖`. Returns the coefficient `⟨u_k, A·v⟩`, which equals `α`.
-    fn push_v<V, BU, BV, A>(
+    fn push_v<V, W, BU, BV, A>(
         &mut self,
         op: &mut A,
-        ws_u: &mut Workspace<V, BU>,
+        ws_u: &mut Workspace<W, BU>,
         ws_v: &mut Workspace<V, BV>,
         alpha: S::Real,
     ) -> Result<S, Error<V::Error>>
     where
         V: Vector<Scalar = S>,
-        BU: Basis<V>,
+        W: Vector<Scalar = S, Error = V::Error>,
+        BU: Basis<W>,
         BV: Basis<V>,
-        A: AdjointMap<V>,
+        A: AdjointMap<V, W>,
     {
         let inv = S::from_real(S::Real::one() / alpha);
         ws_v.basis.push(&ws_v.w, inv).map_err(Error::Vector)?;
@@ -194,8 +196,11 @@ impl<S: Scalar> Fact<S> {
 }
 
 /// Computes the `howmany` largest ([`Which::LargestReal`]) or smallest
-/// ([`Which::SmallestReal`]) singular values of `op` with their left and
-/// right singular vectors, starting from `x0` in the codomain.
+/// ([`Which::SmallestReal`]) singular values of `op: V → W` with their left
+/// (`W`) and right (`V`) singular vectors, starting from `x0` in the
+/// codomain. `V` and `W` may be one Rust vector type (the default of
+/// [`AdjointMap`]) or two types with the same scalar and error types, as
+/// KrylovKit's `GKLFactorization{TU, TV}` allows.
 ///
 /// Follows KrylovKit v0.10.4 `svdsolve(A, x₀, howmany, which, ::GKL)`: thick
 /// restart of the Golub–Kahan–Lanczos bidiagonalization, values in
@@ -235,25 +240,27 @@ impl<S: Scalar> Fact<S> {
 /// Ritz values targeting zero converge to the same genuine zero eigenvalues
 /// of `AAᴴ`.
 ///
-/// `ws_u` holds the left basis and must be in the space of `x0`; `ws_v` holds
-/// the right basis and must be in the domain of `op`. Both bases need
+/// `ws_u` (codomain, `W`) holds the left basis and must be in the space of
+/// `x0`; `ws_v` (domain, `V`) holds the right basis and must be in the domain
+/// of `op`. `info.residual` lives in the codomain. Both bases need
 /// capacity `>= alg.get_krylovdim()`. Iterations and restarts allocate no
 /// vectors; a call allocates the `3·n` returned vectors.
 #[allow(clippy::type_complexity)]
-pub fn svdsolve<V, BU, BV, A>(
+pub fn svdsolve<V, W, BU, BV, A>(
     op: &mut A,
-    x0: &V,
+    x0: &W,
     howmany: usize,
     which: Which,
     alg: &Gkl,
-    ws_u: &mut Workspace<V, BU>,
+    ws_u: &mut Workspace<W, BU>,
     ws_v: &mut Workspace<V, BV>,
-) -> Result<(Vec<Real<V>>, Vec<V>, Vec<V>, ConvergenceInfo<V>), Error<V::Error>>
+) -> Result<(Vec<Real<V>>, Vec<W>, Vec<V>, ConvergenceInfo<W>), Error<V::Error>>
 where
     V: Vector,
-    BU: Basis<V>,
+    W: Vector<Scalar = V::Scalar, Error = V::Error>,
+    BU: Basis<W>,
     BV: Basis<V>,
-    A: AdjointMap<V>,
+    A: AdjointMap<V, W>,
 {
     let kd = alg.krylovdim;
     if kd < 2 {
