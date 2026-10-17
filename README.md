@@ -266,6 +266,45 @@ krylov's own tests use Accelerate on macOS and the system OpenBLAS elsewhere.
   arithmetic and `sqrt`; `exponentiate`'s step acceptance also branches on
   libm `exp`, `ln` and `pow`.
 
+## Low-rank and tensor-network vectors
+
+Vectors whose representation grows under linear combination (MPS/TT, low-rank
+matrices) work with `exponentiate` and `expintegrator` without any krylov
+hook. Every combination krylov performs is a trait method that the user
+implements, so truncation (e.g. SVD rounding to a relative accuracy `τ`)
+goes inside those methods:
+
+- `LinearMap::apply_into`: truncate the product, as with any tensor-network
+  map.
+- `Vector::axpby(a, x, b)` with `a ≠ 0` and `b ≠ 0`, and
+  `Basis::combine_into`: truncate the combination. (`exponentiate` and
+  `expintegrator` never call `Basis::rotate`; only the restart solvers
+  below do, and those are unsupported under truncation.) A real
+  tensor-network `Basis` should implement `combine_into` as one truncated
+  sum (for an MPS, bond `kχ` before truncation); the default `VecBasis` loops
+  over `axpby` and so truncates once per term.
+- Do not truncate pure rescalings (`Basis::push`, `axpby` with `b == 0` or
+  `a == 0`). Repeatedly truncating an already truncated vector drifts by `τ`
+  each time.
+
+This places the rounding where KIOPS-TT does it (Weigel–Riemer–Stoll,
+arXiv:2607.11293, and its `kiops_tt.m`): after the operator product, after
+orthogonalization and before the norm, and in the solution update. Choose
+`τ` about `tol/10` (KIOPS-TT's default); the paper's experiments use
+`τ = tol` and degrade for larger `τ`. The step error estimate and
+`info.converged` do not see truncation error, so a coarse `τ` reports
+convergence while missing `tol`. The exponential needs only the Arnoldi
+relation, not an orthonormal basis (KIOPS, Gaudreault–Rainwater–Tokman
+2018), so the `O(τ)` loss of orthogonality is harmless there.
+`tests/truncated.rs` checks this with SVD-truncated matrix vectors on
+`X ↦ L·X + X·Lᵀ` against the exact flow.
+
+Not supported under truncation: the thick-restart solvers (`eigsolve`,
+`block_eigsolve`, `svdsolve`, `schursolve` and its eigen variants), whose
+restart relation the truncated `rotate` breaks, and `linsolve`, which would
+need a relaxed truncation schedule and explicitly computed residuals
+(inexact Krylov).
+
 ## Status
 
 Pre-release. Not published on crates.io; the API may change.
