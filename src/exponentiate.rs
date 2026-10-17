@@ -7,7 +7,7 @@ use core::ops::Mul;
 use num_traits::{Float, One, Zero};
 
 use crate::arnoldi::{Arnoldi, Fact as ArnoldiFact};
-use crate::dense::{Work, expm, phi_last, phi_upto};
+use crate::dense::{Work, expm, phi_last, phi_pair};
 use crate::error::Error;
 use crate::lanczos::{Fact, Lanczos, validate};
 use crate::orth::Orth;
@@ -391,7 +391,7 @@ struct LanczosProc<S: Scalar> {
     c: Vec<S>,
     s1: Vec<S>,
     s2: Vec<S>,
-    phis: Vec<S>,
+    p: usize,
 }
 
 impl<S: Scalar> Process<S> for LanczosProc<S> {
@@ -406,7 +406,7 @@ impl<S: Scalar> Process<S> for LanczosProc<S> {
             c: Vec::with_capacity(kd),
             s1: vec![S::zero(); kd],
             s2: vec![S::zero(); kd],
-            phis: vec![S::zero(); p + 2],
+            p,
         }
     }
     fn start<V, B, A>(
@@ -466,7 +466,7 @@ impl<S: Scalar> Process<S> for LanczosProc<S> {
             &self.z[..k * k],
             &mut self.s1,
             &mut self.s2,
-            &mut self.phis,
+            self.p,
         ))
     }
     fn advance<V, B>(
@@ -488,7 +488,7 @@ impl<S: Scalar> Process<S> for LanczosProc<S> {
             y,
             w,
             &mut self.c,
-            &mut self.phis,
+            self.p,
             sgn,
             dtau,
             beta,
@@ -677,7 +677,7 @@ fn eig<S: Scalar, E>(
 }
 
 /// Local error estimate `Δτᵖ·β·‖r‖·|e_kᵀ φ_{p+1}(sΔτ T) e₁|` (KrylovKit's
-/// `ϵ`, there read from the augmented matrix exponential); `p + 2 = phis.len()`.
+/// `ϵ`, there read from the augmented matrix exponential).
 #[allow(clippy::too_many_arguments)]
 fn err<S: Scalar>(
     sgn: S,
@@ -688,16 +688,15 @@ fn err<S: Scalar>(
     z: &[S::Real],
     s1: &mut [S],
     s2: &mut [S],
-    phis: &mut [S],
+    p: usize,
 ) -> S::Real {
     let k = lam.len();
-    let p = phis.len() - 2;
     let x = sgn * S::from_real(dtau);
     let e = phi_last(x, p + 1, &fact.alpha, &fact.beta, s1, s2).unwrap_or_else(|| {
         let mut e = S::zero();
         for (i, &l) in lam.iter().enumerate() {
-            phi_upto(x * S::from_real(l), phis);
-            e += phis[p + 1].mul_real(z[(k - 1) + i * k] * z[i * k]);
+            let (_, phi) = phi_pair(x * S::from_real(l), p);
+            e += phi.mul_real(z[(k - 1) + i * k] * z[i * k]);
         }
         e
     });
@@ -712,7 +711,7 @@ fn advance<V: Vector, B: Basis<V>>(
     y: &mut V,
     w: &[V],
     c: &mut Vec<V::Scalar>,
-    phis: &mut [V::Scalar],
+    p: usize,
     sgn: V::Scalar,
     dtau: Real<V>,
     beta: Real<V>,
@@ -720,18 +719,17 @@ fn advance<V: Vector, B: Basis<V>>(
     z: &[Real<V>],
 ) -> Result<(), Error<V::Error>> {
     let k = lam.len();
-    let p = phis.len() - 2;
     let x = sgn * V::Scalar::from_real(dtau);
     c.clear();
     c.resize(k, V::Scalar::zero());
     let mut corr = V::Scalar::zero();
     for (i, &l) in lam.iter().enumerate() {
-        phi_upto(x * V::Scalar::from_real(l), phis);
-        let w1 = phis[p].mul_real(z[i * k]);
+        let (phi_p, phi_q) = phi_pair(x * V::Scalar::from_real(l), p);
+        let w1 = phi_p.mul_real(z[i * k]);
         for (cj, &zj) in c.iter_mut().zip(&z[i * k..(i + 1) * k]) {
             *cj += w1.mul_real(zj);
         }
-        corr += phis[p + 1].mul_real(z[(k - 1) + i * k] * z[i * k]);
+        corr += phi_q.mul_real(z[(k - 1) + i * k] * z[i * k]);
     }
     let a = V::Scalar::from_real(beta) * powu(x, p);
     check_step(a, c, corr)?;

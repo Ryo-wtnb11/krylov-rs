@@ -5,49 +5,65 @@ use num_traits::{Float, One, Zero};
 use crate::scalar::Scalar;
 use crate::scalar::sealed::RealOps as _;
 
-/// `out[j] = φ_j(x)` for `j < out.len()`, with `φ₀ = exp` and
-/// `φ_{j+1}(x) = (φ_j(x) - 1/j!)/x`.
+/// `(φ_p(x), φ_{p+1}(x))`, with `φ₀ = exp` and
+/// `φ_{j+1}(x) = (φ_j(x) - 1/j!)/x`: the only two entries expintegrator reads.
 ///
-/// Uses the Taylor series for `|x| < 1` (no cancellation) and the recurrence
-/// otherwise.
-// ponytail: the recurrence loses about log10(e·j!) digits of φ_j just above
-// |x| = 1; fine for the few φ's expintegrator needs, a per-j series radius
-// would lift that if large p ever matters.
-pub(crate) fn phi_upto<S: Scalar>(x: S, out: &mut [S]) {
+/// For `|x| < p + 1` both come from the Taylor series
+/// `φ_j(x) = Σ_n xⁿ/(n+j)!`, whose terms then decrease from the first; its
+/// cancellation factor `Σ|terms|/|φ_p(x)| = φ_p(|x|)/|φ_p(x)|` is largest
+/// as `x → -(p+1)` and stays below about 12 for `p ≤ 12`. Otherwise the
+/// recurrence runs up from `exp(x)`; with `|x| ≥ p + 1 > j` each step
+/// `φ_j - 1/j!` keeps most of `φ_j`. The error is a few ulps times the
+/// conditioning of `φ_j` at `x` (`tests/fixtures/phi`). A fixed radius 1
+/// instead lost about `j!` ulps of `φ_j` just above it (#4), and a wider
+/// series radius loses digits to cancellation of terms near `e^{|x|}`.
+///
+/// When `e^{Re x}` overflows the result is infinite, even where `φ_j(x)` (about
+/// `e^x/x^j`) would be representable; expintegrator then rejects the step
+/// as non-finite (#13) and takes a shorter one.
+pub(crate) fn phi_pair<S: Scalar>(x: S, p: usize) -> (S, S) {
     // An exactly real argument (real t on a Hermitian map) is evaluated in
     // real arithmetic: complex `exp`, products and quotients turn an
     // overflowed `∞ + 0i` into `∞ + NaN·i`, which a NaN-blind step
     // controller would accept.
     if x.im() == S::Real::zero() {
-        phi_into(x.re(), out, S::from_real);
+        let (a, b) = pair(x.re(), p);
+        (S::from_real(a), S::from_real(b))
     } else {
-        phi_into(x, out, |v| v);
+        pair(x, p)
     }
 }
 
-fn phi_into<T: Scalar, S>(x: T, out: &mut [S], to: impl Fn(T) -> S) {
-    let mut inv_fact = T::Real::one(); // 1/j!
-    if x.modulus() < T::Real::one() {
-        // φ_j(x) = Σ_n xⁿ/(n+j)!; for |x| < 1 the tail after 22 terms is below 1/(22+j)!.
-        for (j, o) in out.iter_mut().enumerate() {
-            if j > 0 {
-                inv_fact /= T::Real::from_usize(j);
+fn pair<T: Scalar>(x: T, p: usize) -> (T, T) {
+    let r = x.modulus();
+    let mut inv_fact = T::Real::one(); // 1/p!
+    for i in 1..=p {
+        inv_fact /= T::Real::from_usize(i);
+    }
+    if r < T::Real::from_usize(p + 1) {
+        let eps = T::Real::epsilon();
+        let mut u = T::from_real(inv_fact); // xⁿ/(n+p)!
+        let (mut sp, mut sq) = (T::zero(), T::zero());
+        // The terms fall below ε·|φ_{p+1}| after O(p + 40) terms; the cap
+        // only guards a sum that is exactly zero.
+        for n in 0..p + 200 {
+            let d = T::Real::from_usize(n + p + 1);
+            sp += u;
+            sq += u / T::from_real(d);
+            u = u * x / T::from_real(d);
+            if d > r && u.modulus() <= eps * sq.modulus() {
+                break;
             }
-            let mut t = T::from_real(inv_fact); // xⁿ/(n+j)!
-            let mut sum = T::zero();
-            for n in 0..22usize {
-                sum += t;
-                t = t * x / T::from_real(T::Real::from_usize(n + j + 1));
-            }
-            *o = to(sum);
         }
+        (sp, sq)
     } else {
         let mut phi = x.scalar_exp();
-        for (j, o) in out.iter_mut().enumerate() {
-            *o = to(phi);
-            phi = (phi - T::from_real(inv_fact)) / x;
-            inv_fact /= T::Real::from_usize(j + 1);
+        let mut f = T::Real::one(); // 1/j!
+        for j in 0..p {
+            phi = (phi - T::from_real(f)) / x;
+            f /= T::Real::from_usize(j + 1);
         }
+        (phi, (phi - T::from_real(f)) / x)
     }
 }
 
