@@ -301,9 +301,17 @@ mod tests {
                     t[(i, i + 1)].is_sign_negative(),
                     t[(i + 1, i)].is_sign_negative()
                 );
+                // The imaginary part is rounded differently by `dlanv2` and
+                // `schur_eigvals`, and across LAPACK builds; the real part and
+                // the conjugate pairing are exact in both producers.
                 let im = t[(i, i + 1)].abs().sqrt() * t[(i + 1, i)].abs().sqrt();
-                assert_eq!(w[i], c(t[(i, i)], im));
-                assert_eq!(w[i + 1], c(t[(i, i)], -im));
+                assert_eq!(w[i].re, t[(i, i)]);
+                assert!(
+                    (w[i].im - im).abs() <= 4.0 * f64::EPSILON * im,
+                    "{} vs {im}",
+                    w[i].im
+                );
+                assert_eq!(w[i + 1], w[i].conj());
                 i += 2;
             } else {
                 assert_eq!(w[i], c(t[(i, i)], 0.0));
