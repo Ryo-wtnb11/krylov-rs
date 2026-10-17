@@ -1,10 +1,12 @@
 //! Small dense computations on the projected problem (host, `O(k²)`–`O(k³)`).
 
 mod bidiag;
+mod cplx;
 mod givens;
 mod heig;
 mod householder;
 mod phi;
+mod schur;
 mod tridiag;
 
 pub(crate) use bidiag::{arrowhead_to_bidiag, bidiag_svd, lower_rect_bidiag_svd};
@@ -12,6 +14,7 @@ pub(crate) use givens::{Givens, givens, upper_solve};
 pub(crate) use heig::{apply_qh, arrowhead_to_band, hermitian_tridiag};
 pub(crate) use householder::householder;
 pub(crate) use phi::{phi_last, phi_upto};
+pub(crate) use schur::{complex_schur, real_schur};
 pub(crate) use tridiag::{arrowhead_to_tridiag, tridiag_eigh};
 
 #[cfg(test)]

@@ -47,6 +47,16 @@ pub(crate) mod sealed {
         /// `|self|`, using only `sqrt`.
         fn modulus(self) -> R;
         fn all_finite(self) -> bool;
+        /// Schur form of the `n × n` upper Hessenberg `h` (column-major),
+        /// `z ← z·Q`, eigenvalues in `w`: real quasi-triangular (LAPACK
+        /// `DLAHQR`) for real scalars, triangular (`ZLAHQR`) for complex ones.
+        /// `Err(())` on non-finite input or when the QR budget is exhausted.
+        fn hschur(
+            h: &mut [Self],
+            z: &mut [Self],
+            n: usize,
+            w: &mut [num_complex::Complex<R>],
+        ) -> Result<(), ()>;
     }
 
     /// Internal real helpers; seals [`RealScalar`](super::RealScalar).
@@ -94,6 +104,14 @@ macro_rules! real_scalar {
             fn all_finite(self) -> bool {
                 Float::is_finite(self)
             }
+            fn hschur(
+                h: &mut [Self],
+                z: &mut [Self],
+                n: usize,
+                w: &mut [Complex<$t>],
+            ) -> Result<(), ()> {
+                crate::dense::real_schur(h, z, n, w)
+            }
         }
         impl Scalar for $t {
             type Real = $t;
@@ -122,6 +140,14 @@ macro_rules! real_scalar {
             }
             fn all_finite(self) -> bool {
                 self.re.is_finite() && self.im.is_finite()
+            }
+            fn hschur(
+                h: &mut [Self],
+                z: &mut [Self],
+                n: usize,
+                w: &mut [Complex<$t>],
+            ) -> Result<(), ()> {
+                crate::dense::complex_schur(h, z, n, w)
             }
         }
         impl Scalar for Complex<$t> {
