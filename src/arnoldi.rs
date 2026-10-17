@@ -96,18 +96,18 @@ impl Arnoldi {
 /// Arnoldi factorization `A·V = V·H + r·e_kᵀ` with the Hessenberg `H` stored
 /// as `(kd+1) × kd` (the subdiagonal of the last column is `‖r‖`). `ws.v` is
 /// the current basis vector and `ws.w` the residual `r`.
-struct Fact<S: Scalar> {
-    h: Vec<S>,
-    ld: usize,
-    k: usize,
+pub(crate) struct Fact<S: Scalar> {
+    pub(crate) h: Vec<S>,
+    pub(crate) ld: usize,
+    pub(crate) k: usize,
     col: Vec<S>,
     scratch: Vec<S>,
-    numops: usize,
+    pub(crate) numops: usize,
     orth: Orth,
 }
 
 impl<S: Scalar> Fact<S> {
-    fn new(kd: usize, orth: Orth) -> Self {
+    pub(crate) fn new(kd: usize, orth: Orth) -> Self {
         Self {
             h: vec![S::zero(); (kd + 1) * kd],
             ld: kd + 1,
@@ -119,13 +119,13 @@ impl<S: Scalar> Fact<S> {
         }
     }
 
-    fn normres(&self) -> S::Real {
+    pub(crate) fn normres(&self) -> S::Real {
         self.h[self.k + (self.k - 1) * self.ld].re()
     }
 
     /// Appends `scale·src` (`src` = `x`, or the residual when `None`) to the
     /// basis and performs one Arnoldi step.
-    fn push<V, B, A>(
+    pub(crate) fn push<V, B, A>(
         &mut self,
         ws: &mut Workspace<V, B>,
         op: &mut A,

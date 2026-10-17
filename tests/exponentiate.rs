@@ -1,10 +1,10 @@
-//! `exponentiate` and `expintegrator` against nalgebra's dense matrix
-//! exponential, and `expintegrator` against KrylovKit fixtures.
+//! `exponentiate` and `expintegrator` (Lanczos and Arnoldi) against
+//! nalgebra's dense matrix exponential and KrylovKit fixtures.
 
 mod common;
 
 use common::*;
-use krylov::{Error, Lanczos, Workspace, expintegrator, exponentiate};
+use krylov::{Arnoldi, Error, KrylovProcess, Lanczos, Workspace, expintegrator, exponentiate};
 use nalgebra::DMatrix;
 use num_complex::{Complex32, Complex64};
 
@@ -447,5 +447,338 @@ fn matches_krylovkit_expintegrator_fixtures() {
             "{name}: numops {} vs {no}",
             info.numops
         );
+    }
+}
+
+/// Parses a `fixtures/krylovkit/*.txt` file (see tests/krylovkit.rs).
+fn fixture_cases(text: &str) -> Vec<std::collections::HashMap<String, String>> {
+    let mut cases = Vec::new();
+    let mut cur = std::collections::HashMap::new();
+    for line in text.lines().filter(|l| !l.starts_with('#')) {
+        if line == "end" {
+            cases.push(std::mem::take(&mut cur));
+            continue;
+        }
+        let (k, v) = line.split_once(' ').unwrap_or((line, ""));
+        cur.insert(k.to_string(), v.to_string());
+    }
+    cases
+}
+
+/// Runs expintegrator with any process; returns (y, relative error vs the
+/// dense oracle, info).
+fn run_alg<S: TestScalar, L: KrylovProcess>(
+    a: &DMatrix<Complex64>,
+    t: Complex64,
+    u: &[Vec<Complex64>],
+    alg: &L,
+    capacity: usize,
+) -> (Vec<Complex64>, f64, krylov::ExpInfo<S::Real>) {
+    let uv: Vec<DVec<S>> = u.iter().map(|x| to_dvec::<S>(x)).collect();
+    let mut op = DenseOp::<S>::new(a);
+    let mut ws = Workspace::with_capacity(&uv[0], capacity).unwrap();
+    let (y, info) = expintegrator(&mut op, S::from_c64(t), &uv, alg, &mut ws).unwrap();
+    assert_eq!(info.numops, op.applications);
+    let y = to_c64(&y);
+    let exact = dense_phi_comb(a, t, u);
+    let err = diff_norm(&y, &exact) / norm(&exact);
+    (y, err, info)
+}
+
+#[test]
+fn arnoldi_matches_krylovkit_fixtures() {
+    let cases = fixture_cases(include_str!("fixtures/krylovkit/expint_arnoldi.txt"));
+    assert_eq!(cases.len(), 10);
+    let floats =
+        |s: &str| -> Vec<f64> { s.split_whitespace().map(|x| x.parse().unwrap()).collect() };
+    for c in &cases {
+        let num = |k: &str| -> usize { c[k].parse().unwrap() };
+        let name = &c["case"];
+        let complex = num("complex") == 1;
+        let n = num("n");
+        let mut g = SplitMix(c["seed"].parse().unwrap());
+        let a = outliers(&mut g, n, complex);
+        let u: Vec<_> = (0..num("nu"))
+            .map(|_| random_vec(&mut g, n, complex))
+            .collect();
+        let t = floats(&c["t"]);
+        let t = Complex64::new(t[0], t[1]);
+        let alg = Arnoldi::new()
+            .krylovdim(num("krylovdim"))
+            .tol(c["tol"].parse().unwrap())
+            .eager(num("eager") == 1)
+            .maxiter(100);
+        let kd = alg.get_krylovdim();
+        // Real vectors for real t and a real map, as in the fixture.
+        let (y, oracle_err, info) = if complex {
+            run_alg::<Complex64, _>(&a, t, &u, &alg, kd)
+        } else {
+            let (y, e, i) = run_alg::<f64, _>(&a, t, &u, &alg, kd);
+            (y, e, i)
+        };
+        eprintln!(
+            "{name}: krylov numiter {} numops {} converged {} err {:?} | KrylovKit {} {} {} {}",
+            info.numiter,
+            info.numops,
+            info.converged,
+            info.normres,
+            c["numiter"],
+            c["numops"],
+            c["converged"],
+            c["normres"]
+        );
+        let expect: Vec<Complex64> = floats(&c["y_re"])
+            .into_iter()
+            .zip(floats(&c["y_im"]))
+            .map(|(re, im)| Complex64::new(re, im))
+            .collect();
+        let rel = diff_norm(&y, &expect) / norm(&expect);
+        assert!(rel < 1e-10, "{name}: relative difference {rel}");
+        let oracle = dense_phi_comb(&a, t, &u);
+        let kk_err = diff_norm(&expect, &oracle) / norm(&oracle);
+        assert!(kk_err < 1e-9, "{name}: KrylovKit vs dense {kk_err}");
+        assert!(oracle_err < 1e-9, "{name}: krylov vs dense {oracle_err}");
+        let kk_normres: f64 = c["normres"].parse().unwrap();
+        assert!(
+            (info.normres - kk_normres).abs() <= 1e-6 * kk_normres,
+            "{name}: normres {} vs {kk_normres}",
+            info.normres
+        );
+        // Exact KrylovKit counts (declared offset 0).
+        assert_eq!(info.converged, num("converged"), "{name}: converged");
+        assert_eq!(info.numiter, num("numiter"), "{name}: numiter");
+        assert_eq!(info.numops, num("numops"), "{name}: numops");
+        assert_eq!(info.max_imag, 0.0);
+    }
+}
+
+/// `D + N` with `D` diagonal and `N` strictly upper triangular of size
+/// `offdiag`: non-normal with a known spectrum, conjugated by a random
+/// unitary so that the Krylov space sees a dense matrix.
+fn non_normal(g: &mut SplitMix, n: usize, complex: bool, offdiag: f64) -> DMatrix<Complex64> {
+    let mut t = DMatrix::<Complex64>::zeros(n, n);
+    for j in 0..n {
+        for i in 0..j {
+            t[(i, j)] = g.scalar(complex) * offdiag / (n as f64).sqrt();
+        }
+        t[(j, j)] = g.scalar(complex);
+    }
+    let q = unitary(g, n, complex);
+    &q * t * q.adjoint()
+}
+
+#[test]
+fn arnoldi_matches_dense_oracle_on_non_normal_maps() {
+    let mut g = SplitMix(71);
+    for complex in [false, true] {
+        for offdiag in [1.0, 5.0] {
+            let a = non_normal(&mut g, 60, complex, offdiag);
+            let u: Vec<_> = (0..4).map(|_| random_vec(&mut g, 60, complex)).collect();
+            let ts: &[Complex64] = if complex {
+                &[
+                    Complex64::new(0.0, -2.0),
+                    Complex64::new(-0.5, 1.5),
+                    Complex64::new(-1.0, 0.0),
+                ]
+            } else {
+                &[
+                    Complex64::new(-0.1, 0.0),
+                    Complex64::new(-1.5, 0.0),
+                    Complex64::new(1.0, 0.0),
+                ]
+            };
+            for nu in 1..=4 {
+                for &t in ts {
+                    for (kd, eager) in [(20, false), (10, true)] {
+                        let alg = Arnoldi::new().krylovdim(kd).eager(eager);
+                        let (_, err, info) = if complex {
+                            run_alg::<Complex64, _>(&a, t, &u[..nu], &alg, kd)
+                        } else {
+                            run_alg::<f64, _>(&a, t, &u[..nu], &alg, kd)
+                        };
+                        let tag =
+                            format!("complex={complex} offdiag={offdiag} nu={nu} t={t} kd={kd}");
+                        assert_eq!(info.converged, 1, "{tag}: {info:?}");
+                        assert!(err < 1e-9, "{tag}: relative error {err}");
+                        assert_eq!(info.max_imag, 0.0);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn arnoldi_agrees_with_lanczos_on_hermitian_maps() {
+    let mut g = SplitMix(72);
+    let a = hermitian(&mut g, 50, true);
+    let u: Vec<_> = (0..3).map(|_| random_vec(&mut g, 50, true)).collect();
+    let t = Complex64::new(0.0, -2.0);
+    let (yl, el, _) = run_alg::<Complex64, _>(&a, t, &u, &Lanczos::new().krylovdim(15), 15);
+    let (ya, ea, _) = run_alg::<Complex64, _>(&a, t, &u, &Arnoldi::new().krylovdim(15), 15);
+    assert!(el < 1e-10 && ea < 1e-10);
+    assert!(diff_norm(&yl, &ya) / norm(&yl) < 1e-10);
+}
+
+#[test]
+fn arnoldi_single_precision() {
+    let mut g = SplitMix(73);
+    let a = non_normal(&mut g, 40, true, 1.0);
+    let u: Vec<_> = (0..3).map(|_| random_vec(&mut g, 40, true)).collect();
+    let alg = Arnoldi::new().krylovdim(15).tol(1e-5);
+    let (_, err, info) = run_alg::<Complex32, _>(&a, Complex64::new(0.0, -2.0), &u, &alg, 15);
+    assert_eq!(info.converged, 1);
+    assert!(err < 1e-4, "relative error {err}");
+    let a = non_normal(&mut g, 40, false, 1.0);
+    let u: Vec<_> = (0..2).map(|_| random_vec(&mut g, 40, false)).collect();
+    let (_, err, info) = run_alg::<f32, _>(&a, Complex64::new(-0.5, 0.0), &u, &alg, 15);
+    assert_eq!(info.converged, 1);
+    assert!(err < 1e-4, "relative error {err}");
+}
+
+#[test]
+fn arnoldi_exact_polynomial_and_fixed_point() {
+    let mut g = SplitMix(74);
+    let n = 8;
+    let a = DMatrix::<Complex64>::zeros(n, n);
+    let u = [
+        random_vec(&mut g, n, false),
+        random_vec(&mut g, n, false),
+        vec![Complex64::new(0.0, 0.0); n],
+    ];
+    let uv: Vec<DVec<f64>> = u.iter().map(|x| to_dvec(x)).collect();
+    let mut ws = Workspace::with_capacity(&uv[0], 4).unwrap();
+    let alg = Arnoldi::new().krylovdim(4);
+    let (y, info) = expintegrator(&mut DenseOp::new(&a), -1.5, &uv, &alg, &mut ws).unwrap();
+    for i in 0..n {
+        assert!((y.0[i] - (uv[0].0[i] - 1.5 * uv[1].0[i])).abs() < 1e-15);
+    }
+    assert_eq!((info.converged, info.numiter, info.numops), (1, 0, 2));
+
+    // Invariant subspace: a map with three distinct eigenvalues (non-normal)
+    // gives an exact Krylov space of dimension 3 and one step.
+    let mut t = DMatrix::<Complex64>::zeros(30, 30);
+    for i in 0..30 {
+        t[(i, i)] = Complex64::new((i % 3) as f64, 0.0);
+    }
+    let q = unitary(&mut g, 30, false);
+    let s = DMatrix::from_fn(30, 30, |i, j| {
+        Complex64::new(
+            if i == j {
+                2.0
+            } else if i < j {
+                0.3
+            } else {
+                0.0
+            },
+            0.0,
+        )
+    });
+    let a = &q * &s * t * s.try_inverse().unwrap() * q.adjoint();
+    let x = random_vec(&mut g, 30, false);
+    let alg = Arnoldi::new().krylovdim(10);
+    let (_, err, info) = run_alg::<f64, _>(&a, Complex64::new(-1.0, 0.0), &[x], &alg, 10);
+    assert!(err < 1e-10, "relative error {err}");
+    assert_eq!(info.numiter, 1);
+}
+
+#[test]
+fn arnoldi_warm_calls_allocate_only_the_result_and_scratch() {
+    let mut g = SplitMix(75);
+    let a = non_normal(&mut g, 60, true, 1.0);
+    let u: Vec<_> = (0..4)
+        .map(|_| to_dvec::<Complex64>(&random_vec(&mut g, 60, true)))
+        .collect();
+    let alg = Arnoldi::new().krylovdim(10);
+    let mut op = DenseOp::new(&a);
+    let mut ws = Workspace::with_capacity(&u[0], 10).unwrap();
+    for _ in 0..2 {
+        let before = similar_calls();
+        let (_, info) =
+            exponentiate(&mut op, Complex64::new(0.0, -3.0), &u[0], &alg, &mut ws).unwrap();
+        assert!(info.numiter > 1);
+        assert_eq!(similar_calls() - before, 1);
+        let before = similar_calls();
+        let (_, info) =
+            expintegrator(&mut op, Complex64::new(0.0, -3.0), &u, &alg, &mut ws).unwrap();
+        assert!(info.numiter > 1);
+        assert_eq!(similar_calls() - before, 3);
+    }
+}
+
+#[test]
+fn arnoldi_errors() {
+    let a = DMatrix::<Complex64>::identity(3, 3);
+    let x = DVec(vec![1.0f64, 2.0, 3.0]);
+    let mut op = DenseOp::<f64>::new(&a);
+    let mut ws = Workspace::with_capacity(&x, 3).unwrap();
+    let alg = Arnoldi::new().krylovdim(3);
+    let e = |r: Result<_, Error<_>>| r.map(|_| ()).unwrap_err();
+    assert!(matches!(
+        e(expintegrator(&mut op, 1.0, &[], &alg, &mut ws)),
+        Error::InvalidArgument(_)
+    ));
+    assert!(matches!(
+        e(exponentiate(&mut op, f64::INFINITY, &x, &alg, &mut ws)),
+        Error::InvalidArgument(_)
+    ));
+    for bad in [
+        alg.tol(0.0),
+        alg.tol(f64::NAN),
+        alg.krylovdim(0),
+        alg.maxiter(0),
+    ] {
+        assert!(matches!(
+            e(exponentiate(&mut op, 1.0, &x, &bad, &mut ws)),
+            Error::InvalidArgument(_)
+        ));
+    }
+    assert_eq!(
+        e(exponentiate(
+            &mut op,
+            1.0,
+            &DVec(vec![f64::NAN; 3]),
+            &alg,
+            &mut ws
+        )),
+        Error::NonFiniteStartVector
+    );
+    assert_eq!(
+        e(exponentiate(&mut op, 1.0, &x, &alg.krylovdim(5), &mut ws)),
+        Error::InsufficientCapacity {
+            needed: 5,
+            capacity: 3
+        }
+    );
+    // A map producing NaN is a typed error, not a NaN result.
+    let mut nan_op = |_: &DVec<f64>, y: &mut DVec<f64>| {
+        y.0.fill(f64::NAN);
+        Ok::<(), std::convert::Infallible>(())
+    };
+    assert_eq!(
+        e(exponentiate(&mut nan_op, 1.0, &x, &alg, &mut ws)),
+        Error::NonFiniteIterate
+    );
+}
+
+/// The sealed entry point stays callable through a generic bound; it must
+/// reject an empty `u` like the public function.
+fn sealed_entry<L: KrylovProcess>(alg: &L) -> Error<std::convert::Infallible> {
+    let a = DMatrix::<Complex64>::identity(3, 3);
+    let x = DVec(vec![1.0f64; 3]);
+    let mut ws = Workspace::with_capacity(&x, 3).unwrap();
+    let empty: &[DVec<f64>] = &[];
+    alg.expintegrator(&mut DenseOp::<f64>::new(&a), 1.0, empty, &mut ws)
+        .map(|_| ())
+        .unwrap_err()
+}
+
+#[test]
+fn sealed_entry_rejects_empty_u() {
+    for e in [
+        sealed_entry(&Lanczos::new().krylovdim(3)),
+        sealed_entry(&Arnoldi::new().krylovdim(3)),
+    ] {
+        assert!(matches!(e, Error::InvalidArgument(_)));
     }
 }

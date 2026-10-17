@@ -13,7 +13,8 @@
 //! spectra with [`BlockLanczos`]. [`svdsolve`] computes partial SVDs of an
 //! [`AdjointMap`] by [`Gkl`]. Non-Hermitian maps use the Krylov–Schur method
 //! with [`Arnoldi`]: [`schursolve`], [`arnoldi_eigsolve`] (complex vectors)
-//! and [`realeigsolve`] (real vectors).
+//! and [`realeigsolve`] (real vectors); [`exponentiate`] and
+//! [`expintegrator`] take either process ([`KrylovProcess`]).
 //!
 //! The small projected problems call LAPACK through the [`lapack`] crate
 //! declarations, as KrylovKit does. krylov does not pick a LAPACK
@@ -93,7 +94,7 @@ pub use basis::VecBasis;
 pub use block_lanczos::{BlockLanczos, block_eigsolve};
 pub use eigsolve::{ConvergenceInfo, Which, eigsolve};
 pub use error::Error;
-pub use exponentiate::{ExpInfo, expintegrator, exponentiate};
+pub use exponentiate::{ExpInfo, KrylovProcess, expintegrator, exponentiate};
 pub use lanczos::Lanczos;
 pub use linsolve::{Cg, Gmres, LinearSolver, LinsolveInfo, linsolve};
 pub use orth::Orth;

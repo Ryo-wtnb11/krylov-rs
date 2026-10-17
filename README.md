@@ -112,6 +112,12 @@ krylov's own tests use Accelerate on macOS and the system OpenBLAS elsewhere.
     eigenvectors need complex storage).
   - `realeigsolve`: real eigenpairs of a real map, for real vector types.
   A call allocates the `2·n` returned vectors.
+- `exponentiate`/`expintegrator` with `&Arnoldi` for general maps (KrylovKit
+  `Union{Lanczos,Arnoldi}`; the process is a type parameter through the
+  sealed `KrylovProcess` trait). The step controller is shared; Arnoldi takes
+  the dense exponential of KrylovKit's `(k+p+1)²` augmented Hessenberg
+  matrix (a port of Julia 1.11 `exp!` on LAPACK `gebal`/`gesv`) per
+  step-size trial. A call allocates the same `p` vectors as with `Lanczos`.
 
 ## Deviations from KrylovKit
 
@@ -128,7 +134,7 @@ krylov's own tests use Accelerate on macOS and the system OpenBLAS elsewhere.
   `Result<_, V::Error>`, and errors are propagated as `krylov::Error::Vector`.
 - **No random restart.** Reaching an invariant subspace stops the iteration.
   The caller always supplies the start vector.
-- **`exp`/`φ` of the tridiagonal Rayleigh quotient** use its eigendecomposition
+- **`exp`/`φ` of the tridiagonal Lanczos Rayleigh quotient** use its eigendecomposition
   (LAPACK `stegr`, as KrylovKit's `eigsolve`) instead of a Padé exponential of
   the augmented matrix. The step controller's error estimate
   `e_kᵀ φ_{p+1}(sΔτ·T) e₁` uses the Taylor series in `T` while
@@ -211,6 +217,12 @@ krylov's own tests use Accelerate on macOS and the system OpenBLAS elsewhere.
     `krylovdim == 1` the first subspace is final (KrylovKit indexes out of
     bounds), and `realeigsolve` on an invariant subspace smaller than
     `howmany` returns what it has.
+- **Arnoldi `expintegrator`** follows KrylovKit step for step. Julia's
+  `exp!` scaling exponent `⌈log₂(‖A‖₁/5.4)⌉` is found by exact halving
+  (identical unless libm's `log2` rounds across an integer). A map producing
+  NaN or infinity is `Error::NonFiniteIterate`, and a non-finite augmented matrix or
+  an exactly singular Padé denominator is `Error::DenseNoConvergence` (Julia:
+  `SingularException`). `info.max_imag` is 0.
 - **`Which` is `#[non_exhaustive]`**; the Hermitian solvers (`eigsolve`,
   `block_eigsolve`, `svdsolve`) reject `LargestImag`/`SmallestImag` with
   `InvalidArgument`, as KrylovKit does.

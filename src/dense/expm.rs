@@ -20,7 +20,6 @@ use crate::scalar::{RealScalar, Scalar};
 /// Julia's `exp!` diverts Hermitian input to an eigendecomposition; that
 /// branch is not ported because its consumer, the augmented matrix of the
 /// exponential integrator, is never Hermitian.
-#[allow(dead_code)] // ponytail: first consumer is the Arnoldi expintegrator (S3-3)
 pub(crate) fn expm<S: Scalar>(a: &[S], n: usize) -> Result<Vec<S>, ()> {
     expm_impl(a, n).map(|(x, _, _)| x)
 }
