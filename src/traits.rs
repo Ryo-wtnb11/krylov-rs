@@ -122,25 +122,39 @@ pub trait Basis<V: Vector> {
     }
 }
 
-/// A linear map `A` acting on vectors of type `V`, written into a destination.
-pub trait LinearMap<V: Vector> {
+/// A linear map `A` from vectors of type `V` (domain) to vectors of type `W`
+/// (codomain, `V` by default), written into a destination.
+///
+/// Every solver except [`svdsolve`](crate::svdsolve) needs a square map and
+/// takes `LinearMap<V>`. The two types share their scalar and error types so
+/// that one [`Error`](crate::Error) carries the failures of both.
+pub trait LinearMap<V: Vector, W: Vector<Scalar = V::Scalar, Error = V::Error> = V> {
     /// `y ← A·x`. `y` holds arbitrary previous contents.
-    fn apply_into(&mut self, x: &V, y: &mut V) -> Result<(), V::Error>;
+    fn apply_into(&mut self, x: &V, y: &mut W) -> Result<(), V::Error>;
 }
 
-impl<V: Vector, F: FnMut(&V, &mut V) -> Result<(), V::Error>> LinearMap<V> for F {
-    fn apply_into(&mut self, x: &V, y: &mut V) -> Result<(), V::Error> {
+impl<V, W, F> LinearMap<V, W> for F
+where
+    V: Vector,
+    W: Vector<Scalar = V::Scalar, Error = V::Error>,
+    F: FnMut(&V, &mut W) -> Result<(), V::Error>,
+{
+    fn apply_into(&mut self, x: &V, y: &mut W) -> Result<(), V::Error> {
         self(x, y)
     }
 }
 
-/// A linear map that can also apply its adjoint, as `svdsolve` needs.
+/// A linear map `A: V → W` that can also apply its adjoint `Aᴴ: W → V`, as
+/// `svdsolve` needs.
 ///
-/// Domain and codomain share the Rust vector type `V` but may be different
-/// spaces (e.g. vectors of different lengths, tensors with different legs).
-pub trait AdjointMap<V: Vector>: LinearMap<V> {
+/// Domain and codomain may be different Rust vector types, or one type for
+/// different spaces (e.g. vectors of different lengths, tensors with
+/// different legs).
+pub trait AdjointMap<V: Vector, W: Vector<Scalar = V::Scalar, Error = V::Error> = V>:
+    LinearMap<V, W>
+{
     /// `x ← Aᴴ·y`. `x` holds arbitrary previous contents.
-    fn apply_adjoint_into(&mut self, y: &V, x: &mut V) -> Result<(), V::Error>;
+    fn apply_adjoint_into(&mut self, y: &W, x: &mut V) -> Result<(), V::Error>;
 }
 
 /// Working storage of one solve: the basis plus the operator input and

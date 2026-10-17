@@ -69,8 +69,8 @@ krylov's own tests use Accelerate on macOS and the system OpenBLAS elsewhere.
 
 ## Stage 1 contents
 
-- Traits `Vector`, `Basis`, `LinearMap` (also implemented for
-  `FnMut(&V, &mut V) -> Result<(), V::Error>`), the `Workspace`, and the default
+- Traits `Vector`, `Basis`, `LinearMap<V, W = V>` (also implemented for
+  `FnMut(&V, &mut W) -> Result<(), V::Error>`), the `Workspace`, and the default
   `VecBasis` (in-place Householder `rotate` with one scratch vector).
 - `eigsolve` with `Lanczos`: thick restart, `eager`, `Which::{LargestMagnitude,
   LargestReal, SmallestReal}`, absolute residual `tol`, `ConvergenceInfo`
@@ -96,9 +96,11 @@ krylov's own tests use Accelerate on macOS and the system OpenBLAS elsewhere.
   results.
 - `svdsolve(op, x0, howmany, which, &Gkl, ws_u, ws_v)`: largest
   (`LargestReal`) or smallest (`SmallestReal`) singular triplets of an
-  `AdjointMap` by thick-restart Golub–Kahan–Lanczos. `x0` and `ws_u` live in
-  the codomain, `ws_v` in the domain (one Rust vector type, possibly different
-  spaces). A call allocates the `3·n` returned vectors. `SmallestReal`
+  `AdjointMap<V, W>` (`V → W`, `W = V` by default) by thick-restart
+  Golub–Kahan–Lanczos. `x0`, `ws_u`, the left vectors and the residuals live in
+  the codomain `W`, `ws_v` and the right vectors in the domain `V`. The two
+  may be one Rust vector type for different spaces or distinct types with the
+  same scalar and error types (as KrylovKit's `GKLFactorization{TU, TV}`). A call allocates the `3·n` returned vectors. `SmallestReal`
   requires codomain dimension ≤ domain dimension; for a tall map, call it on
   the adjoint and swap left and right vectors.
 
