@@ -34,6 +34,12 @@ pub enum Error<E> {
     InvalidArgument(&'static str),
     /// The small dense eigenvalue computation did not converge.
     DenseNoConvergence,
+    /// Conjugate gradients met a search direction `p` with `Re⟨p, A·p⟩ <= 0`
+    /// (or non-finite): the map is not positive definite on the Krylov space.
+    NotPositiveDefinite,
+    /// The projected least-squares problem of GMRES has an exactly singular
+    /// triangular factor: the map is singular on the Krylov space.
+    SingularKrylovSpace,
 }
 
 impl<E: fmt::Display> fmt::Display for Error<E> {
@@ -54,6 +60,10 @@ impl<E: fmt::Display> fmt::Display for Error<E> {
             Error::DenseNoConvergence => {
                 f.write_str("small dense eigenvalue problem did not converge")
             }
+            Error::NotPositiveDefinite => {
+                f.write_str("linear map is not positive definite on the Krylov space")
+            }
+            Error::SingularKrylovSpace => f.write_str("linear map is singular on the Krylov space"),
         }
     }
 }
