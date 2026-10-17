@@ -148,6 +148,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn exactly_real_phi_argument_is_evaluated_in_real_arithmetic() {
+        let c = |re| Complex64::new(re, 0.0);
+        let (mut cplx, mut real) = ([c(0.0); 4], [0.0f64; 4]);
+        for x in [-30.0, -1.5, -0.4, 0.7, 2.5, 700.0, 800.0] {
+            phi_upto(c(x), &mut cplx);
+            phi_upto(x, &mut real);
+            // Bitwise the real values, so an overflow stays ∞ + 0i, not ∞ + NaN·i.
+            assert_eq!(cplx, real.map(c), "x = {x}");
+        }
+        assert!(real.iter().all(|v| v.is_infinite()));
+    }
+
     /// `e_kᵀ φ_j(xT) e₁`: the `(k, k+j)` entry of
     /// `exp([[xT, e₁, 0], [0, 0, I_{j-1}], [0, 0, 0]])`.
     fn phi_last_dense(x: Complex64, t: &nalgebra::DMatrix<f64>, j: usize) -> Complex64 {

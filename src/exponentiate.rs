@@ -69,7 +69,11 @@ where
 /// real-time evolution `t = -iτ`). `u` must be non-empty, `tol` positive and
 /// `t` finite. When `w_{p+1} = 0` with `p ≥ 2`, `y` is the exact polynomial
 /// in `t` and is returned without a Krylov space (KrylovKit divides by zero
-/// there).
+/// there). A non-finite (overflowed or NaN) step error estimate rejects the
+/// step, which KrylovKit accepts when the estimate is NaN; if it stays
+/// non-finite at the smallest allowed step, or a step's update
+/// coefficients or the Krylov start norm are not finite, the call fails with [`Error::NonFiniteIterate`] instead of returning a
+/// non-finite `y`.
 ///
 /// `alg` selects the process: [`Lanczos`] (Hermitian `op`) evaluates the
 /// `φ` functions of the tridiagonal Rayleigh quotient through its
@@ -222,7 +226,7 @@ trait Process<S: Scalar>: Sized {
         sgn: S,
         dtau: S::Real,
         beta: S::Real,
-    ) -> Result<(), V::Error>
+    ) -> Result<(), Error<V::Error>>
     where
         V: Vector<Scalar = S>,
         B: Basis<V>;
@@ -300,6 +304,10 @@ where
         let st0 = sgn * V::Scalar::from_real(tau0);
         let beta =
             rebuild(op, &y, u, &mut w, &mut ws.w, st0, &mut numops).map_err(Error::Vector)?;
+        if !beta.is_finite() {
+            // The Krylov start would be scaled by 0 or NaN.
+            return Err(Error::NonFiniteIterate);
+        }
         if p == 1 && beta < eta {
             // y is a fixed point (A·y + u₁ = 0) up to tolerance.
             info.normres = beta;
@@ -326,20 +334,22 @@ where
                     dtau = tau - tau0;
                 }
                 proc.project()?;
-                let mut eps = proc.err(sgn, dtau, beta)?;
+                let mut eps = nan_to_inf(proc.err(sgn, dtau, beta)?);
                 let mut omega = eps / (dtau * eta);
                 let mut q = Real::<V>::from_usize(k) / (one + one);
                 while numiter < maxiter && omega >= one && dtau > dtau_min {
                     let (eps_prev, dtau_prev) = (eps, dtau);
                     dtau = (dtau * (gamma / omega).powf(one / (q + one))).max(dtau_min);
-                    eps = proc.err(sgn, dtau, beta)?;
+                    eps = nan_to_inf(proc.err(sgn, dtau, beta)?);
                     omega = eps / (dtau * eta);
                     q = zero.max((eps / eps_prev).ln() / (dtau / dtau_prev).ln() - one);
                 }
+                if !eps.is_finite() {
+                    return Err(Error::NonFiniteIterate);
+                }
                 tau0 = if numiter < maxiter { tau0 + dtau } else { tau };
                 totalerr += eps;
-                proc.advance(ws, &mut y, &w, sgn, dtau, beta)
-                    .map_err(Error::Vector)?;
+                proc.advance(ws, &mut y, &w, sgn, dtau, beta)?;
                 if omega < gamma {
                     dtau *= (gamma / omega).powf(one / (q + one));
                 }
@@ -349,8 +359,7 @@ where
                 let eps = proc.err(sgn, dt, beta)?;
                 if eps / (dt * eta) < one {
                     totalerr += eps;
-                    proc.advance(ws, &mut y, &w, sgn, dt, beta)
-                        .map_err(Error::Vector)?;
+                    proc.advance(ws, &mut y, &w, sgn, dt, beta)?;
                     tau0 = tau;
                 }
             }
@@ -468,7 +477,7 @@ impl<S: Scalar> Process<S> for LanczosProc<S> {
         sgn: S,
         dtau: S::Real,
         beta: S::Real,
-    ) -> Result<(), V::Error>
+    ) -> Result<(), Error<V::Error>>
     where
         V: Vector<Scalar = S>,
         B: Basis<V>,
@@ -584,20 +593,23 @@ impl<S: Scalar> Process<S> for ArnoldiProc<S> {
         sgn: S,
         dtau: S::Real,
         beta: S::Real,
-    ) -> Result<(), V::Error>
+    ) -> Result<(), Error<V::Error>>
     where
         V: Vector<Scalar = S>,
         B: Basis<V>,
     {
         let (k, p, n) = (self.fact.k, self.p, self.dim());
         let x = sgn * S::from_real(dtau);
-        poly(y, w, x)?;
         let col = (k + p - 1) * n;
+        let c = &self.exph[col..col + k];
         let corr = self.exph[(k - 1) + (k + p) * n];
         let a = S::from_real(beta) * powu(x, p);
+        check_step(a, c, corr)?;
+        poly(y, w, x).map_err(Error::Vector)?;
         ws.basis
-            .combine_into(&self.exph[col..col + k], y, a, S::one())?;
-        y.axpby(a * corr, &ws.w, S::one())
+            .combine_into(c, y, a, S::one())
+            .map_err(Error::Vector)?;
+        y.axpby(a * corr, &ws.w, S::one()).map_err(Error::Vector)
     }
 }
 
@@ -637,6 +649,12 @@ fn poly<V: Vector>(y: &mut V, w: &[V], x: V::Scalar) -> Result<(), V::Error> {
         y.axpby(coef, wj, V::Scalar::one())?;
     }
     Ok(())
+}
+
+/// KrylovKit rejects a step when `ω >= 1`, which a NaN estimate passes;
+/// an indeterminate estimate is rejected like an overflowed one.
+fn nan_to_inf<R: Float>(e: R) -> R {
+    if e.is_nan() { R::infinity() } else { e }
 }
 
 /// `xᵖ` by repeated multiplication (exact for `p = 1`).
@@ -679,7 +697,7 @@ fn err<S: Scalar>(
         let mut e = S::zero();
         for (i, &l) in lam.iter().enumerate() {
             phi_upto(x * S::from_real(l), phis);
-            e += phis[p + 1] * S::from_real(z[(k - 1) + i * k] * z[i * k]);
+            e += phis[p + 1].mul_real(z[(k - 1) + i * k] * z[i * k]);
         }
         e
     });
@@ -700,23 +718,38 @@ fn advance<V: Vector, B: Basis<V>>(
     beta: Real<V>,
     lam: &[Real<V>],
     z: &[Real<V>],
-) -> Result<(), V::Error> {
+) -> Result<(), Error<V::Error>> {
     let k = lam.len();
     let p = phis.len() - 2;
     let x = sgn * V::Scalar::from_real(dtau);
-    poly(y, w, x)?;
     c.clear();
     c.resize(k, V::Scalar::zero());
     let mut corr = V::Scalar::zero();
     for (i, &l) in lam.iter().enumerate() {
         phi_upto(x * V::Scalar::from_real(l), phis);
-        let w1 = phis[p] * V::Scalar::from_real(z[i * k]);
+        let w1 = phis[p].mul_real(z[i * k]);
         for (cj, &zj) in c.iter_mut().zip(&z[i * k..(i + 1) * k]) {
-            *cj += w1 * V::Scalar::from_real(zj);
+            *cj += w1.mul_real(zj);
         }
-        corr += phis[p + 1] * V::Scalar::from_real(z[(k - 1) + i * k] * z[i * k]);
+        corr += phis[p + 1].mul_real(z[(k - 1) + i * k] * z[i * k]);
     }
     let a = V::Scalar::from_real(beta) * powu(x, p);
-    ws.basis.combine_into(c, y, a, V::Scalar::one())?;
+    check_step(a, c, corr)?;
+    poly(y, w, x).map_err(Error::Vector)?;
+    ws.basis
+        .combine_into(c, y, a, V::Scalar::one())
+        .map_err(Error::Vector)?;
     y.axpby(a * corr, &ws.w, V::Scalar::one())
+        .map_err(Error::Vector)
+}
+
+/// Rejects a step whose `k + 1` update coefficients `a·c_j`, `a·corr` are
+/// not finite. Checked here, not through `y.norm()`: a user norm may
+/// overflow (`√⟨y, y⟩`) for a finite `y`.
+fn check_step<S: Scalar, E>(a: S, c: &[S], corr: S) -> Result<(), Error<E>> {
+    if c.iter().chain([&corr]).all(|&v| (a * v).all_finite()) {
+        Ok(())
+    } else {
+        Err(Error::NonFiniteIterate)
+    }
 }

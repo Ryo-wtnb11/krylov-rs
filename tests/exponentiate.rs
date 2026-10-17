@@ -782,3 +782,148 @@ fn sealed_entry_rejects_empty_u() {
         assert!(matches!(e, Error::InvalidArgument(_)));
     }
 }
+
+/// `A = Q·diag(eigs)·Qᵀ` (real orthogonal `Q`) with `λ_max = 1`, a start
+/// vector `x = 10⁻³·r` and the dense `exp(t·A)·x`.
+fn growing(t: f64) -> (DMatrix<Complex64>, Vec<Complex64>, Vec<Complex64>) {
+    let mut g = SplitMix(91);
+    let eigs = [1.0, 0.5, 0.2, 0.0, -0.3, -0.6, -0.8, -1.0];
+    let a = with_spectrum(&mut g, &eigs, false);
+    let x: Vec<_> = random_vec(&mut g, eigs.len(), false)
+        .iter()
+        .map(|z| z * 1e-3)
+        .collect();
+    let exact = dense_expv(&a, Complex64::new(t, 0.0), &x);
+    (a, x, exact)
+}
+
+#[test]
+fn overflowing_step_is_rejected_and_shrunk() {
+    // Single precision: e^{t·λ_max} = e^92 overflows f32 while
+    // ‖exp(t·A)·x‖ ≈ 10³⁷ does not. The full step's estimate is ∞ (NaN for
+    // complex vectors before the exact-real φ evaluation); it must be
+    // rejected, and the shrunk steps reach the finite result.
+    let t = 92.0;
+    let (a, x, exact) = growing(t);
+    let t = Complex64::new(t, 0.0);
+    let u = std::slice::from_ref(&x);
+    let check = |y: Vec<Complex64>, numiter: usize, what: &str| {
+        assert!(
+            y.iter().all(|z| z.re.is_finite() && z.im.is_finite()),
+            "{what}: {y:?}"
+        );
+        let err = diff_norm(&y, &exact) / norm(&exact);
+        assert!(err < 1e-3, "{what}: relative error {err}");
+        assert!(numiter > 1, "{what}: the overflowing step must be split");
+    };
+    let lanczos = Lanczos::new().krylovdim(8).tol(1e-6);
+    let arnoldi = Arnoldi::new().krylovdim(8).tol(1e-6);
+    let (y, _, info) = run_alg::<Complex32, _>(&a, t, u, &lanczos, 8);
+    check(y, info.numiter, "lanczos c32");
+    let (y, _, info) = run_alg::<f32, _>(&a, t, u, &lanczos, 8);
+    check(y, info.numiter, "lanczos f32");
+    let (y, _, info) = run_alg::<Complex32, _>(&a, t, u, &arnoldi, 8);
+    check(y, info.numiter, "arnoldi c32");
+    let (y, _, info) = run_alg::<f32, _>(&a, t, u, &arnoldi, 8);
+    check(y, info.numiter, "arnoldi f32");
+}
+
+#[test]
+fn overflowing_result_is_a_typed_error() {
+    // ‖exp(t·A)·x‖ ≈ e^800·10⁻³ overflows f64: no step size helps.
+    let (a, x, _) = growing(800.0);
+    fn go<S: TestScalar, L: KrylovProcess>(
+        a: &DMatrix<Complex64>,
+        x: &[Complex64],
+        alg: &L,
+    ) -> Error<std::convert::Infallible> {
+        let xv = to_dvec::<S>(x);
+        let mut ws = Workspace::with_capacity(&xv, 8).unwrap();
+        let t = S::from_c64(Complex64::new(800.0, 0.0));
+        match exponentiate(&mut DenseOp::<S>::new(a), t, &xv, alg, &mut ws) {
+            Ok((y, info)) => panic!("{:?} {info:?}", &y.0[..2]),
+            Err(e) => e,
+        }
+    }
+    // maxiter = 1 forces the single step whose estimate is ∞; otherwise the
+    // estimate at the smallest step, the iterate or the result overflows.
+    for maxiter in [1, 100] {
+        let lanczos = Lanczos::new().krylovdim(8).maxiter(maxiter);
+        let arnoldi = Arnoldi::new().krylovdim(8).maxiter(maxiter);
+        for e in [
+            go::<Complex64, _>(&a, &x, &lanczos),
+            go::<f64, _>(&a, &x, &lanczos),
+            go::<Complex64, _>(&a, &x, &arnoldi),
+            go::<f64, _>(&a, &x, &arnoldi),
+        ] {
+            assert_eq!(e, Error::NonFiniteIterate, "maxiter {maxiter}");
+        }
+    }
+}
+
+/// A vector with the naive norm `√⟨x, x⟩` accumulated in its own precision,
+/// as in the crate example: it overflows for a finite `x` with
+/// `‖x‖ > √max`.
+#[derive(Clone, Debug)]
+struct Naive<S>(Vec<S>);
+
+impl<S: TestScalar> krylov::Vector for Naive<S> {
+    type Scalar = S;
+    type Error = std::convert::Infallible;
+    fn similar(&self) -> Result<Self, Self::Error> {
+        Ok(Naive(vec![S::zero(); self.0.len()]))
+    }
+    fn copy_from(&mut self, x: &Self) -> Result<(), Self::Error> {
+        self.0.copy_from_slice(&x.0);
+        Ok(())
+    }
+    fn inner(&self, y: &Self) -> Result<S, Self::Error> {
+        Ok(self
+            .0
+            .iter()
+            .zip(&y.0)
+            .fold(S::zero(), |s, (a, b)| s + a.cj() * *b))
+    }
+    fn norm(&self) -> Result<S::Real, Self::Error> {
+        // ⟨x, x⟩ overflows in `S` itself; only the result is widened.
+        let s = self.inner(self)?.to_c64().re.sqrt();
+        Ok(<S::Real as num_traits::NumCast>::from(s).unwrap())
+    }
+    fn axpby(&mut self, a: S, x: &Self, b: S) -> Result<(), Self::Error> {
+        for (s, x) in self.0.iter_mut().zip(&x.0) {
+            *s = a * *x + b * *s;
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn large_finite_result_with_a_naive_norm_is_returned() {
+    // y = e^{λt}·x is finite, but ‖y‖² overflows the vector's own norm.
+    fn go<S: TestScalar>(lambda: f64, alg: &impl KrylovProcess, rtol: f64) {
+        let x = Naive(vec![S::from_c64(Complex64::new(1e-10, 0.0)); 4]);
+        let mut op = |v: &Naive<S>, y: &mut Naive<S>| {
+            for (yi, vi) in y.0.iter_mut().zip(&v.0) {
+                *yi = *vi * S::from_c64(Complex64::new(lambda, 0.0));
+            }
+            Ok::<(), std::convert::Infallible>(())
+        };
+        let mut ws = Workspace::with_capacity(&x, 8).unwrap();
+        let (y, _) = exponentiate(&mut op, S::one(), &x, alg, &mut ws).unwrap();
+        let want = 1e-10 * lambda.exp();
+        for yi in &y.0 {
+            let got = yi.to_c64();
+            assert!(
+                (got - want).norm() <= rtol * want,
+                "λ = {lambda}: {got} vs {want}"
+            );
+        }
+    }
+    let (lanczos, arnoldi) = (Lanczos::new().krylovdim(8), Arnoldi::new().krylovdim(8));
+    go::<f64>(400.0, &lanczos, 1e-12);
+    go::<f64>(400.0, &arnoldi, 1e-12);
+    go::<Complex64>(400.0, &lanczos, 1e-12);
+    go::<f32>(80.0, &lanczos, 1e-3);
+    go::<f32>(80.0, &arnoldi, 1e-3);
+    go::<Complex32>(80.0, &lanczos, 1e-3);
+}
