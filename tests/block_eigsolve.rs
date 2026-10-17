@@ -432,3 +432,54 @@ fn matches_krylovkit_block_lanczos_fixtures() {
         );
     }
 }
+
+/// Single precision at a tolerance below its reach restarts until the
+/// projected matrices carry entries near 1e-24 (#20). The Householder
+/// reflectors of the restart used to turn them into NaN.
+#[test]
+fn tight_tolerance_restarts_stay_finite_in_single_precision() {
+    for (seed, kd, tol, maxiter, which) in [
+        (10, 6, 1e-12, 200, Which::SmallestReal),
+        (15, 5, 1e-10, 100, Which::LargestReal),
+    ] {
+        let mut g = SplitMix(1000 + seed);
+        let n = 30;
+        let a = if seed % 2 == 0 {
+            hermitian(&mut g, n, true)
+        } else {
+            let eigs: Vec<f64> = (0..n)
+                .map(|i| match i {
+                    0 => -5.0,
+                    i if i == n - 1 => 5.0,
+                    i => -1.0 + 2.0 * i as f64 / n as f64,
+                })
+                .collect();
+            with_spectrum(&mut g, &eigs, true)
+        };
+        let x0: Vec<DVec<Complex32>> = (0..2)
+            .map(|_| to_dvec(&random_vec(&mut g, n, true)))
+            .collect();
+        let alg = BlockLanczos::new().krylovdim(kd).tol(tol).maxiter(maxiter);
+        let mut ws = Workspace::with_capacity(&x0[0], kd + 2).unwrap();
+        let (vals, _, _) = block_eigsolve(
+            &mut DenseOp::<Complex32>::new(&a),
+            &x0,
+            2,
+            which,
+            &alg,
+            &mut ws,
+        )
+        .unwrap();
+        let exact = dense_eigenvalues(&a);
+        let want = if which == Which::SmallestReal {
+            exact[0]
+        } else {
+            exact[n - 1]
+        };
+        assert!(
+            (f64::from(vals[0]) - want).abs() < 1e-4,
+            "seed {seed}: {} vs {want}",
+            vals[0]
+        );
+    }
+}

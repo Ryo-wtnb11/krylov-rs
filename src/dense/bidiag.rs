@@ -149,13 +149,10 @@ pub(crate) fn arrowhead_to_bidiag<R: RealScalar>(
     for j in (0..keep).rev() {
         // Row j+1, columns 0..=j, pivot at column j: V side.
         let u = &mut refl[..=j];
-        let mut nu = R::zero();
         for (t, ut) in u.iter_mut().enumerate() {
             *ut = h[(j + 1) + (j - t) * lh];
-            nu += *ut * *ut;
         }
-        let nu = nu.sqrt();
-        let bh = householder(u);
+        let (nu, bh) = householder(u);
         h[(j + 1) + j * lh] = nu;
         for c in 0..j {
             h[(j + 1) + c * lh] = R::zero();
@@ -166,13 +163,10 @@ pub(crate) fn arrowhead_to_bidiag<R: RealScalar>(
         }
         // Column j, rows 0..=j, pivot at row j: U side.
         let u = &mut refl[..=j];
-        let mut nu = R::zero();
         for (t, ut) in u.iter_mut().enumerate() {
             *ut = h[(j - t) + j * lh];
-            nu += *ut * *ut;
         }
-        let nu = nu.sqrt();
-        let bh = householder(u);
+        let (nu, bh) = householder(u);
         h[j + j * lh] = nu;
         for r in 0..j {
             h[r + j * lh] = R::zero();
