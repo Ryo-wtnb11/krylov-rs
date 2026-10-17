@@ -85,6 +85,20 @@ documentation (`src/lib.rs`).
   quotient (KrylovKit fails there). `exponentiate` with `t == 0` returns `x`
   without applying the map.
 
+## Vector contract and distributed use
+
+- `Vector::axpby(a, x, b)` with `b == 0` must overwrite `self` without reading
+  it (BLAS `beta = 0`); krylov reuses workspace vectors with stale contents.
+- A `Workspace::with_capacity(x, k)` holds `k + 3` vectors: `k` basis vectors,
+  one scratch vector for the in-place restart rotation, and the operator input
+  and output.
+- Distributed vectors: the results of `inner`, `norm` and `Basis::project` must
+  be bitwise identical on every rank, all ranks must run the same binary with
+  the same libm, and errors must be returned on every rank. Under this contract
+  every branch is deterministic. `eigsolve` and the tridiagonal eigensolver
+  branch only on arithmetic and `sqrt`; `exponentiate`'s step acceptance also
+  branches on libm `exp`, `ln` and `pow`.
+
 ## Status
 
 Pre-release. Not published on crates.io; the API may change.

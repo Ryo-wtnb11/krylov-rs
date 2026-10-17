@@ -7,7 +7,6 @@ use std::cell::Cell;
 use krylov::{RealScalar, Scalar, Vector};
 use nalgebra::DMatrix;
 use num_complex::{Complex32, Complex64};
-use num_traits::Zero;
 
 thread_local! {
     static SIMILAR_CALLS: Cell<usize> = const { Cell::new(0) };
@@ -23,6 +22,9 @@ pub trait TestScalar: Scalar {
     fn from_c64(z: Complex64) -> Self;
     fn to_c64(self) -> Complex64;
     const COMPLEX: bool;
+    fn cj(self) -> Self {
+        Self::from_c64(self.to_c64().conj())
+    }
 }
 impl TestScalar for f64 {
     fn from_c64(z: Complex64) -> Self {
@@ -83,16 +85,13 @@ impl<S: TestScalar> Vector for DVec<S> {
     fn inner(&self, y: &Self) -> Result<S, Self::Error> {
         let mut s = S::zero();
         for (a, b) in self.0.iter().zip(&y.0) {
-            s += a.conj() * *b;
+            s += a.cj() * *b;
         }
         Ok(s)
     }
     fn norm(&self) -> Result<S::Real, Self::Error> {
-        let mut s = S::Real::zero();
-        for a in &self.0 {
-            s += a.re() * a.re() + a.im() * a.im();
-        }
-        Ok(num_traits::Float::sqrt(s))
+        let s: f64 = self.0.iter().map(|a| a.to_c64().norm_sqr()).sum();
+        Ok(<S::Real as num_traits::NumCast>::from(s.sqrt()).unwrap())
     }
     fn axpby(&mut self, a: S, x: &Self, b: S) -> Result<(), Self::Error> {
         if b == S::zero() {

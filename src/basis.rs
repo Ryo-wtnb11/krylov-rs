@@ -3,6 +3,7 @@
 use num_traits::{One, Zero};
 
 use crate::dense::householder;
+use crate::scalar::sealed::Ops as _;
 use crate::scalar::{MatRef, Scalar};
 use crate::traits::{Basis, Vector};
 
@@ -18,7 +19,8 @@ pub struct VecBasis<V: Vector> {
 
 impl<V: Vector> VecBasis<V> {
     /// Allocates `capacity + 1` vectors like `x` (one is scratch for
-    /// [`rotate`](Basis::rotate)). The basis starts empty.
+    /// [`rotate`](Basis::rotate)); inside a [`Workspace`](crate::Workspace)
+    /// the total is `capacity + 3`. The basis starts empty.
     pub fn with_capacity(x: &V, capacity: usize) -> Result<Self, V::Error> {
         let vecs = (0..=capacity)
             .map(|_| x.similar())

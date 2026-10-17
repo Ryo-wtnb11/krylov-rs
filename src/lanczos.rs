@@ -3,7 +3,8 @@
 use num_traits::{One, Zero};
 
 use crate::error::Error;
-use crate::scalar::{Real, RealScalar, Scalar};
+use crate::scalar::sealed::RealOps as _;
+use crate::scalar::{Real, Scalar};
 use crate::traits::{Basis, LinearMap, Vector, Workspace};
 
 /// Orthogonalization scheme for new Krylov vectors.

@@ -2,6 +2,7 @@
 
 use num_traits::{Float, One, Zero};
 
+use crate::scalar::sealed::RealOps as _;
 use crate::scalar::{RealScalar, Scalar};
 
 /// Turns `x` into a Householder vector `u` (`u[0] = 1`) and returns `β` such

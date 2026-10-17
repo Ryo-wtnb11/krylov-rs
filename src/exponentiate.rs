@@ -5,7 +5,8 @@ use num_traits::{Float, One, Zero};
 use crate::dense::{phi2_last, phi12, tridiag_eigh};
 use crate::error::Error;
 use crate::lanczos::{Fact, Lanczos};
-use crate::scalar::{Real, RealScalar, Scalar};
+use crate::scalar::sealed::{Ops as _, RealOps as _};
+use crate::scalar::{Real, Scalar};
 use crate::traits::{Basis, LinearMap, Vector, Workspace};
 
 /// Convergence information of [`exponentiate`].

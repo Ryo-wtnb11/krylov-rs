@@ -8,62 +8,71 @@ use num_traits::{Float, NumAssign};
 
 /// A field scalar: `f32`, `f64`, `Complex32` or `Complex64`.
 ///
-/// The trait is implemented by krylov for exactly these four types. Absolute
-/// values are computed with [`RealScalar::hypot2`] (square root only), so
-/// branches that depend on them do not depend on a platform `hypot`.
-pub trait Scalar: Copy + PartialEq + Debug + NumAssign + Neg<Output = Self> + 'static {
+/// The trait is sealed: krylov implements it for exactly these four types,
+/// and the arithmetic helpers it needs internally are not part of the public
+/// API. Absolute values inside krylov use only `sqrt` (no platform `hypot`).
+///
+/// ```compile_fail
+/// #[derive(Clone, Copy, Debug, PartialEq)]
+/// struct Mine;
+/// impl krylov::Scalar for Mine { type Real = f64; } // sealed: rejected
+/// ```
+pub trait Scalar:
+    sealed::Ops<<Self as Scalar>::Real>
+    + Copy
+    + PartialEq
+    + Debug
+    + NumAssign
+    + Neg<Output = Self>
+    + 'static
+{
     /// The underlying real type (`f32` or `f64`).
     type Real: RealScalar;
-
-    /// Embeds a real number.
-    fn from_real(re: Self::Real) -> Self;
-    /// Real part.
-    fn re(self) -> Self::Real;
-    /// Imaginary part (zero for real scalars).
-    fn im(self) -> Self::Real;
-    /// Complex conjugate (identity for real scalars).
-    fn conj(self) -> Self;
-    /// Exponential.
-    fn scalar_exp(self) -> Self;
-
-    /// Modulus `|self|`.
-    fn modulus(self) -> Self::Real {
-        self.re().hypot2(self.im())
-    }
-    /// `true` when both parts are finite.
-    fn all_finite(self) -> bool {
-        self.re().is_finite() && self.im().is_finite()
-    }
 }
 
-/// A real scalar: `f32` or `f64`.
-pub trait RealScalar: Scalar<Real = Self> + Float {
-    /// `sqrt(a² + b²)` without undue overflow, using only `sqrt`.
-    fn hypot2(self, b: Self) -> Self {
-        let (a, b) = (Float::abs(self), Float::abs(b));
-        let (big, small) = if a >= b { (a, b) } else { (b, a) };
-        if big == Self::zero() || !big.is_finite() {
-            return big + small;
+/// A real scalar: `f32` or `f64`. Sealed like [`Scalar`].
+pub trait RealScalar: Scalar<Real = Self> + Float + sealed::RealOps {}
+
+pub(crate) mod sealed {
+    use num_traits::Float;
+
+    /// Internal scalar helpers; unnameable outside the crate, which also
+    /// seals [`Scalar`](super::Scalar).
+    pub trait Ops<R>: Sized {
+        fn from_real(re: R) -> Self;
+        fn re(self) -> R;
+        fn im(self) -> R;
+        fn conj(self) -> Self;
+        fn scalar_exp(self) -> Self;
+        /// `|self|`, using only `sqrt`.
+        fn modulus(self) -> R;
+        fn all_finite(self) -> bool;
+    }
+
+    /// Internal real helpers; seals [`RealScalar`](super::RealScalar).
+    pub trait RealOps: Float {
+        /// `sqrt(a² + b²)` without undue overflow, using only `sqrt`.
+        fn hypot2(self, b: Self) -> Self {
+            let (a, b) = (self.abs(), b.abs());
+            let (big, small) = if a >= b { (a, b) } else { (b, a) };
+            if big == Self::zero() || !big.is_finite() {
+                return big + small;
+            }
+            let r = small / big;
+            big * (Self::one() + r * r).sqrt()
         }
-        let r = small / big;
-        big * (Self::one() + r * r).sqrt()
-    }
-
-    /// Converts an `f64` constant.
-    fn from_f64(x: f64) -> Self {
-        <Self as num_traits::NumCast>::from(x).unwrap_or_else(Self::nan)
-    }
-
-    /// Converts a count.
-    fn from_usize(n: usize) -> Self {
-        <Self as num_traits::NumCast>::from(n).unwrap_or_else(Self::nan)
+        fn from_f64(x: f64) -> Self {
+            <Self as num_traits::NumCast>::from(x).unwrap_or_else(Self::nan)
+        }
+        fn from_usize(n: usize) -> Self {
+            <Self as num_traits::NumCast>::from(n).unwrap_or_else(Self::nan)
+        }
     }
 }
 
 macro_rules! real_scalar {
     ($t:ty) => {
-        impl Scalar for $t {
-            type Real = $t;
+        impl sealed::Ops<$t> for $t {
             fn from_real(re: $t) -> $t {
                 re
             }
@@ -82,11 +91,17 @@ macro_rules! real_scalar {
             fn modulus(self) -> $t {
                 Float::abs(self)
             }
+            fn all_finite(self) -> bool {
+                Float::is_finite(self)
+            }
         }
+        impl Scalar for $t {
+            type Real = $t;
+        }
+        impl sealed::RealOps for $t {}
         impl RealScalar for $t {}
 
-        impl Scalar for Complex<$t> {
-            type Real = $t;
+        impl sealed::Ops<$t> for Complex<$t> {
             fn from_real(re: $t) -> Self {
                 Complex::new(re, 0.0)
             }
@@ -102,6 +117,15 @@ macro_rules! real_scalar {
             fn scalar_exp(self) -> Self {
                 Complex::exp(self)
             }
+            fn modulus(self) -> $t {
+                sealed::RealOps::hypot2(self.re, self.im)
+            }
+            fn all_finite(self) -> bool {
+                self.re.is_finite() && self.im.is_finite()
+            }
+        }
+        impl Scalar for Complex<$t> {
+            type Real = $t;
         }
     };
 }

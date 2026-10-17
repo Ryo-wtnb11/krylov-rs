@@ -9,11 +9,29 @@ use crate::scalar::{MatRef, Real, Scalar};
 /// [`similar`](Vector::similar), never through `Clone` (a vector type may
 /// share storage on clone).
 ///
+/// # `axpby` with `b = 0` overwrites
+///
+/// [`axpby`](Vector::axpby) with `b == 0` must write `self ← a·x` **without
+/// reading `self`** (BLAS `beta = 0` semantics). krylov relies on this to
+/// reuse workspace vectors whose old contents are stale or non-finite; an
+/// implementation computing `0·self` would propagate NaN/Inf.
+///
 /// # Distributed contract
 ///
-/// [`inner`](Vector::inner) and [`norm`](Vector::norm) must return bitwise
-/// identical values on every rank, and an error must be returned on every rank,
-/// so that all ranks take the same branches.
+/// When vectors are distributed over ranks, krylov's branches stay identical
+/// on every rank only if:
+///
+/// - the results of [`inner`](Vector::inner), [`norm`](Vector::norm) and
+///   [`Basis::project`] are bitwise identical on every rank (reduced, then
+///   replicated);
+/// - every rank runs the same binary with the same libm;
+/// - an error is returned on every rank, not only on some (otherwise the
+///   others block in the next reduction).
+///
+/// Under this contract all scalar decisions are deterministic. `eigsolve` and
+/// the tridiagonal eigensolver branch only on arithmetic and `sqrt`;
+/// `exponentiate`'s step acceptance additionally branches on libm `exp`,
+/// `ln` and `powf`, which is why the same libm is required.
 pub trait Vector: Sized {
     /// Scalar field (`f32`, `f64`, `Complex32`, `Complex64`).
     type Scalar: Scalar;
@@ -30,8 +48,8 @@ pub trait Vector: Sized {
     fn norm(&self) -> Result<Real<Self>, Self::Error>;
     /// `self ← a·x + b·self`.
     ///
-    /// When `b` is zero, `self` must be overwritten without being read (as in
-    /// BLAS), so stale non-finite contents do not propagate.
+    /// When `b` is zero, `self` must be overwritten without being read (see
+    /// the trait documentation).
     fn axpby(&mut self, a: Self::Scalar, x: &Self, b: Self::Scalar) -> Result<(), Self::Error>;
 }
 
@@ -116,7 +134,10 @@ impl<V: Vector, F: FnMut(&V, &mut V) -> Result<(), V::Error>> LinearMap<V> for F
 }
 
 /// Working storage of one solve: the basis plus the operator input and
-/// output vectors (`capacity + 2` vectors in total).
+/// output vectors, i.e. the basis's vectors `+ 2`. With
+/// [`with_capacity`](Workspace::with_capacity) (a [`VecBasis`](crate::VecBasis),
+/// which keeps one extra scratch vector for `rotate`) that is `capacity + 3`
+/// vectors in total.
 ///
 /// Create it once per vector space and reuse it across calls; the algorithms
 /// allocate no vectors from it during iterations or restarts.
@@ -147,7 +168,8 @@ impl<V: Vector, B: Basis<V>> Workspace<V, B> {
 
 impl<V: Vector> Workspace<V, crate::VecBasis<V>> {
     /// A workspace with a [`VecBasis`](crate::VecBasis) of `capacity` vectors
-    /// in the space of `x`.
+    /// in the space of `x`: allocates `capacity + 3` vectors (basis, one
+    /// rotate scratch, operator input and output).
     pub fn with_capacity(x: &V, capacity: usize) -> Result<Self, V::Error> {
         Self::new(crate::VecBasis::with_capacity(x, capacity)?, x)
     }

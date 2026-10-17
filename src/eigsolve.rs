@@ -5,7 +5,8 @@ use num_traits::{Float, One, Zero};
 use crate::dense::{arrowhead_to_tridiag, tridiag_eigh};
 use crate::error::Error;
 use crate::lanczos::{Fact, Lanczos};
-use crate::scalar::{MatRef, Real, RealScalar, Scalar};
+use crate::scalar::sealed::Ops as _;
+use crate::scalar::{MatRef, Real, RealScalar};
 use crate::traits::{Basis, LinearMap, Vector, Workspace};
 
 /// Which eigenvalues `eigsolve` targets (KrylovKit `:LM`, `:LR`, `:SR`).
