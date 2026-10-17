@@ -34,7 +34,10 @@ pub trait Scalar:
 pub trait RealScalar: Scalar<Real = Self> + Float + sealed::RealOps {}
 
 pub(crate) mod sealed {
+    use num_complex::Complex;
     use num_traits::Float;
+
+    use crate::dense::Work;
 
     /// Internal scalar helpers; unnameable outside the crate, which also
     /// seals [`Scalar`](super::Scalar).
@@ -47,6 +50,16 @@ pub(crate) mod sealed {
         /// `|self|`, using only `sqrt`.
         fn modulus(self) -> R;
         fn all_finite(self) -> bool;
+        /// Eigendecomposition of the Hermitian `n × n` matrix `a` (upper
+        /// triangle read, destroyed): ascending `eig`, eigenvectors in `z`.
+        /// LAPACK `xSYEVR` for real, `xHEEVR` for complex scalars.
+        fn heig(
+            a: &mut [Self],
+            n: usize,
+            eig: &mut [R],
+            z: &mut [Self],
+            w: &mut Work<Self, R>,
+        ) -> Result<(), ()>;
     }
 
     /// Internal real helpers; seals [`RealScalar`](super::RealScalar).
@@ -67,6 +80,46 @@ pub(crate) mod sealed {
         fn from_usize(n: usize) -> Self {
             <Self as num_traits::NumCast>::from(n).unwrap_or_else(Self::nan)
         }
+
+        // LAPACK hooks, implemented in `dense/lapack.rs`. `Err(())` is a
+        // nonzero LAPACK `info`.
+
+        /// `xSTEGR`: eigenvalues of the symmetric tridiagonal matrix with
+        /// diagonal `d` and off-diagonal `e[..n-1]` (`e.len() >= n`, destroyed)
+        /// into `d` (ascending), eigenvectors into `z` (`n × n`).
+        fn stegr(
+            d: &mut [Self],
+            e: &mut [Self],
+            z: &mut [Self],
+            w: &mut Work<Self, Self>,
+        ) -> Result<(), ()>;
+        /// `xBDSQR` on the `n × n` lower (`lower`) or upper bidiagonal matrix
+        /// with diagonal `d`, off-diagonal `e[..n-1]`: `B = U·diag(d)·VT` with
+        /// `d` descending, `U ← U·Q` and `VT ← Pᵀ·VT` (`n × n` each).
+        fn bdsqr(
+            lower: bool,
+            d: &mut [Self],
+            e: &mut [Self],
+            vt: &mut [Self],
+            u: &mut [Self],
+            w: &mut Work<Self, Self>,
+        ) -> Result<(), ()>;
+        /// `xSYEVR` (see [`Ops::heig`]).
+        fn syevr(
+            a: &mut [Self],
+            n: usize,
+            eig: &mut [Self],
+            z: &mut [Self],
+            w: &mut Work<Self, Self>,
+        ) -> Result<(), ()>;
+        /// `xHEEVR` (see [`Ops::heig`]).
+        fn heevr(
+            a: &mut [Complex<Self>],
+            n: usize,
+            eig: &mut [Self],
+            z: &mut [Complex<Self>],
+            w: &mut Work<Complex<Self>, Self>,
+        ) -> Result<(), ()>;
     }
 }
 
@@ -94,11 +147,19 @@ macro_rules! real_scalar {
             fn all_finite(self) -> bool {
                 Float::is_finite(self)
             }
+            fn heig(
+                a: &mut [Self],
+                n: usize,
+                eig: &mut [$t],
+                z: &mut [Self],
+                w: &mut crate::dense::Work<Self, $t>,
+            ) -> Result<(), ()> {
+                <$t as sealed::RealOps>::syevr(a, n, eig, z, w)
+            }
         }
         impl Scalar for $t {
             type Real = $t;
         }
-        impl sealed::RealOps for $t {}
         impl RealScalar for $t {}
 
         impl sealed::Ops<$t> for Complex<$t> {
@@ -122,6 +183,15 @@ macro_rules! real_scalar {
             }
             fn all_finite(self) -> bool {
                 self.re.is_finite() && self.im.is_finite()
+            }
+            fn heig(
+                a: &mut [Self],
+                n: usize,
+                eig: &mut [$t],
+                z: &mut [Self],
+                w: &mut crate::dense::Work<Self, $t>,
+            ) -> Result<(), ()> {
+                <$t as sealed::RealOps>::heevr(a, n, eig, z, w)
             }
         }
         impl Scalar for Complex<$t> {

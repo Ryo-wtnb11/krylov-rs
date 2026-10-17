@@ -5,7 +5,7 @@ use core::ops::Mul;
 
 use num_traits::{Float, One, Zero};
 
-use crate::dense::{phi_last, phi_upto, tridiag_eigh};
+use crate::dense::{Work, phi_last, phi_upto};
 use crate::error::Error;
 use crate::lanczos::{Fact, Lanczos};
 use crate::scalar::sealed::{Ops as _, RealOps as _};
@@ -132,6 +132,7 @@ where
     let mut lam = vec![zero; kd];
     let mut e = vec![zero; kd];
     let mut z = vec![zero; kd * kd];
+    let mut lw = Work::default();
     let mut c = Vec::with_capacity(kd);
     let mut s1 = vec![V::Scalar::zero(); kd];
     let mut s2 = vec![V::Scalar::zero(); kd];
@@ -167,7 +168,7 @@ where
                 } else {
                     dtau = tau - tau0;
                 }
-                eig(&fact, &mut lam, &mut e, &mut z)?;
+                eig(&fact, &mut lam, &mut e, &mut z, &mut lw)?;
                 let (lam, z) = (&lam[..k], &z[..k * k]);
                 let mut eps = err(sgn, dtau, beta, &fact, lam, z, &mut s1, &mut s2, &mut phis);
                 let mut omega = eps / (dtau * eta);
@@ -188,7 +189,7 @@ where
                 }
             } else if normres <= (tau - tau0) * eta || alg.get_eager() {
                 let dt = tau - tau0;
-                eig(&fact, &mut lam, &mut e, &mut z)?;
+                eig(&fact, &mut lam, &mut e, &mut z, &mut lw)?;
                 let (lam, z) = (&lam[..k], &z[..k * k]);
                 let eps = err(sgn, dt, beta, &fact, lam, z, &mut s1, &mut s2, &mut phis);
                 if eps / (dt * eta) < one {
@@ -263,11 +264,12 @@ fn eig<S: Scalar, E>(
     lam: &mut [S::Real],
     e: &mut [S::Real],
     z: &mut [S::Real],
+    lw: &mut Work<S::Real, S::Real>,
 ) -> Result<(), Error<E>> {
     let k = fact.len();
     lam[..k].copy_from_slice(&fact.alpha);
     e[..k - 1].copy_from_slice(&fact.beta[..k - 1]);
-    tridiag_eigh(&mut lam[..k], &mut e[..k], &mut z[..k * k])
+    S::Real::stegr(&mut lam[..k], &mut e[..k], &mut z[..k * k], lw)
         .map_err(|()| Error::DenseNoConvergence)
 }
 

@@ -3,7 +3,7 @@
 
 use num_traits::{Float, One, Zero};
 
-use crate::dense::{apply_qh, arrowhead_to_band, hermitian_tridiag, tridiag_eigh};
+use crate::dense::{Work, arrowhead_to_band};
 use crate::eigsolve::{ConvergenceInfo, Which, sort_eig};
 use crate::error::Error;
 use crate::orth::{Orth, orthogonalize};
@@ -208,14 +208,12 @@ where
 
     let ld = kmax;
     let mut d = vec![zero; kmax];
-    let mut e = vec![zero; kmax];
-    let mut z = vec![zero; kmax * kmax];
-    let mut tmp = vec![zero; kmax * kmax];
+    let mut tmp = vec![szero; kmax * kmax];
     let mut perm = Vec::with_capacity(kmax);
     let mut a = vec![szero; kmax * kmax];
     let mut u = vec![szero; kmax * kmax];
-    let mut taus = vec![szero; kmax];
     let mut xs = vec![szero; kmax];
+    let mut lw = Work::default();
     let mut gram = vec![szero; bs0 * bs0];
     let mut normres = vec![zero; kmax];
     let mut hh = vec![szero; (kmax + bs0) * kmax];
@@ -232,14 +230,9 @@ where
             for j in 0..k {
                 a[j * k..(j + 1) * k].copy_from_slice(&st.hm[j * ld..j * ld + k]);
             }
-            hermitian_tridiag(&mut a[..k * k], k, &mut d, &mut e, &mut taus, &mut xs);
-            tridiag_eigh(&mut d[..k], &mut e[..k], &mut z[..k * k])
+            V::Scalar::heig(&mut a[..k * k], k, &mut d[..k], &mut u[..k * k], &mut lw)
                 .map_err(|()| Error::DenseNoConvergence)?;
-            sort_eig(which, &mut d[..k], &mut z[..k * k], &mut perm, &mut tmp);
-            for (ui, &zi) in u[..k * k].iter_mut().zip(&z[..k * k]) {
-                *ui = V::Scalar::from_real(zi);
-            }
-            apply_qh(&a[..k * k], k, &taus, &mut u[..k * k]);
+            sort_eig(which, &mut d[..k], &mut u[..k * k], &mut perm, &mut tmp);
             let rs = st.rs;
             for c in 0..rs {
                 for i in 0..=c {

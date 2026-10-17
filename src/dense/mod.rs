@@ -4,19 +4,22 @@ mod bidiag;
 mod givens;
 mod heig;
 mod householder;
+mod lapack;
 mod phi;
 mod tridiag;
 
 pub(crate) use bidiag::{arrowhead_to_bidiag, bidiag_svd, lower_rect_bidiag_svd};
 pub(crate) use givens::{Givens, givens, upper_solve};
-pub(crate) use heig::{apply_qh, arrowhead_to_band, hermitian_tridiag};
+pub(crate) use heig::arrowhead_to_band;
 pub(crate) use householder::householder;
+pub(crate) use lapack::Work;
 pub(crate) use phi::{phi_last, phi_upto};
-pub(crate) use tridiag::{arrowhead_to_tridiag, tridiag_eigh};
+pub(crate) use tridiag::arrowhead_to_tridiag;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scalar::sealed::RealOps;
     use num_complex::Complex64;
 
     fn lcg(s: &mut u64) -> f64 {
@@ -42,7 +45,7 @@ mod tests {
     }
 
     #[test]
-    fn tridiag_eigh_matches_dense_and_is_orthonormal() {
+    fn stegr_matches_dense_and_is_orthonormal() {
         let mut s = 1;
         for n in [1, 2, 3, 10, 40] {
             for split in [false, true] {
@@ -54,7 +57,7 @@ mod tests {
                 }
                 let t = tri_mat(&d, &e[..n.saturating_sub(1)]);
                 let (mut dd, mut ee, mut z) = (d.clone(), e.clone(), vec![0.0; n * n]);
-                tridiag_eigh(&mut dd, &mut ee, &mut z).unwrap();
+                f64::stegr(&mut dd, &mut ee, &mut z, &mut Work::default()).unwrap();
                 let mut exact: Vec<f64> = t
                     .clone()
                     .symmetric_eigen()

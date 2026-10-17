@@ -44,6 +44,28 @@ fn evolve_ground_state<V: Vector<Scalar = f64>>(
 A runnable version with a `Vec<f64>` vector type is in the crate
 documentation (`src/lib.rs`).
 
+## LAPACK provider
+
+The small projected problems call LAPACK exactly where KrylovKit does
+(`xSTEGR`, `xBDSQR`, `xSYEVR`/`xHEEVR`). krylov depends only on the
+[`lapack`](https://crates.io/crates/lapack) declarations and never selects an
+implementation; the final binary must link one, for example:
+
+```toml
+[dependencies]
+lapack-src = { version = "0.13", features = ["openblas"] } # or "accelerate", "intel-mkl", "netlib"
+```
+
+```rust
+extern crate lapack_src as _; // once, in the binary (or a crate it links)
+```
+
+Any other provider of the Fortran LAPACK symbols works the same way (a
+system library passed to the linker, or `lapack-inject`). On Linux the system
+OpenBLAS (`apt install libopenblas-dev`) is picked up with
+`openblas-src = { version = "0.10", default-features = false, features = ["system"] }`.
+krylov's own tests use Accelerate on macOS and the system OpenBLAS elsewhere.
+
 ## Stage 1 contents
 
 - Traits `Vector`, `Basis`, `LinearMap` (also implemented for
@@ -92,10 +114,9 @@ documentation (`src/lib.rs`).
   `Result<_, V::Error>`, and errors are propagated as `krylov::Error::Vector`.
 - **No random restart.** Reaching an invariant subspace stops the iteration.
   The caller always supplies the start vector.
-- **Small dense problems are computed in the crate.** The tridiagonal
-  eigenproblem uses implicit QL instead of LAPACK `stegr`; `exp`/`φ` of the
-  tridiagonal Rayleigh quotient use its eigendecomposition instead of a Padé
-  exponential of the augmented matrix. The step controller's error estimate
+- **`exp`/`φ` of the tridiagonal Rayleigh quotient** use its eigendecomposition
+  (LAPACK `stegr`, as KrylovKit's `eigsolve`) instead of a Padé exponential of
+  the augmented matrix. The step controller's error estimate
   `e_kᵀ φ_{p+1}(sΔτ·T) e₁` uses the Taylor series in `T` while
   `|sΔτ|·‖T‖∞ < k/2`, because for small steps that entry is far below
   `ε·max|φ_{p+1}|`, which is all an eigendecomposition resolves; this keeps the
@@ -128,7 +149,7 @@ documentation (`src/lib.rs`).
   input block size). Diagonal blocks are
   symmetrized, `(M + Mᴴ)/2`, where KrylovKit reads the upper triangle; the
   discarded part is reported in `max_imag`. The small Hermitian eigenproblem
-  uses Householder tridiagonalization and the QL solver instead of LAPACK.
+  is LAPACK `syevr`/`heevr`, as Julia's `eigen(Hermitian)`.
   When every vector of a new block falls below `qr_tol` the iteration stops
   as an invariant subspace (KrylovKit throws `ArgumentError("blocklength
   must be >(0)")` there). After a
@@ -146,8 +167,9 @@ documentation (`src/lib.rs`).
   drops to `tol` the iteration stops with the exact triplets of the
   invariant pair (`(k+1) × k` bidiagonal); KrylovKit divides by that norm.
   An invariant subspace smaller than `howmany` returns its triplets
-  (KrylovKit fails indexing). The bidiagonal SVD is an in-crate implicit QR
-  (Golub–Kahan with Wilkinson shifts) instead of LAPACK `bdsqr`.
+  (KrylovKit fails indexing). The bidiagonal SVD is LAPACK `bdsqr` on the
+  lower bidiagonal matrix, as KrylovKit; the `(k+1) × k` invariant case is
+  first reduced to upper bidiagonal form by Givens rotations.
   `SmallestReal` on a tall map is not supported in substance: the codomain
   process targets the zero eigenvalues of `AAᴴ`, which are reported as an
   unconverged `σ ≈ 0`; use the adjoint map. (KrylovKit reports such a zero
@@ -162,10 +184,11 @@ documentation (`src/lib.rs`).
   and output.
 - Distributed vectors: the results of `inner`, `norm` and `Basis::project` must
   be bitwise identical on every rank, all ranks must run the same binary with
-  the same libm, and errors must be returned on every rank. Under this contract
-  every branch is deterministic. `eigsolve` and the tridiagonal eigensolver
-  branch only on arithmetic and `sqrt`; `exponentiate`'s step acceptance also
-  branches on libm `exp`, `ln` and `pow`.
+  the same libm and the same LAPACK build (provider, version and thread
+  count), and errors must be returned on every rank. Under this contract
+  every branch is deterministic. Outside LAPACK, `eigsolve` branches only on
+  arithmetic and `sqrt`; `exponentiate`'s step acceptance also branches on
+  libm `exp`, `ln` and `pow`.
 
 ## Status
 

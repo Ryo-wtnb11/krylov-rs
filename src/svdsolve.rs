@@ -3,7 +3,7 @@
 
 use num_traits::{Float, One, Zero};
 
-use crate::dense::{arrowhead_to_bidiag, bidiag_svd, lower_rect_bidiag_svd};
+use crate::dense::{Work, arrowhead_to_bidiag, bidiag_svd, lower_rect_bidiag_svd};
 use crate::eigsolve::{ConvergenceInfo, Which};
 use crate::error::Error;
 use crate::orth::{Orth, orthogonalize};
@@ -324,7 +324,8 @@ where
     let mut sv = vec![s0; kd];
     let mut p = vec![s0; (kd + 1) * kd]; // left singular vectors of B (lp × K)
     let mut y = vec![s0; kd * kd]; // right singular vectors of B
-    let mut bt = vec![s0; kd * kd];
+    let mut eb = vec![s0; kd];
+    let mut lw = Work::default();
     let mut f = vec![s0; kd];
     let mut h = vec![s0; (kd + 1) * kd];
     let mut refl = vec![s0; kd];
@@ -344,7 +345,7 @@ where
             let (p, y) = (&mut p[..lp * k], &mut y[..k * k]);
             let dense = if exhausted {
                 // Exact invariant pair: the SVD of B̃ has no residual.
-                rect_scratch.resize((k + 1) * (k + 1) + k * k, s0);
+                rect_scratch.resize((k + 1) * (k + 1) + k * k + 2 * k, s0);
                 lower_rect_bidiag_svd(
                     &fact.alpha,
                     &fact.beta,
@@ -352,18 +353,13 @@ where
                     y,
                     &mut sv[..k],
                     &mut rect_scratch,
+                    &mut lw,
                 )
             } else {
-                // Bᵀ is upper bidiagonal: Bᵀ = Y·diag(σ)·Pᵀ, so B = P·diag(σ)·Yᵀ.
-                let bt = &mut bt[..k * k];
-                bt.fill(s0);
-                for i in 0..k {
-                    bt[i + i * k] = fact.alpha[i];
-                    if i + 1 < k {
-                        bt[i + (i + 1) * k] = fact.beta[i];
-                    }
-                }
-                bidiag_svd(bt, y, p, &mut sv[..k])
+                // B (lower bidiagonal) = P·diag(σ)·Yᵀ, as KrylovKit's bdsqr!('L').
+                sv[..k].copy_from_slice(&fact.alpha[..k]);
+                eb[..k - 1].copy_from_slice(&fact.beta[..k - 1]);
+                bidiag_svd(true, &mut sv[..k], &mut eb[..k], p, y, &mut lw)
             };
             dense.map_err(|()| Error::DenseNoConvergence)?;
             if which == Which::SmallestReal {

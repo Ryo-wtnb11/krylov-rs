@@ -2,10 +2,10 @@
 
 use num_traits::{Float, One, Zero};
 
-use crate::dense::{arrowhead_to_tridiag, tridiag_eigh};
+use crate::dense::{Work, arrowhead_to_tridiag};
 use crate::error::Error;
 use crate::lanczos::{Fact, Lanczos};
-use crate::scalar::sealed::Ops as _;
+use crate::scalar::sealed::{Ops as _, RealOps as _};
 use crate::scalar::{MatRef, Real, RealScalar};
 use crate::traits::{Basis, LinearMap, Vector, Workspace};
 
@@ -97,6 +97,7 @@ where
     let mut harrow = vec![zero; (kd + 1) * kd];
     let mut refl = vec![zero; kd];
     let mut q = Vec::with_capacity(kd * kd);
+    let mut lw = Work::default();
     let mut converged = 0;
     let mut kk = 1;
 
@@ -107,7 +108,7 @@ where
             kk = k;
             d[..k].copy_from_slice(&fact.alpha);
             e[..k - 1].copy_from_slice(&fact.beta[..k - 1]);
-            tridiag_eigh(&mut d[..k], &mut e[..k], &mut u[..k * k])
+            Real::<V>::stegr(&mut d[..k], &mut e[..k], &mut u[..k * k], &mut lw)
                 .map_err(|()| Error::DenseNoConvergence)?;
             sort_eig(which, &mut d[..k], &mut u[..k * k], &mut perm, &mut tmp);
             for i in 0..k {
@@ -190,12 +191,12 @@ where
 
 /// Stable reordering of ascending eigenpairs by `which`, like Julia's
 /// `sortperm(D; by, rev)`.
-pub(crate) fn sort_eig<R: RealScalar>(
+pub(crate) fn sort_eig<R: RealScalar, T: Copy>(
     which: Which,
     d: &mut [R],
-    u: &mut [R],
+    u: &mut [T],
     perm: &mut Vec<usize>,
-    tmp: &mut [R],
+    tmp: &mut [T],
 ) {
     let k = d.len();
     perm.clear();
@@ -215,8 +216,21 @@ pub(crate) fn sort_eig<R: RealScalar>(
     for (new, &old) in perm.iter().enumerate() {
         u[new * k..(new + 1) * k].copy_from_slice(&tmp[old * k..(old + 1) * k]);
     }
-    for (new, &old) in perm.iter().enumerate() {
-        tmp[new] = d[old];
+    // d[new] ← d[perm[new]] in place, following cycles; perm is consumed.
+    for i in 0..k {
+        if perm[i] == usize::MAX {
+            continue;
+        }
+        let first = d[i];
+        let mut j = i;
+        loop {
+            let p = core::mem::replace(&mut perm[j], usize::MAX);
+            if p == i {
+                d[j] = first;
+                break;
+            }
+            d[j] = d[p];
+            j = p;
+        }
     }
-    d.copy_from_slice(&tmp[..k]);
 }
