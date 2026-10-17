@@ -22,6 +22,7 @@ pub enum Which {
 
 /// Convergence information of [`eigsolve`].
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct ConvergenceInfo<V: Vector> {
     /// Number of leading returned eigenpairs whose residual norm is `<= tol`.
     pub converged: usize,

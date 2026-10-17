@@ -11,6 +11,7 @@ use crate::traits::{Basis, LinearMap, Vector, Workspace};
 
 /// Convergence information of [`exponentiate`].
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct ExpInfo<R> {
     /// `1` if the accumulated error estimate is `<= tol·|t|`, else `0`.
     pub converged: usize,

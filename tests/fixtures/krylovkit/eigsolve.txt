@@ -1,0 +1,65 @@
+# KrylovKit 0.10.4 git-tree-sha1 a3babd26e875e83b461e1c0f945bff52701e8181
+case eig_real_sr
+kind eig
+complex 0
+seed 1
+n 120
+howmany 3
+which SR
+krylovdim 20
+tol 1.0e-10
+eager 0
+values -12.07632775658142 -11.347122945706223 -11.059194324612351
+normres 2.2921999213051154e-18 3.0776977051679954e-14 4.300928768611374e-12
+converged 3
+numiter 9
+numops 84
+end
+case eig_complex_lm
+kind eig
+complex 1
+seed 2
+n 100
+howmany 2
+which LM
+krylovdim 16
+tol 1.0e-10
+eager 0
+values 15.976099374627292 -15.338004915972263 15.091682925499295
+normres 2.1575765421248936e-15 1.848078838944105e-11 1.2726067557425213e-11
+converged 3
+numiter 9
+numops 70
+end
+case eig_real_lr_eager
+kind eig
+complex 0
+seed 3
+n 80
+howmany 2
+which LR
+krylovdim 30
+tol 1.0e-11
+eager 1
+values 9.920823612926279 9.454443888374927
+normres 4.889019773012469e-14 9.624086558833759e-12
+converged 2
+numiter 3
+numops 54
+end
+case eig_complex_sr_small_k
+kind eig
+complex 1
+seed 4
+n 60
+howmany 4
+which SR
+krylovdim 8
+tol 1.0e-9
+eager 0
+values -11.72977019170533 -11.168436532955809 -10.496306676540712 -10.194539690111457
+normres 1.0336867133139036e-21 0.0 8.110140184149048e-13 2.1042780949122096e-10
+converged 4
+numiter 28
+numops 99
+end

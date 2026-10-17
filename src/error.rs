@@ -5,8 +5,10 @@ use core::fmt;
 /// Failure of a krylov algorithm.
 ///
 /// `E` is the error type of the vector implementation. Non-convergence is
-/// not an error: it is reported through the convergence information.
+/// not an error: it is reported through the convergence information. The
+/// enum is non-exhaustive so that new algorithms can add their own failures.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum Error<E> {
     /// A vector or basis operation failed; the error is passed through.
     Vector(E),
