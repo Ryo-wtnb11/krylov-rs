@@ -12,10 +12,13 @@ use crate::scalar::Scalar;
 /// would underflow or overflow where the reflector does not.
 ///
 /// Port of KrylovKit v0.10.4 `src/dense/reflector.jl:_householder!` with the
-/// pivot at the first entry, plus the range safeguards of LAPACK `xLARFG`:
-/// `u` and `β` do not change when `x` is scaled, so an `x` whose largest
-/// component is below `√(min positive)` or above `√(max·ε)` is evaluated as
-/// `2ᵏ·x` (exact), where the squared norm neither underflows nor overflows.
+/// pivot at the first entry, plus the range safeguard of LAPACK `xLARFG`:
+/// `u` and `β` do not change when `x` is scaled, so `x` is always evaluated
+/// as `2ᵏ·x` with its largest component near 1. The scaling is exact, so
+/// input that needed none gives bitwise the same result, and it keeps the
+/// squares of every component that matters (down to `√(min positive)` of
+/// the largest) out of the subnormal range. An unscaled `x` whose largest
+/// component is merely small (`< 1e-16` in f32) already loses those digits.
 /// LAPACK's reflector itself is not used: it maps `x` to `-sign(Re x₀)·‖x‖·e₀`
 /// and for complex `x` leaves a complex `β`, while every caller here relies on
 /// `+‖x‖·e₀`.
@@ -25,14 +28,11 @@ pub(crate) fn householder<S: Scalar>(x: &mut [S]) -> (S::Real, Option<S>) {
     };
     let biggest = |v: &S| v.re().abs().max(v.im().abs());
     let s = rest.iter().map(biggest).fold(biggest(first), S::Real::max);
-    let small = s > S::Real::zero() && s < S::Real::min_positive_value().sqrt();
-    let large = s.is_finite() && s > (S::Real::max_value() * S::Real::epsilon()).sqrt();
-    let (f1, f2) = if small || large {
+    let (f1, f2) = if s > S::Real::zero() && s.is_finite() {
         pow2(-s.log2().round())
     } else {
         (S::Real::one(), S::Real::one())
     };
-    // Multiplying by 1 is exact, so in-range input is evaluated as before.
     let sc = |v: S| v.mul_real(f1).mul_real(f2);
     let nrm = {
         let all = core::iter::once(&*first).chain(rest.iter());
@@ -103,49 +103,52 @@ mod tests {
 
     use super::*;
 
-    /// Applies `I - β u uᴴ` to `x` and returns the largest deviation from
-    /// `‖x‖·e₀` relative to `‖x‖` (computed in f64 from scaled copies).
-    fn defect<S: Scalar>(x: &[S], to: impl Fn(S) -> Complex64) -> f64 {
+    /// `(max |H·x/‖x‖ - e₀|, max |HᴴH - I|)` for the reflector of `x`, both
+    /// evaluated in f64 from the returned `u`, `β` (the identity for `None`).
+    fn defects<S: Scalar>(x: &[S], to: impl Fn(S) -> Complex64) -> (f64, f64) {
+        let n = x.len();
         let mut u = x.to_vec();
         let xs: Vec<Complex64> = x.iter().map(|&v| to(v)).collect();
-        let m = xs
-            .iter()
-            .map(|z| z.re.abs().max(z.im.abs()))
-            .fold(0.0, f64::max);
+        let m = xs.iter().map(|z| z.norm()).fold(0.0, f64::max);
         let xs: Vec<Complex64> = xs.iter().map(|z| z / m).collect();
         let nrm = xs.iter().map(|z| z.norm_sqr()).sum::<f64>().sqrt();
-        let (_, Some(beta)) = householder(&mut u) else {
-            // No reflection: x must already be ‖x‖·e₀.
-            return xs
-                .iter()
-                .skip(1)
-                .map(|z| z.norm())
-                .fold((xs[0] - nrm).norm(), f64::max)
-                / nrm;
+        let (norm, beta) = householder(&mut u);
+        let norm_err = (to(S::from_real(norm)).re / m - nrm).abs() / nrm;
+        let (b, u): (Complex64, Vec<Complex64>) = match beta {
+            None => (
+                Complex64::new(0.0, 0.0),
+                xs.iter().map(|_| Complex64::new(0.0, 0.0)).collect(),
+            ),
+            Some(beta) => (to(beta), u.iter().map(|&v| to(v)).collect()),
         };
-        let (b, u): (Complex64, Vec<Complex64>) = (to(beta), u.iter().map(|&v| to(v)).collect());
         assert!(
             b.is_finite() && u.iter().all(|z| z.is_finite()),
             "{b} {u:?}"
         );
-        let mu: Complex64 = u
-            .iter()
-            .zip(&xs)
-            .map(|(ui, xi)| ui.conj() * xi)
-            .sum::<Complex64>()
-            * b;
-        let hx: Vec<Complex64> = u.iter().zip(&xs).map(|(ui, xi)| xi - mu * ui).collect();
-        // Unitarity: |1 - β‖u‖²/2|... checked through ‖Hx‖ = ‖x‖ and Hx ∝ e₀.
-        let mut d = (hx[0] - nrm).norm();
-        for z in &hx[1..] {
-            d = d.max(z.norm());
+        // H = I - β u uᴴ, column-major.
+        let h = |i: usize, j: usize| {
+            Complex64::new(if i == j { 1.0 } else { 0.0 }, 0.0) - b * u[i] * u[j].conj()
+        };
+        let mut unit = 0.0f64;
+        for i in 0..n {
+            for j in 0..n {
+                let g: Complex64 = (0..n).map(|k| h(k, i).conj() * h(k, j)).sum();
+                let want = if i == j { 1.0 } else { 0.0 };
+                unit = unit.max((g - want).norm());
+            }
         }
-        d / nrm
+        let mut map = norm_err;
+        for i in 0..n {
+            let hx: Complex64 = (0..n).map(|k| h(i, k) * xs[k]).sum();
+            let want = if i == 0 { nrm } else { 0.0 };
+            map = map.max((hx - want).norm() / nrm);
+        }
+        (map, unit)
     }
 
-    fn cases(tiny: f64, huge: f64) -> Vec<Vec<Complex64>> {
+    fn cases(tiny: f64, huge: f64, band: &[(f64, f64)]) -> Vec<Vec<Complex64>> {
         let c = Complex64::new;
-        vec![
+        let mut v = vec![
             // Traced (#20): a lone complex entry far below √(min positive).
             vec![c(-2.3e-24, -2.6e-24)],
             vec![c(-2.3e-24, -2.6e-24), c(1e-25, 3e-26)],
@@ -167,37 +170,53 @@ mod tests {
             vec![c(-tiny, 2.0 * tiny), c(tiny * 1e3, 0.0)],
             vec![c(huge, -huge), c(huge / 3.0, 0.0), c(0.0, huge)],
             vec![c(0.3, -0.4), c(1.2, 0.5), c(-0.7, 0.1)],
+            vec![c(-0.3, 0.2), c(1e-9, 0.0), c(0.0, -2e-9)],
             vec![c(2.0, 0.0), c(0.0, 0.0)],
-        ]
+        ];
+        // Largest component just above √(min positive), so the smaller
+        // ones' squares are subnormal unless x is scaled (review of #20).
+        for &(a, b) in band {
+            v.push(vec![c(a, 0.0), c(b, 0.0)]);
+            v.push(vec![c(a, 0.0), c(b, -b), c(-b, 0.0)]);
+            v.push(vec![c(-a, 0.5 * a), c(b, 0.0)]);
+        }
+        v
+    }
+
+    fn check<S: Scalar>(name: &str, x: &[S], to: impl Fn(S) -> Complex64, eps: f64) {
+        if x.iter().all(|v| *v == S::zero()) {
+            return;
+        }
+        let (map, unit) = defects(x, to);
+        assert!(
+            map <= 16.0 * eps && unit <= 16.0 * eps,
+            "{name} {x:?}: map {map:e}, unitarity {unit:e}"
+        );
     }
 
     #[test]
-    fn reflector_maps_x_to_its_norm_across_the_range() {
-        let r = |v: Vec<Complex64>| v.iter().map(|z| z.re).collect::<Vec<_>>();
-        for x in cases(1e-300, 1e300) {
-            let d = defect(&x, |v: Complex64| v);
-            assert!(d < 1e-14, "c64 {x:?}: {d}");
-            let xr: Vec<f64> = r(x.clone());
-            if xr.iter().any(|&v| v != 0.0) {
-                let d = defect(&xr, |v: f64| Complex64::new(v, 0.0));
-                assert!(d < 1e-14, "f64 {xr:?}: {d}");
-            }
+    fn reflector_is_unitary_and_maps_x_to_its_norm_across_the_range() {
+        let band64 = [(1e-150, 1e-160), (2e-154, 1e-163), (1e-148, 1e-156)];
+        for x in cases(1e-300, 1e300, &band64) {
+            check("c64", &x, |v: Complex64| v, f64::EPSILON);
+            let xr: Vec<f64> = x.iter().map(|z| z.re).collect();
+            check("f64", &xr, |v: f64| Complex64::new(v, 0.0), f64::EPSILON);
         }
-        for x in cases(1e-40, 1e36) {
+        let band32 = [(2e-19, 1e-22), (1e-18, 1e-23), (1e-17, 3e-21)];
+        let eps = f64::from(f32::EPSILON);
+        for x in cases(1e-40, 1e36, &band32) {
             let x32: Vec<Complex32> = x
                 .iter()
                 .map(|z| Complex::new(z.re as f32, z.im as f32))
                 .collect();
-            let up = |v: Complex32| Complex64::new(v.re.into(), v.im.into());
-            if x32.iter().any(|z| *z != Complex32::new(0.0, 0.0)) {
-                let d = defect(&x32, up);
-                assert!(d < 1e-5, "c32 {x32:?}: {d}");
-            }
+            check(
+                "c32",
+                &x32,
+                |v: Complex32| Complex64::new(v.re.into(), v.im.into()),
+                eps,
+            );
             let xr: Vec<f32> = x32.iter().map(|z| z.re).collect();
-            if xr.iter().any(|&v| v != 0.0) {
-                let d = defect(&xr, |v: f32| Complex64::new(v.into(), 0.0));
-                assert!(d < 1e-5, "f32 {xr:?}: {d}");
-            }
+            check("f32", &xr, |v: f32| Complex64::new(v.into(), 0.0), eps);
         }
     }
 }
