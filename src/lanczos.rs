@@ -164,7 +164,7 @@ impl<S: Scalar> Fact<S> {
         op: &mut A,
         x: Option<&V>,
         scale: S::Real,
-    ) -> Result<(), V::Error>
+    ) -> Result<(), Error<V::Error>>
     where
         V: Vector<Scalar = S>,
         B: Basis<V>,
@@ -174,8 +174,11 @@ impl<S: Scalar> Fact<S> {
         self.beta.clear();
         ws.basis.truncate(0);
         let src = x.unwrap_or(&ws.w);
-        ws.basis.push(src, S::from_real(scale))?;
-        ws.v.axpby(S::from_real(scale), src, S::zero())?;
+        ws.basis
+            .push(src, S::from_real(scale))
+            .map_err(Error::Vector)?;
+        ws.v.axpby(S::from_real(scale), src, S::zero())
+            .map_err(Error::Vector)?;
         self.step(ws, op)
     }
 
@@ -184,26 +187,28 @@ impl<S: Scalar> Fact<S> {
         &mut self,
         ws: &mut Workspace<V, B>,
         op: &mut A,
-    ) -> Result<(), V::Error>
+    ) -> Result<(), Error<V::Error>>
     where
         V: Vector<Scalar = S>,
         B: Basis<V>,
         A: LinearMap<V>,
     {
         let inv = S::from_real(S::Real::one() / self.normres());
-        ws.basis.push(&ws.w, inv)?;
-        ws.v.axpby(inv, &ws.w, S::zero())?;
+        ws.basis.push(&ws.w, inv).map_err(Error::Vector)?;
+        ws.v.axpby(inv, &ws.w, S::zero()).map_err(Error::Vector)?;
         self.step(ws, op)
     }
 
-    /// `w ← A·v` orthogonalized against the basis; records `α`, `β`.
-    fn step<V, B, A>(&mut self, ws: &mut Workspace<V, B>, op: &mut A) -> Result<(), V::Error>
+    /// `w ← A·v` orthogonalized against the basis; records `α`, `β`. A
+    /// non-finite coefficient or `β` (NaN or ∞ from the map) is reported as
+    /// soon as it is produced.
+    fn step<V, B, A>(&mut self, ws: &mut Workspace<V, B>, op: &mut A) -> Result<(), Error<V::Error>>
     where
         V: Vector<Scalar = S>,
         B: Basis<V>,
         A: LinearMap<V>,
     {
-        op.apply_into(&ws.v, &mut ws.w)?;
+        op.apply_into(&ws.v, &mut ws.w).map_err(Error::Vector)?;
         self.numops += 1;
         let k = ws.basis.len();
         self.h.clear();
@@ -211,14 +216,21 @@ impl<S: Scalar> Fact<S> {
         self.scratch.clear();
         self.scratch.resize(k, S::zero());
         let (basis, w, h, s) = (&ws.basis, &mut ws.w, &mut self.h[..], &mut self.scratch[..]);
-        orthogonalize(basis, w, h, s, self.orth)?;
+        orthogonalize(basis, w, h, s, self.orth).map_err(Error::Vector)?;
+        if !h.iter().all(|c| c.all_finite()) {
+            return Err(Error::NonFiniteIterate);
+        }
         let alpha = h[k - 1];
         let im = num_traits::Float::abs(alpha.im());
         if im > self.max_imag {
             self.max_imag = im;
         }
         self.alpha.push(alpha.re());
-        self.beta.push(ws.w.norm()?);
+        let beta = ws.w.norm().map_err(Error::Vector)?;
+        if !num_traits::Float::is_finite(beta) {
+            return Err(Error::NonFiniteIterate);
+        }
+        self.beta.push(beta);
         Ok(())
     }
 }

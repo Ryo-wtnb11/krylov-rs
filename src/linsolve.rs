@@ -178,8 +178,8 @@ pub trait LinearSolver: sealed::Sealed {
 /// `Workspace::with_capacity(&b, 0)`). A warm call allocates exactly two
 /// vectors, the solution and its residual.
 ///
-/// `Error::NonFiniteStartVector` reports a non-finite initial residual
-/// (`b`, `x0` or `A·x0`).
+/// `Error::NonFiniteStartVector` reports a non-finite `b` or `x0`; a
+/// non-finite map output (from `A·x0` on) is `Error::NonFiniteIterate`.
 #[allow(clippy::type_complexity)]
 pub fn linsolve<V, B, A, L>(
     op: &mut A,
@@ -250,7 +250,13 @@ where
     let mut r = b.similar().map_err(Error::Vector)?;
     let normr = residual_into(op, b, x0, a0, a1, &mut r, ws).map_err(Error::Vector)?;
     if !normr.is_finite() {
-        return Err(Error::NonFiniteStartVector);
+        // Classifying costs two reductions, paid only on this error path.
+        for v in [b, x0] {
+            if !v.norm().map_err(Error::Vector)?.is_finite() {
+                return Err(Error::NonFiniteStartVector);
+            }
+        }
+        return Err(Error::NonFiniteIterate);
     }
     Ok((x, r, normr))
 }
@@ -319,19 +325,28 @@ impl LinearSolver for Cg {
                 q.axpby(a0, p, a1).map_err(ve)?;
             }
             let pq = p.inner(q).map_err(ve)?;
-            if !pq.all_finite() || pq.re() <= zero {
+            if !pq.all_finite() {
+                return Err(Error::NonFiniteIterate);
+            }
+            if pq.re() <= zero {
                 return Err(Error::NotPositiveDefinite);
             }
             let alpha = V::Scalar::from_real(rho) / pq;
             x.axpby(alpha, p, V::Scalar::one()).map_err(ve)?;
             r.axpby(-alpha, q, V::Scalar::one()).map_err(ve)?;
             normr = r.norm().map_err(ve)?;
+            if !normr.is_finite() {
+                return Err(Error::NonFiniteIterate);
+            }
             numiter += 1;
             if normr < tol && numiter > 1 {
                 // Recompute against the accumulated rounding (KrylovKit also
                 // skips this after the first iteration) and restart.
                 normr = residual_into(op, b, &x, a0, a1, &mut r, ws).map_err(ve)?;
                 numops += 1;
+                if !normr.is_finite() {
+                    return Err(Error::NonFiniteIterate);
+                }
                 rho = normr * normr;
                 beta = V::Scalar::zero();
             } else {
@@ -462,6 +477,9 @@ impl LinearSolver for Gmres {
             } else {
                 beta = residual_into(op, b, &x, a0, a1, &mut r, ws).map_err(ve)?;
                 numops += 1;
+                if !beta.is_finite() {
+                    return Err(Error::NonFiniteIterate);
+                }
                 if beta < tol {
                     return Ok((x, info(true, r, beta, numiter, numops)));
                 }
@@ -510,5 +528,9 @@ where
     scratch.clear();
     scratch.resize(k, V::Scalar::zero());
     orthogonalize(&ws.basis, &mut ws.w, h, scratch, orth).map_err(ve)?;
-    ws.w.norm().map_err(ve)
+    let nrm = ws.w.norm().map_err(ve)?;
+    if !nrm.is_finite() || !h.iter().all(|c| c.all_finite()) {
+        return Err(Error::NonFiniteIterate);
+    }
+    Ok(nrm)
 }

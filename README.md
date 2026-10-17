@@ -168,6 +168,12 @@ krylov's own tests use Accelerate on macOS and the system OpenBLAS elsewhere.
   exactly zero residual. Non-positive curvature in CG is
   `Error::NotPositiveDefinite` and an exactly singular GMRES pivot is
   `Error::SingularKrylovSpace` (KrylovKit: NaN and `SingularException`).
+- **Non-finite map output** in every solver is `Error::NonFiniteIterate`,
+  returned as soon as a recurrence scalar (a projection coefficient, a
+  residual norm, CG's `⟨p, A·p⟩`) is NaN or infinite, with no further map
+  applications. KrylovKit propagates the NaN into its results or fails
+  later in a dense routine. A non-finite start vector, including `b` and
+  `x0` of `linsolve`, stays `Error::NonFiniteStartVector`.
 - **`block_eigsolve`** orthogonalizes every new vector against the full basis
   (CGS2 by default, or MGS2) instead of KrylovKit's three-term block step plus
   one MGS pass (KrylovKit accepts only MGS2), and skips KrylovKit's

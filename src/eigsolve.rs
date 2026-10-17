@@ -109,8 +109,7 @@ where
     }
 
     let mut fact = Fact::<V::Scalar>::new(kd, alg.get_orth());
-    fact.start(ws, op, Some(x0), Real::<V>::one() / beta0)
-        .map_err(Error::Vector)?;
+    fact.start(ws, op, Some(x0), Real::<V>::one() / beta0)?;
     let mut numiter = 1;
 
     let zero = Real::<V>::zero();
@@ -146,7 +145,7 @@ where
             }
         }
         if k < kd {
-            fact.expand(ws, op).map_err(Error::Vector)?;
+            fact.expand(ws, op)?;
         } else {
             // Thick restart: keep `keep` Ritz vectors (KrylovKit's choice,
             // `converged <= keep < krylovdim`). With `krylovdim == 1` nothing

@@ -35,8 +35,8 @@ pub enum Error<E> {
     /// The small dense eigenvalue or singular value computation (LAPACK)
     /// failed: no convergence, or non-finite entries in the projected matrix.
     DenseNoConvergence,
-    /// Conjugate gradients met a search direction `p` with `Re⟨p, A·p⟩ <= 0`
-    /// (or non-finite): the map is not positive definite on the Krylov space.
+    /// Conjugate gradients met a search direction `p` with `Re⟨p, A·p⟩ <= 0`:
+    /// the map is not positive definite on the Krylov space.
     NotPositiveDefinite,
     /// The projected least-squares problem of GMRES has an exactly singular
     /// triangular factor: the map is singular on the Krylov space.
@@ -44,8 +44,9 @@ pub enum Error<E> {
     /// `svdsolve`'s start check `⟨u, A·v⟩ = ‖Aᴴu‖` (with `v = Aᴴu/‖Aᴴu‖`)
     /// failed: the adjoint does not belong to the map.
     IncompatibleAdjoint,
-    /// A map application produced a vector with a non-finite norm during
-    /// the iteration. In `expintegrator`/`exponentiate` also: the time-step
+    /// A map application produced a non-finite vector during the iteration,
+    /// detected in the recurrence scalars (projection coefficients and norms)
+    /// as they are produced. In `expintegrator`/`exponentiate` also: the time-step
     /// error estimate stays non-finite at the smallest allowed step, or a
     /// step's update coefficients are not finite (typically `exp(t·A)`
     /// overflows).
