@@ -98,7 +98,9 @@ krylov's own tests use Accelerate on macOS and the system OpenBLAS elsewhere.
   (`LargestReal`) or smallest (`SmallestReal`) singular triplets of an
   `AdjointMap` by thick-restart Golub–Kahan–Lanczos. `x0` and `ws_u` live in
   the codomain, `ws_v` in the domain (one Rust vector type, possibly different
-  spaces). A call allocates the `3·n` returned vectors.
+  spaces). A call allocates the `3·n` returned vectors. `SmallestReal`
+  requires codomain dimension ≤ domain dimension; for a tall map, call it on
+  the adjoint and swap left and right vectors.
 
 ## Stage 3 contents
 
@@ -203,10 +205,19 @@ krylov's own tests use Accelerate on macOS and the system OpenBLAS elsewhere.
   (KrylovKit fails indexing). The bidiagonal SVD is LAPACK `bdsqr` on the
   lower bidiagonal matrix, as KrylovKit; the `(k+1) × k` invariant case is
   first reduced to upper bidiagonal form by Givens rotations.
-  `SmallestReal` on a tall map is not supported in substance: the codomain
-  process targets the zero eigenvalues of `AAᴴ`, which are reported as an
-  unconverged `σ ≈ 0`; use the adjoint map. (KrylovKit reports such a zero
-  as converged although its true residual is `O(σ_min)`.)
+  `SmallestReal` requires codomain dimension ≤ domain dimension (ARPACK's
+  rule in `EXAMPLES/SVD/dsvd.f`: reverse the roles of `A` and `Aᴴ` when
+  `m > n`); on a tall map call it on the adjoint. Otherwise the codomain
+  process targets the zero eigenvalues of `AAᴴ`. krylov reports such a
+  `σ ≈ 0` with its true residual (at least `σ_min − σ`) and never marks it
+  converged. KrylovKit, which documents no precondition, reports it as
+  converged although its true residual is `O(σ_min)`. A different Ritz
+  scheme does not lift the precondition. The `(k+1) × k` projection
+  (PROPACK) gives the Ritz values of `AᴴA`, which is this method on the
+  adjoint from `Aᴴ·x0`, so the spurious zeros move to wide maps. Harmonic or
+  refined Ritz values target the genuine zeros of `AAᴴ` as well. SciPy,
+  IRLBA and PRIMME choose the side from the matrix shape, which a
+  matrix-free map does not provide.
 - **Krylov–Schur** (`schursolve`, `arnoldi_eigsolve`, `realeigsolve`):
   - `realeigsolve` returns `Error::ComplexEigenvalue { index }` when one of
     the first `howmany` eigenvalues sits in a 2×2 Schur block coupled by more
