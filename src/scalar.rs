@@ -50,6 +50,9 @@ pub(crate) mod sealed {
         /// `|self|`, using only `sqrt`.
         fn modulus(self) -> R;
         fn all_finite(self) -> bool;
+        /// `self·r` component-wise, so that `±∞ + 0i` stays `±∞ + 0i` (a full
+        /// complex product with `r + 0i` would make `0·∞ = NaN`).
+        fn mul_real(self, r: R) -> Self;
         /// Eigendecomposition of the Hermitian `n × n` matrix `a` (upper
         /// triangle read, destroyed): ascending `eig`, eigenvectors in `z`.
         /// LAPACK `xSYEVR` for real, `xHEEVR` for complex scalars.
@@ -186,6 +189,9 @@ macro_rules! real_scalar {
             fn all_finite(self) -> bool {
                 Float::is_finite(self)
             }
+            fn mul_real(self, r: $t) -> $t {
+                self * r
+            }
             fn heig(
                 a: &mut [Self],
                 n: usize,
@@ -234,6 +240,9 @@ macro_rules! real_scalar {
             }
             fn all_finite(self) -> bool {
                 self.re.is_finite() && self.im.is_finite()
+            }
+            fn mul_real(self, r: $t) -> Self {
+                self * r // num-complex: Complex<T> * T scales each component
             }
             fn heig(
                 a: &mut [Self],

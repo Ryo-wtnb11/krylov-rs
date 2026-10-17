@@ -81,7 +81,9 @@ fn expm_impl<S: Scalar>(a: &[S], n: usize) -> Result<(Vec<S>, usize, usize), ()>
         let u = matmul(&a, &u, n);
         (pade_solve(&u, &v, n)?, c.len() - 1, 0)
     } else {
-        // si = ceil(log2(nA/5.4)) when positive, by exact halving.
+        // si: number of exact halvings of nA/5.4 down to <= 1. Julia uses
+        // ceil(log2(nA/5.4)); the two can differ where libm's log2 rounds
+        // across an integer just above a power of two (design deviation 8).
         let mut ratio = na64 / 5.4;
         let mut si = 0usize;
         while ratio > 1.0 {
@@ -95,9 +97,8 @@ fn expm_impl<S: Scalar>(a: &[S], n: usize) -> Result<(Vec<S>, usize, usize), ()>
             factor *= real_r::<S::Real>(0.5);
         }
         if si > 0 {
-            let f = S::from_real(factor);
             for x in &mut a {
-                *x *= f;
+                *x = x.mul_real(factor);
             }
         }
         let cc: Vec<S> = [
@@ -245,13 +246,15 @@ impl<R: RealScalar> Balance<R> {
     /// and the upper ones in forward order.
     fn undo<S: Scalar<Real = R>>(&self, x: &mut [S], n: usize) {
         for j in self.ilo..=self.ihi {
-            let sc = S::from_real(self.scale[j]);
-            let inv = S::from_real(R::one() / self.scale[j]);
+            // Real factors scale component-wise, as Julia's `X[j,i] *= scj`
+            // does, so an overflowed `Inf + 0i` entry stays `Inf + 0i`. The
+            // GEBAL factors are powers of two, so 1/scale is exact.
+            let (sc, inv) = (self.scale[j], R::one() / self.scale[j]);
             for i in 0..n {
-                x[j + i * n] *= sc;
+                x[j + i * n] = x[j + i * n].mul_real(sc);
             }
             for i in 0..n {
-                x[i + j * n] *= inv;
+                x[i + j * n] = x[i + j * n].mul_real(inv);
             }
         }
         let rcswap = |x: &mut [S], i: usize, j: usize| {
@@ -553,6 +556,16 @@ mod tests {
             DMatrix::from_row_slice(2, 2, &[800.0, 1.0, 0.0, 1.0]).map(|v| Complex64::new(v, 0.0));
         let (x, _, _) = ours(&a, false);
         assert!(x[(0, 0)].re.is_infinite());
+        // Complex: Julia 1.11 gives [Inf+0im Inf+0im; 0 e]. A NaN here would
+        // pass the step controller's ω >= 1 test as "small error".
+        let (x, _, _) = ours(&a, true);
+        for z in [x[(0, 0)], x[(0, 1)]] {
+            assert!(z.re == f64::INFINITY && z.im == 0.0, "{z}");
+        }
+        assert!(x[(1, 0)] == Complex64::new(0.0, 0.0));
+        // Julia: 2.7182818284589936 (the squarings cost ~2e-13 of e).
+        let e = x[(1, 1)] - Complex64::new(2.7182818284589936, 0.0);
+        assert!(e.norm() < 1e-14, "{}", x[(1, 1)]);
     }
 
     #[test]
