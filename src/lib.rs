@@ -8,7 +8,8 @@
 //!
 //! Stage 1 provides Hermitian Lanczos [`eigsolve`] (thick restart) and
 //! [`exponentiate`]; [`expintegrator`] generalizes the latter to
-//! `φ`-function combinations.
+//! `φ`-function combinations. [`linsolve`] solves `(a₀ + a₁·A)·x = b` by
+//! [`Cg`] or [`Gmres`].
 //!
 //! ```
 //! use krylov::{eigsolve, Lanczos, Vector, Which, Workspace};

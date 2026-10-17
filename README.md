@@ -61,6 +61,11 @@ documentation (`src/lib.rs`).
   `u = [u₀, u₁, …]`, the solution at `t` of `ẋ = A·x + Σ_j tʲ/j!·u_{j+1}`,
   `x(0) = u₀`. `exponentiate` is its single-vector case; a call allocates the
   result plus `len(u) - 2` scratch vectors (none for one or two vectors).
+- `linsolve(op, b, x0, &alg, a0, a1, ws)`: `(a₀ + a₁·A)·x = b` by `Cg`
+  (Hermitian positive definite, real `a₀`, `a₁`) or restarted `Gmres`
+  (basis capacity `>= krylovdim`), selected through the sealed `LinearSolver`
+  trait. `tol` is absolute and met when `normres < tol`. A call allocates the
+  solution and its residual.
 
 ## Deviations from KrylovKit
 
@@ -97,6 +102,14 @@ documentation (`src/lib.rs`).
   space would start from) takes the exact polynomial step
   `y + Σ_{j<p} (sΔτ)ʲ/j!·w_{j+1}` to `t` without a Krylov space; KrylovKit
   divides by the zero norm there.
+- **`linsolve`**: GMRES forms the restart residual from the dense Givens
+  product (no basis rotation, capacity `krylovdim` instead of `+ 1`).
+  `numops` counts every application, including CG's residual recompute and
+  the apply that starts each GMRES cycle, which KrylovKit omits. CG checks
+  `maxiter` after every iteration (KrylovKit always runs two) and stops on an
+  exactly zero residual. Non-positive curvature in CG is
+  `Error::NotPositiveDefinite` and an exactly singular GMRES pivot is
+  `Error::SingularKrylovSpace` (KrylovKit: NaN and `SingularException`).
 
 ## Vector contract and distributed use
 

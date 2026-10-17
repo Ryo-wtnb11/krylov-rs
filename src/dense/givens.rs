@@ -1,6 +1,6 @@
 //! Givens rotations and the upper-triangular solve of GMRES.
 
-use num_traits::{One, Zero};
+use num_traits::{Float, One, Zero};
 
 use crate::scalar::Scalar;
 use crate::scalar::sealed::RealOps as _;
@@ -48,19 +48,41 @@ impl<S: Scalar> Givens<S> {
 pub(crate) fn givens<S: Scalar>(f: S, g: S, i1: usize, i2: usize) -> (Givens<S>, S) {
     let (af, ag) = (f.modulus(), g.modulus());
     let zero = S::Real::zero();
-    // Divide by a real through its reciprocal: dividing by a complex-typed
-    // real squares it and overflows near the range limits.
-    let inv = |x: S::Real| S::from_real(S::Real::one() / x);
+    // 1/ε is an exact power of two; rescaling by it is exact (up to the
+    // final subnormal rounding of `r`) and the rotation is scale invariant.
+    let t = S::Real::one() / S::Real::epsilon();
+    if af.max(ag) < S::Real::min_positive_value() && af.max(ag) > zero {
+        // Both subnormal: moduli computed from them lose precision.
+        let (rot, r) = givens(f * S::from_real(t), g * S::from_real(t), i1, i2);
+        return (rot, r * S::from_real(S::Real::epsilon()));
+    }
     let (c, s, r) = if ag == zero {
         (S::Real::one(), S::zero(), f)
     } else if af == zero {
-        (zero, g.conj() * inv(ag), S::from_real(ag))
+        (zero, unit(g.conj(), ag), S::from_real(ag))
     } else {
+        // h >= max(|f|, |g|) is normal here, so 1/h is finite.
         let h = af.hypot2(ag);
-        let phase = f * inv(af);
-        (af / h, phase * (g.conj() * inv(h)), phase * S::from_real(h))
+        let phase = unit(f, af);
+        let inv_h = S::from_real(S::Real::one() / h);
+        (af / h, phase * (g.conj() * inv_h), phase * S::from_real(h))
     };
     (Givens { i1, i2, c, s }, r)
+}
+
+/// `x/|x|` given `ax = |x| > 0`, through the reciprocal of a real.
+///
+/// Complex division by a complex-typed real would square it and overflow
+/// near the range limits. A subnormal `x` has no finite reciprocal and an
+/// imprecise modulus, so it is first rescaled by the exact power of two
+/// `1/ε`.
+fn unit<S: Scalar>(x: S, ax: S::Real) -> S {
+    if ax < S::Real::min_positive_value() {
+        let xs = x * S::from_real(S::Real::one() / S::Real::epsilon());
+        xs * S::from_real(S::Real::one() / xs.modulus())
+    } else {
+        x * S::from_real(S::Real::one() / ax)
+    }
 }
 
 /// Solves `R[..n, ..n]·y = y` in place for upper-triangular `R` (column-major,
@@ -94,18 +116,28 @@ mod tests {
             (Complex64::new(0.0, 0.0), Complex64::new(1.5, -0.5)),
             (Complex64::new(-4.0, 0.0), Complex64::new(0.0, 0.0)),
             (Complex64::new(1e-200, 0.0), Complex64::new(1e200, 1e200)),
+            (Complex64::new(1e-310, -2e-310), Complex64::new(1.0, 0.0)),
+            (Complex64::new(1.0, 0.0), Complex64::new(0.0, 5e-324)),
+            (Complex64::new(3e-320, 0.0), Complex64::new(-4e-320, 0.0)),
         ];
         for (f, g) in cases {
             let (rot, r) = givens(f, g, 0, 1);
             let mut x = [f, g];
             rot.lmul(&mut x);
-            let scale = f.norm().max(g.norm());
-            assert!((x[0] - r).norm() <= 1e-15 * scale, "{f} {g}");
-            assert!(x[1].norm() <= 1e-15 * scale, "{f} {g}");
-            assert!((r.norm() - f.norm().hypot(g.norm())).abs() <= 1e-15 * scale);
+            // Relative accuracy, plus a few subnormal ulps for subnormal input.
+            let tol = 1e-15 * f.norm().max(g.norm()) + 1e-321;
+            assert!(r.is_finite() && (x[0] - r).norm() <= tol, "{f} {g}");
+            assert!(x[1].norm() <= tol, "{f} {g}");
+            let h = f.norm().hypot(g.norm());
+            assert!((r.norm() - h).abs() <= tol, "{f} {g}: {r} vs {h}");
             rot.lmul_adjoint(&mut x);
-            assert!((x[0] - f).norm() <= 1e-15 * scale && (x[1] - g).norm() <= 1e-15 * scale);
+            assert!((x[0] - f).norm() <= tol && (x[1] - g).norm() <= tol);
         }
+        // Subnormal real f: its reciprocal is not finite.
+        let (rot, r) = givens(1e-310f64, 1.0, 0, 1);
+        let mut x = [1e-310, 1.0];
+        rot.lmul(&mut x);
+        assert!(r.is_finite() && (r - 1.0).abs() < 1e-15 && x[1].abs() < 1e-300);
         let (rot, r) = givens(-3.0f64, 4.0, 2, 0);
         let mut x = [4.0, 9.0, -3.0];
         rot.lmul(&mut x);

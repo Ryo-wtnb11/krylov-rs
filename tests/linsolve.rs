@@ -440,11 +440,11 @@ fn fixture_case<S: TestScalar>(c: &HashMap<String, String>) {
     let rel = rel_err(&x, &expect);
     assert!(rel < 1e-9, "{name}: relative difference {rel}");
     let (ni, no): (usize, usize) = (num(c, "numiter"), num(c, "numops"));
-    assert!(
-        info.numiter.abs_diff(ni) <= 1 || info.numiter.abs_diff(ni) * 10 <= ni,
-        "{name}: numiter"
-    );
-    assert!(info.numops.abs_diff(no) * 10 <= no, "{name}: numops");
+    assert_eq!(info.numiter, ni, "{name}: numiter");
+    // KrylovKit does not count the apply of CG's residual recompute (one per
+    // run here) nor the apply that starts each GMRES restart cycle.
+    let uncounted = if c["kind"] == "cg" { 1 } else { ni - 1 };
+    assert_eq!(info.numops, no + uncounted, "{name}: numops");
 }
 
 #[test]
@@ -493,4 +493,19 @@ fn gmres_singular_krylov_space() {
         &mut ws,
     );
     assert_eq!(e.map(|_| ()), Err(Error::SingularKrylovSpace));
+}
+
+#[test]
+fn gmres_with_subnormal_shift() {
+    // (1e-310 + A)·x = e₁ for the rotation A = [0 1; -1 0]: x = [1e-310, 1]
+    // up to O(1e-620). The first Givens pivot is the subnormal shift.
+    let a = DMatrix::from_row_slice(2, 2, &[0.0, 1.0, -1.0, 0.0]).map(|v| Complex64::new(v, 0.0));
+    let b = [Complex64::new(1.0, 0.0), Complex64::new(0.0, 0.0)];
+    let x0 = [Complex64::new(0.0, 0.0); 2];
+    let alg = Gmres::new().krylovdim(2).maxiter(3);
+    let (a0, a1) = (Complex64::new(1e-310, 0.0), Complex64::new(1.0, 0.0));
+    let (x, info) = run::<f64, _>(&a, &b, &x0, &alg, a0, a1, 2);
+    assert_eq!(info.converged, 1);
+    assert!((x[1].re - 1.0).abs() < 1e-15, "{x:?}");
+    assert!((x[0].re - 1e-310).abs() < 1e-323, "{x:?}");
 }
