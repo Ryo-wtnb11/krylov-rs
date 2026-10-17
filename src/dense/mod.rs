@@ -1,11 +1,13 @@
 //! Small dense computations on the projected problem (host, `O(k²)`–`O(k³)`).
 
 mod givens;
+mod heig;
 mod householder;
 mod phi;
 mod tridiag;
 
 pub(crate) use givens::{Givens, givens, upper_solve};
+pub(crate) use heig::{apply_qh, arrowhead_to_band, hermitian_tridiag};
 pub(crate) use householder::householder;
 pub(crate) use phi::{phi_last, phi_upto};
 pub(crate) use tridiag::{arrowhead_to_tridiag, tridiag_eigh};

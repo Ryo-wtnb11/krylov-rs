@@ -66,6 +66,11 @@ documentation (`src/lib.rs`).
   (basis capacity `>= krylovdim`), selected through the sealed `LinearSolver`
   trait. `tol` is absolute and met when `normres < tol`. A call allocates the
   solution and its residual.
+- `block_eigsolve(op, x0: &[V], howmany, which, &BlockLanczos, ws)`:
+  thick-restart block Lanczos for Hermitian maps with repeated eigenvalues;
+  a start block of size `b` resolves multiplicities up to `b`. The basis needs
+  capacity `krylovdim + b - 1`; a call allocates `2b` scratch vectors plus the
+  results.
 
 ## Deviations from KrylovKit
 
@@ -110,6 +115,26 @@ documentation (`src/lib.rs`).
   exactly zero residual. Non-positive curvature in CG is
   `Error::NotPositiveDefinite` and an exactly singular GMRES pivot is
   `Error::SingularKrylovSpace` (KrylovKit: NaN and `SingularException`).
+- **`block_eigsolve`** orthogonalizes every new vector against the full basis
+  (CGS2 by default, or MGS2) instead of KrylovKit's three-term block step plus
+  one MGS pass (KrylovKit accepts only MGS2), and skips KrylovKit's
+  type-probe application, so `numops` is one lower (lower by
+  `1 + dropped` when the QR drops start vectors, since KrylovKit counts the
+  input block size). Diagonal blocks are
+  symmetrized, `(M + Mᴴ)/2`, where KrylovKit reads the upper triangle; the
+  discarded part is reported in `max_imag`. The small Hermitian eigenproblem
+  uses Householder tridiagonalization and the QL solver instead of LAPACK.
+  When every vector of a new block falls below `qr_tol` the iteration stops
+  as an invariant subspace (KrylovKit throws `ArgumentError("blocklength
+  must be >(0)")` there). After a
+  restart the residual norm is that of the transformed residual block
+  (KrylovKit keeps the pre-restart norm). Exactly zero vectors are dropped
+  even with `qr_tol == 0`. Typed errors: an empty block or
+  `krylovdim <= block size` (every restart would be a no-op) is an
+  `InvalidArgument`, a block entirely below `qr_tol` is `ZeroStartVector`.
+- **Complex Householder pivots** are formed scaled by `1/ν`, so complex
+  operators reach the same range limits as real ones (entries whose squares
+  stay finite).
 
 ## Vector contract and distributed use
 

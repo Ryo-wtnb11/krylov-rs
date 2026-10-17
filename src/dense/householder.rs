@@ -23,8 +23,14 @@ pub(crate) fn householder<S: Scalar>(x: &mut [S]) -> Option<S> {
     let nu_s = S::from_real(nu);
     let piv = if vi.re() < S::Real::zero() {
         vi - nu_s
+    } else if vi.im() == S::Real::zero() {
+        S::from_real(-(sigma / (vi.re() + nu)))
     } else {
-        ((vi - vi.conj()) * nu_s - S::from_real(sigma)) / (vi.conj() + nu_s)
+        // ((vi - v̄i)·ν - σ)/(v̄i + ν) with numerator and denominator scaled
+        // by 1/ν: a complex division of an O(s²) by an O(s) value forms O(s³)
+        // products and leaves the range long before σ does.
+        let inv_nu = S::from_real(nu.recip());
+        ((vi - vi.conj()) - S::from_real(sigma) * inv_nu) / (vi.conj() * inv_nu + S::one())
     };
     for r in rest.iter_mut() {
         *r /= piv;

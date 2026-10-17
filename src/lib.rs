@@ -9,7 +9,8 @@
 //! Stage 1 provides Hermitian Lanczos [`eigsolve`] (thick restart) and
 //! [`exponentiate`]; [`expintegrator`] generalizes the latter to
 //! `φ`-function combinations. [`linsolve`] solves `(a₀ + a₁·A)·x = b` by
-//! [`Cg`] or [`Gmres`].
+//! [`Cg`] or [`Gmres`]. [`block_eigsolve`] handles degenerate
+//! spectra with [`BlockLanczos`].
 //!
 //! ```
 //! use krylov::{eigsolve, Lanczos, Vector, Which, Workspace};
@@ -59,6 +60,7 @@
 #![warn(missing_docs)]
 
 mod basis;
+mod block_lanczos;
 mod dense;
 mod eigsolve;
 mod error;
@@ -70,6 +72,7 @@ mod scalar;
 mod traits;
 
 pub use basis::VecBasis;
+pub use block_lanczos::{BlockLanczos, block_eigsolve};
 pub use eigsolve::{ConvergenceInfo, Which, eigsolve};
 pub use error::Error;
 pub use exponentiate::{ExpInfo, expintegrator, exponentiate};
