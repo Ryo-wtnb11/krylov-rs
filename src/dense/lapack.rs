@@ -12,6 +12,9 @@
 //! - `xSYEVR`/`xHEEVR(jobz='V', range='A', uplo='U', abstol=-1)`: dense
 //!   Hermitian eigenproblem (Julia 1.11 `eigen(::Hermitian)`, which
 //!   KrylovKit's block Lanczos calls).
+//! - `xGEBAL('B')` and `xGESV`: balancing and the Padé solve of the matrix
+//!   exponential (Julia 1.11 `exp!`, which KrylovKit's `expintegrator`
+//!   calls).
 //!
 //! Workspace sizes are queried (`lwork = -1`) on every call, as Julia does.
 //! The buffers live in a caller-owned [`Work`] that only grows.
@@ -56,8 +59,105 @@ fn size_of_query(x: f64) -> usize {
 }
 
 macro_rules! lapack_real {
-    ($t:ty, $stegr:ident, $bdsqr:ident, $syevr:ident, $heevr:ident) => {
+    (
+        $t:ty, $stegr:ident, $bdsqr:ident, $syevr:ident, $heevr:ident,
+        $gebal:ident, $cgebal:ident, $gesv:ident, $cgesv:ident
+    ) => {
         impl RealOps for $t {
+            fn gebal_r(a: &mut [$t], n: usize, scale: &mut [$t]) -> Result<(usize, usize), ()> {
+                assert!(
+                    a.len() >= n * n && scale.len() >= n,
+                    "gebal: buffer too small"
+                );
+                if !finite(&a[..n * n]) {
+                    return Err(());
+                }
+                let ni = int(n)?;
+                let (mut ilo, mut ihi, mut info) = (0, 0, 0);
+                // SAFETY: a is n·n (lda = max(n, 1)), scale n.
+                unsafe {
+                    lapack::$gebal(b'B', ni, a, ni.max(1), &mut ilo, &mut ihi, scale, &mut info);
+                }
+                gebal_result(n, ilo, ihi, info)
+            }
+
+            fn gebal_c(
+                a: &mut [Complex<$t>],
+                n: usize,
+                scale: &mut [$t],
+            ) -> Result<(usize, usize), ()> {
+                assert!(
+                    a.len() >= n * n && scale.len() >= n,
+                    "gebal: buffer too small"
+                );
+                if !a[..n * n]
+                    .iter()
+                    .all(|x| x.re.is_finite() && x.im.is_finite())
+                {
+                    return Err(());
+                }
+                let ni = int(n)?;
+                let (mut ilo, mut ihi, mut info) = (0, 0, 0);
+                // SAFETY: a is n·n (lda = max(n, 1)), scale n.
+                unsafe {
+                    lapack::$cgebal(b'B', ni, a, ni.max(1), &mut ilo, &mut ihi, scale, &mut info);
+                }
+                gebal_result(n, ilo, ihi, info)
+            }
+
+            fn gesv_r(
+                a: &mut [$t],
+                b: &mut [$t],
+                n: usize,
+                nrhs: usize,
+                ipiv: &mut [i32],
+            ) -> Result<(), ()> {
+                assert!(
+                    a.len() >= n * n && b.len() >= n * nrhs && ipiv.len() >= n,
+                    "gesv: buffer too small"
+                );
+                if n == 0 || nrhs == 0 {
+                    return Ok(());
+                }
+                if !finite(&a[..n * n]) || !finite(&b[..n * nrhs]) {
+                    return Err(());
+                }
+                let (ni, nr) = (int(n)?, int(nrhs)?);
+                let mut info = 0;
+                // SAFETY: a is n·n (lda n), b n·nrhs (ldb n), ipiv n.
+                unsafe {
+                    lapack::$gesv(ni, nr, a, ni, ipiv, b, ni, &mut info);
+                }
+                if info != 0 { Err(()) } else { Ok(()) }
+            }
+
+            fn gesv_c(
+                a: &mut [Complex<$t>],
+                b: &mut [Complex<$t>],
+                n: usize,
+                nrhs: usize,
+                ipiv: &mut [i32],
+            ) -> Result<(), ()> {
+                assert!(
+                    a.len() >= n * n && b.len() >= n * nrhs && ipiv.len() >= n,
+                    "gesv: buffer too small"
+                );
+                if n == 0 || nrhs == 0 {
+                    return Ok(());
+                }
+                let ok = |x: &[Complex<$t>]| x.iter().all(|v| v.re.is_finite() && v.im.is_finite());
+                if !ok(&a[..n * n]) || !ok(&b[..n * nrhs]) {
+                    return Err(());
+                }
+                let (ni, nr) = (int(n)?, int(nrhs)?);
+                let mut info = 0;
+                // SAFETY: a is n·n (lda n), b n·nrhs (ldb n), ipiv n.
+                unsafe {
+                    lapack::$cgesv(ni, nr, a, ni, ipiv, b, ni, &mut info);
+                }
+                if info != 0 { Err(()) } else { Ok(()) }
+            }
+
             fn stegr(
                 d: &mut [$t],
                 e: &mut [$t],
@@ -324,5 +424,18 @@ macro_rules! lapack_real {
     };
 }
 
-lapack_real!(f32, sstegr, sbdsqr, ssyevr, cheevr);
-lapack_real!(f64, dstegr, dbdsqr, dsyevr, zheevr);
+/// 0-based `(ilo, ihi)` from `xGEBAL`'s 1-based ones; `n = 0` (no index
+/// range) is left to the caller.
+fn gebal_result(n: usize, ilo: i32, ihi: i32, info: i32) -> Result<(usize, usize), ()> {
+    if info != 0 || n == 0 || ilo < 1 || ihi < ilo {
+        return Err(());
+    }
+    Ok((ilo as usize - 1, ihi as usize - 1))
+}
+
+lapack_real!(
+    f32, sstegr, sbdsqr, ssyevr, cheevr, sgebal, cgebal, sgesv, cgesv
+);
+lapack_real!(
+    f64, dstegr, dbdsqr, dsyevr, zheevr, dgebal, zgebal, dgesv, zgesv
+);

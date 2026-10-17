@@ -50,6 +50,9 @@ pub(crate) mod sealed {
         /// `|self|`, using only `sqrt`.
         fn modulus(self) -> R;
         fn all_finite(self) -> bool;
+        /// `self·r` component-wise, so that `±∞ + 0i` stays `±∞ + 0i` (a full
+        /// complex product with `r + 0i` would make `0·∞ = NaN`).
+        fn mul_real(self, r: R) -> Self;
         /// Eigendecomposition of the Hermitian `n × n` matrix `a` (upper
         /// triangle read, destroyed): ascending `eig`, eigenvectors in `z`.
         /// LAPACK `xSYEVR` for real, `xHEEVR` for complex scalars.
@@ -59,6 +62,21 @@ pub(crate) mod sealed {
             eig: &mut [R],
             z: &mut [Self],
             w: &mut Work<Self, R>,
+        ) -> Result<(), ()>;
+        /// `xGEBAL('B')` on the `n × n` matrix `a` (balanced in place):
+        /// returns the 0-based `(ilo, ihi)`; `scale` (`n`) holds the scaling
+        /// factors inside `ilo..=ihi` and the 1-based permutation indices
+        /// outside it, as LAPACK stores them.
+        fn gebal(a: &mut [Self], n: usize, scale: &mut [R]) -> Result<(usize, usize), ()>;
+        /// `xGESV`: `b ← A⁻¹·b` for the `n × n` `a` (overwritten by its LU
+        /// factors) and the `nrhs` columns of `b`; `ipiv` holds `n` entries.
+        /// `Err(())` also for an exactly singular `a` (`info > 0`).
+        fn gesv(
+            a: &mut [Self],
+            b: &mut [Self],
+            n: usize,
+            nrhs: usize,
+            ipiv: &mut [i32],
         ) -> Result<(), ()>;
     }
 
@@ -120,6 +138,30 @@ pub(crate) mod sealed {
             z: &mut [Complex<Self>],
             w: &mut Work<Complex<Self>, Self>,
         ) -> Result<(), ()>;
+        /// `xGEBAL('B')` for real matrices (see [`Ops::gebal`]).
+        fn gebal_r(a: &mut [Self], n: usize, scale: &mut [Self]) -> Result<(usize, usize), ()>;
+        /// `xGEBAL('B')` for complex matrices (see [`Ops::gebal`]).
+        fn gebal_c(
+            a: &mut [Complex<Self>],
+            n: usize,
+            scale: &mut [Self],
+        ) -> Result<(usize, usize), ()>;
+        /// `xGESV` for real matrices (see [`Ops::gesv`]).
+        fn gesv_r(
+            a: &mut [Self],
+            b: &mut [Self],
+            n: usize,
+            nrhs: usize,
+            ipiv: &mut [i32],
+        ) -> Result<(), ()>;
+        /// `xGESV` for complex matrices (see [`Ops::gesv`]).
+        fn gesv_c(
+            a: &mut [Complex<Self>],
+            b: &mut [Complex<Self>],
+            n: usize,
+            nrhs: usize,
+            ipiv: &mut [i32],
+        ) -> Result<(), ()>;
     }
 }
 
@@ -147,6 +189,9 @@ macro_rules! real_scalar {
             fn all_finite(self) -> bool {
                 Float::is_finite(self)
             }
+            fn mul_real(self, r: $t) -> $t {
+                self * r
+            }
             fn heig(
                 a: &mut [Self],
                 n: usize,
@@ -155,6 +200,18 @@ macro_rules! real_scalar {
                 w: &mut crate::dense::Work<Self, $t>,
             ) -> Result<(), ()> {
                 <$t as sealed::RealOps>::syevr(a, n, eig, z, w)
+            }
+            fn gebal(a: &mut [Self], n: usize, scale: &mut [$t]) -> Result<(usize, usize), ()> {
+                <$t as sealed::RealOps>::gebal_r(a, n, scale)
+            }
+            fn gesv(
+                a: &mut [Self],
+                b: &mut [Self],
+                n: usize,
+                nrhs: usize,
+                ipiv: &mut [i32],
+            ) -> Result<(), ()> {
+                <$t as sealed::RealOps>::gesv_r(a, b, n, nrhs, ipiv)
             }
         }
         impl Scalar for $t {
@@ -184,6 +241,9 @@ macro_rules! real_scalar {
             fn all_finite(self) -> bool {
                 self.re.is_finite() && self.im.is_finite()
             }
+            fn mul_real(self, r: $t) -> Self {
+                self * r // num-complex: Complex<T> * T scales each component
+            }
             fn heig(
                 a: &mut [Self],
                 n: usize,
@@ -192,6 +252,18 @@ macro_rules! real_scalar {
                 w: &mut crate::dense::Work<Self, $t>,
             ) -> Result<(), ()> {
                 <$t as sealed::RealOps>::heevr(a, n, eig, z, w)
+            }
+            fn gebal(a: &mut [Self], n: usize, scale: &mut [$t]) -> Result<(usize, usize), ()> {
+                <$t as sealed::RealOps>::gebal_c(a, n, scale)
+            }
+            fn gesv(
+                a: &mut [Self],
+                b: &mut [Self],
+                n: usize,
+                nrhs: usize,
+                ipiv: &mut [i32],
+            ) -> Result<(), ()> {
+                <$t as sealed::RealOps>::gesv_c(a, b, n, nrhs, ipiv)
             }
         }
         impl Scalar for Complex<$t> {

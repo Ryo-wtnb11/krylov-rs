@@ -1,6 +1,7 @@
 //! Small dense computations on the projected problem (host, `O(k²)`–`O(k³)`).
 
 mod bidiag;
+mod expm;
 mod givens;
 mod heig;
 mod householder;
