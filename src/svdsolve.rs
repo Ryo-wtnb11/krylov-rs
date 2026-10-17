@@ -218,13 +218,22 @@ impl<S: Scalar> Fact<S> {
 /// has no such stop and divides by it). A non-finite norm during the
 /// iteration (e.g. NaN from the map) is [`Error::NonFiniteIterate`].
 ///
-/// For `SmallestReal` the codomain should not be larger than the domain:
-/// the process lives in the codomain and approximates `AAᴴ`, whose zero
-/// eigenvalues (one per missing domain dimension) then come first as Ritz
-/// values `σ ≈ 0` that no right vector satisfies; they are reported with
-/// their true, non-small residual and never converge. Apply `svdsolve` to
-/// the adjoint of a tall map instead (KrylovKit reports such a zero as
-/// converged).
+/// `SmallestReal` requires that the codomain dimension not exceed the domain
+/// dimension. Otherwise call `svdsolve` on the adjoint map, with `x0` in the
+/// domain, and swap the left and right vectors; this is ARPACK's rule for
+/// its SVD driver (`EXAMPLES/SVD/dsvd.f`: "appropriate when m .ge. n.
+/// Reverse the roles of A and A' in the case that m .le. n"). The process
+/// lives in the codomain and approximates `AAᴴ`. For a tall map `AAᴴ` has
+/// one zero eigenvalue per missing domain dimension, so these zeros come
+/// first as Ritz values `σ ≈ 0` that no right vector satisfies. They are
+/// reported with their true, non-small residual (at least `σ_min − σ`) and
+/// never count as converged; KrylovKit reports them as converged. A matrix-free
+/// map does not reveal which side is smaller, and no other Ritz extraction
+/// fixes this. The `(k+1) × k` projection (PROPACK's) yields the Ritz values
+/// of `AᴴA`, which equals running this method on the adjoint from `Aᴴ·x0`,
+/// so it only moves the spurious zeros to wide maps. Harmonic or refined
+/// Ritz values targeting zero converge to the same genuine zero eigenvalues
+/// of `AAᴴ`.
 ///
 /// `ws_u` holds the left basis and must be in the space of `x0`; `ws_v` holds
 /// the right basis and must be in the domain of `op`. Both bases need
