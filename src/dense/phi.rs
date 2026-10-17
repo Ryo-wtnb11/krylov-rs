@@ -14,27 +14,39 @@ use crate::scalar::sealed::RealOps as _;
 // |x| = 1; fine for the few φ's expintegrator needs, a per-j series radius
 // would lift that if large p ever matters.
 pub(crate) fn phi_upto<S: Scalar>(x: S, out: &mut [S]) {
-    let mut inv_fact = S::Real::one(); // 1/j!
-    if x.modulus() < S::Real::one() {
+    // An exactly real argument (real t on a Hermitian map) is evaluated in
+    // real arithmetic: complex `exp`, products and quotients turn an
+    // overflowed `∞ + 0i` into `∞ + NaN·i`, which a NaN-blind step
+    // controller would accept.
+    if x.im() == S::Real::zero() {
+        phi_into(x.re(), out, S::from_real);
+    } else {
+        phi_into(x, out, |v| v);
+    }
+}
+
+fn phi_into<T: Scalar, S>(x: T, out: &mut [S], to: impl Fn(T) -> S) {
+    let mut inv_fact = T::Real::one(); // 1/j!
+    if x.modulus() < T::Real::one() {
         // φ_j(x) = Σ_n xⁿ/(n+j)!; for |x| < 1 the tail after 22 terms is below 1/(22+j)!.
         for (j, o) in out.iter_mut().enumerate() {
             if j > 0 {
-                inv_fact /= S::Real::from_usize(j);
+                inv_fact /= T::Real::from_usize(j);
             }
-            let mut t = S::from_real(inv_fact); // xⁿ/(n+j)!
-            let mut sum = S::zero();
+            let mut t = T::from_real(inv_fact); // xⁿ/(n+j)!
+            let mut sum = T::zero();
             for n in 0..22usize {
                 sum += t;
-                t = t * x / S::from_real(S::Real::from_usize(n + j + 1));
+                t = t * x / T::from_real(T::Real::from_usize(n + j + 1));
             }
-            *o = sum;
+            *o = to(sum);
         }
     } else {
         let mut phi = x.scalar_exp();
         for (j, o) in out.iter_mut().enumerate() {
-            *o = phi;
-            phi = (phi - S::from_real(inv_fact)) / x;
-            inv_fact /= S::Real::from_usize(j + 1);
+            *o = to(phi);
+            phi = (phi - T::from_real(inv_fact)) / x;
+            inv_fact /= T::Real::from_usize(j + 1);
         }
     }
 }
