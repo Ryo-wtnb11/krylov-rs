@@ -10,7 +10,8 @@
 //! [`exponentiate`]; [`expintegrator`] generalizes the latter to
 //! `φ`-function combinations. [`linsolve`] solves `(a₀ + a₁·A)·x = b` by
 //! [`Cg`] or [`Gmres`]. [`block_eigsolve`] handles degenerate
-//! spectra with [`BlockLanczos`].
+//! spectra with [`BlockLanczos`]. [`svdsolve`] computes partial SVDs of an
+//! [`AdjointMap`] by [`Gkl`].
 //!
 //! ```
 //! use krylov::{eigsolve, Lanczos, Vector, Which, Workspace};
@@ -69,6 +70,7 @@ mod lanczos;
 mod linsolve;
 mod orth;
 mod scalar;
+mod svdsolve;
 mod traits;
 
 pub use basis::VecBasis;
@@ -80,4 +82,5 @@ pub use lanczos::Lanczos;
 pub use linsolve::{Cg, Gmres, LinearSolver, LinsolveInfo, linsolve};
 pub use orth::Orth;
 pub use scalar::{MatRef, Real, RealScalar, Scalar};
-pub use traits::{Basis, LinearMap, Vector, Workspace};
+pub use svdsolve::{Gkl, svdsolve};
+pub use traits::{AdjointMap, Basis, LinearMap, Vector, Workspace};
