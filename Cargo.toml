@@ -4,12 +4,12 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
-description = "Krylov subspace algorithms (Lanczos eigensolver, exponential integrator) over user-defined vector types, modelled on KrylovKit.jl"
+description = "Matrix-free Krylov methods over user-defined vector types (Lanczos and Arnoldi eigensolvers, Golub-Kahan-Lanczos SVD, CG/GMRES linear solvers, exponential integrators), modelled on KrylovKit.jl"
 repository = "https://github.com/Ryo-wtnb11/krylov-rs"
 readme = "README.md"
 keywords = ["krylov", "lanczos", "eigenvalues", "linear-algebra", "tensor-network"]
 categories = ["mathematics", "science", "algorithms"]
-publish = false
+exclude = ["AGENTS.md", ".github"]
 
 [dependencies]
 # Declarations only; the final binary links a LAPACK provider (see README).
