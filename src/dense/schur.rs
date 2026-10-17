@@ -44,8 +44,54 @@ pub(crate) fn real_schur<R: RealScalar>(
     real_schur_with(h, z, n, w, 30 * n.max(10))?;
     let inv = R::one() / s;
     h.iter_mut().for_each(|x| *x *= inv);
-    w.iter_mut().for_each(|x| *x *= inv);
+    if s > R::one() {
+        repair_underflowed_blocks(h, z, n, w);
+    }
+    for (i, wi) in w.iter_mut().enumerate() {
+        *wi = Complex::new(h[i + i * n], wi.im * inv);
+    }
     Ok(())
+}
+
+/// `DGEES` post-unscale repair: unscaling a scaled-up T can underflow an
+/// off-diagonal entry of a 2×2 block, which then holds two real eigenvalues
+/// while `w` still carries `±im`. Such a block is made triangular (swapping
+/// the two basis vectors when only the upper entry vanished) and its
+/// eigenvalues become real, so `w` always matches T.
+fn repair_underflowed_blocks<R: RealScalar>(
+    h: &mut [R],
+    z: &mut [R],
+    n: usize,
+    w: &mut [Complex<R>],
+) {
+    let zero = R::zero();
+    let mut i = 0;
+    while i + 1 < n {
+        if w[i].im == zero {
+            i += 1;
+            continue;
+        }
+        let (lower, upper) = (i + 1 + i * n, i + (i + 1) * n);
+        if h[lower] == zero {
+            w[i].im = zero;
+            w[i + 1].im = zero;
+        } else if h[upper] == zero {
+            w[i].im = zero;
+            w[i + 1].im = zero;
+            for r in 0..i {
+                h.swap(r + i * n, r + (i + 1) * n);
+            }
+            for col in i + 2..n {
+                h.swap(i + col * n, i + 1 + col * n);
+            }
+            for r in 0..n {
+                z.swap(r + i * n, r + (i + 1) * n);
+            }
+            h[upper] = h[lower];
+            h[lower] = zero;
+        }
+        i += 2;
+    }
 }
 
 /// Power of four that brings `max |h_ij|` into `[SMLNUM, BIGNUM]` with
@@ -865,10 +911,21 @@ mod tests {
         check_real_structure(t, w);
     }
 
+    /// Largest entry modulus; dividing by it first keeps nalgebra's
+    /// Frobenius norm (which squares entries) finite for 1e300 inputs.
+    fn amax<S: nalgebra::ComplexField<RealField = f64>>(m: &DMatrix<S>) -> f64 {
+        m.iter()
+            .map(|x| x.clone().modulus())
+            .fold(0.0, f64::max)
+            .max(f64::MIN_POSITIVE)
+    }
+
     fn check_real_residual(a: &DMatrix<f64>, t: &DMatrix<f64>, z: &DMatrix<f64>, tol: f64) {
         let n = a.nrows();
-        let scale = a.norm().max(f64::MIN_POSITIVE);
-        let back = (z * t * z.transpose() - a).norm();
+        let m = amax(a);
+        let (a, t) = (a / m, t / m);
+        let scale = a.norm();
+        let back = (z * t * z.transpose() - &a).norm();
         assert!(back <= tol * scale, "backward error {back:e} vs {scale:e}");
         assert!((z.transpose() * z - DMatrix::identity(n, n)).norm() <= tol);
     }
@@ -917,11 +974,12 @@ mod tests {
         tol: f64,
     ) {
         let n = a.nrows();
-        let scale = a.norm().max(f64::MIN_POSITIVE);
-        assert!(
-            (z * t * z.adjoint() - a).norm() <= tol * scale,
-            "backward error"
-        );
+        // Divide by the real amax: nalgebra's complex `/` forms |m|².
+        let m = amax(a);
+        let (a, t) = (a.map(|x| x / m), t.map(|x| x / m));
+        let scale = a.norm();
+        let back = (z * t * z.adjoint() - &a).norm();
+        assert!(back <= tol * scale, "backward error {back:e} vs {scale:e}");
         assert!((z.adjoint() * z - DMatrix::identity(n, n)).norm() <= tol);
     }
 
@@ -1096,7 +1154,7 @@ mod tests {
                 DMatrix::from_column_slice(n, n, &z),
             );
             // Residual in units of s, so 1e300·1e300 never forms.
-            check_real_residual(&(&a / s), &(&t / s), &zm, 1e-12);
+            check_real_residual(&a, &t, &zm, 1e-12);
             check_real_structure(&t, &w);
             let scaled: Vec<Complex64> = want.iter().map(|x| x * s).collect();
             assert!(max_mismatch(&w, &scaled) <= 1e-10 * s, "scale {s}");
@@ -1123,7 +1181,8 @@ mod tests {
         );
         check_real(&g, &t, &zm, &w, 1e-12);
         let want: Vec<Complex64> = g.complex_eigenvalues().iter().copied().collect();
-        assert!(max_mismatch(&w, &want) <= 1e-13 * g.norm());
+        assert!(g.norm().is_infinite(), "the scaled norm below is needed");
+        assert!(max_mismatch(&w, &want) <= 1e-13 * amax(&g) * (&g / amax(&g)).norm());
         // Subnormal subdiagonal entries deflate without producing NaN.
         let mut sub = random(n, 13);
         for i in 0..n {
@@ -1209,7 +1268,7 @@ mod tests {
             complex_schur(&mut h, &mut z, n, &mut w).unwrap();
             let t = DMatrix::from_column_slice(n, n, &h);
             let zm = DMatrix::from_column_slice(n, n, &z);
-            check_complex_residual(&b, &(&t * c(1.0 / s, 0.0)), &zm, 1e-12);
+            check_complex_residual(&a, &t, &zm, 1e-12);
             check_complex_structure(&t, &w);
             let scaled: Vec<Complex64> = want.iter().map(|x| x * s).collect();
             assert!(max_mismatch(&w, &scaled) <= 1e-10 * s, "scale {s}");
@@ -1291,9 +1350,10 @@ mod tests {
             let m0 = nalgebra::Matrix2::new(a0, b0, c0, d0);
             let r = nalgebra::Matrix2::new(cs, -sn, sn, cs);
             let m = nalgebra::Matrix2::new(a, b, cc, d);
-            let scale = m0.norm();
+            let mx = m0.amax().max(f64::MIN_POSITIVE);
+            let (m0, m) = (m0 / mx, m / mx);
             assert!(
-                (r.transpose() * m0 * r - m).norm() <= 1e-15 * scale,
+                (r.transpose() * m0 * r - m).norm() <= 1e-15 * m0.norm(),
                 "{a0} {b0} {c0} {d0}"
             );
             if cc == 0.0 {
@@ -1305,5 +1365,133 @@ mod tests {
                 assert!(r1.im > 0.0);
             }
         }
+    }
+
+    #[test]
+    fn unscaled_underflow_keeps_eigenvalues_consistent_with_t() {
+        // Reviewer reproduction: the 2×2 block's lower entry underflows to
+        // zero after unscaling, so T is triangular and w must be real.
+        let a0 = [
+            -2.7797856262260443e-308,
+            -3.0533251061780536e-308,
+            2.720006882486198e-307,
+            1.5446640576704915e-307,
+        ];
+        let mut h = a0.to_vec();
+        let mut z = vec![1.0, 0.0, 0.0, 1.0];
+        let mut w = vec![c(0.0, 0.0); 2];
+        real_schur(&mut h, &mut z, 2, &mut w).unwrap();
+        let (t, zm) = (
+            DMatrix::from_column_slice(2, 2, &h),
+            DMatrix::from_column_slice(2, 2, &z),
+        );
+        check_real_structure(&t, &w);
+        check_real_residual(&DMatrix::from_column_slice(2, 2, &a0), &t, &zm, 1e-12);
+        // The swap branch: a lower-triangular block (upper entry zero) is
+        // turned upper triangular, also in Z.
+        let mut h = vec![1.0, 3.0, 0.0, 1.0];
+        let mut z = vec![1.0, 0.0, 0.0, 1.0];
+        let mut w = vec![c(1.0, 2.0), c(1.0, -2.0)];
+        repair_underflowed_blocks(&mut h, &mut z, 2, &mut w);
+        assert_eq!(h, [1.0, 0.0, 3.0, 1.0]);
+        assert_eq!(z, [0.0, 1.0, 1.0, 0.0]);
+        assert_eq!(w, [c(1.0, 0.0), c(1.0, 0.0)]);
+    }
+
+    /// Deviation 11 must not touch inputs already inside the safe range: the
+    /// pre-scaling is the identity there, bit for bit.
+    #[test]
+    fn range_scaling_is_the_identity_in_range() {
+        let n = 20;
+        let mut a = random(n, 51);
+        let mut b = random_complex(n, 52);
+        for i in 0..n {
+            for j in 0..n {
+                if i > j + 1 {
+                    a[(i, j)] = 0.0;
+                    b[(i, j)] = c(0.0, 0.0);
+                }
+            }
+        }
+        let id: Vec<f64> = DMatrix::<f64>::identity(n, n).as_slice().to_vec();
+        let (mut h1, mut z1, mut w1) = (a.as_slice().to_vec(), id.clone(), vec![c(0.0, 0.0); n]);
+        let (mut h2, mut z2, mut w2) = (h1.clone(), id.clone(), w1.clone());
+        real_schur(&mut h1, &mut z1, n, &mut w1).unwrap();
+        real_schur_with(&mut h2, &mut z2, n, &mut w2, 30 * n).unwrap();
+        let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        let cbits = |v: &[Complex64]| {
+            v.iter()
+                .flat_map(|x| [x.re.to_bits(), x.im.to_bits()])
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            (bits(&h1), bits(&z1), cbits(&w1)),
+            (bits(&h2), bits(&z2), cbits(&w2))
+        );
+        let idc: Vec<Complex64> = id.iter().map(|&x| c(x, 0.0)).collect();
+        let (mut h1, mut z1, mut w1) = (b.as_slice().to_vec(), idc.clone(), vec![c(0.0, 0.0); n]);
+        let (mut h2, mut z2, mut w2) = (h1.clone(), idc, w1.clone());
+        complex_schur(&mut h1, &mut z1, n, &mut w1).unwrap();
+        complex_schur_with(&mut h2, &mut z2, n, &mut w2, 30 * n).unwrap();
+        assert_eq!(
+            (cbits(&h1), cbits(&z1), cbits(&w1)),
+            (cbits(&h2), cbits(&z2), cbits(&w2))
+        );
+    }
+
+    /// Eigenvalues, in order, against Julia 1.11 `LAPACK.hseqr!` (LAPACK
+    /// 3.12.0) on the fixed matrices of `tests/fixtures/lapack/hseqr.jl`.
+    #[test]
+    fn matches_lapack_hseqr_fixture() {
+        let re = |i: usize, j: usize| ((7 * i + 3 * j * j) % 11) as f64 / 4.0 - 1.25;
+        let im = |i: usize, j: usize| ((5 * i + 2 * j) % 7) as f64 / 2.0 - 1.5;
+        let fixture = include_str!("../../tests/fixtures/lapack/hseqr.txt");
+        let hex = |s: &str| f64::from_bits(u64::from_str_radix(s, 16).unwrap());
+        let mut cases = 0;
+        for line in fixture.lines().filter(|l| !l.starts_with('#')) {
+            let mut it = line.split_whitespace();
+            let kind = it.next().unwrap();
+            let n: usize = it.next().unwrap().parse().unwrap();
+            let want: Vec<Complex64> = it
+                .map(|p| {
+                    let (a, b) = p.split_once(':').unwrap();
+                    c(hex(a), hex(b))
+                })
+                .collect();
+            assert_eq!(want.len(), n);
+            // 1-based Julia indices; entries are exact multiples of 1/4.
+            let mut w = vec![c(0.0, 0.0); n];
+            if kind == "real" {
+                let mut h: Vec<f64> = (0..n * n)
+                    .map(|k| {
+                        let (i, j) = (k % n + 1, k / n + 1);
+                        if i <= j + 1 { re(i, j) } else { 0.0 }
+                    })
+                    .collect();
+                let mut z = vec![0.0; n * n];
+                real_schur(&mut h, &mut z, n, &mut w).unwrap();
+            } else {
+                let mut h: Vec<Complex64> = (0..n * n)
+                    .map(|k| {
+                        let (i, j) = (k % n + 1, k / n + 1);
+                        if i <= j + 1 {
+                            c(re(i, j), im(i, j))
+                        } else {
+                            c(0.0, 0.0)
+                        }
+                    })
+                    .collect();
+                let mut z = vec![c(0.0, 0.0); n * n];
+                complex_schur(&mut h, &mut z, n, &mut w).unwrap();
+            }
+            for (k, (g, x)) in w.iter().zip(&want).enumerate() {
+                assert!(
+                    (g - x).norm() <= 1e-12 * (1.0 + x.norm()),
+                    "{kind} {n} #{k}: {g} vs {x}"
+                );
+            }
+            cases += 1;
+        }
+        assert_eq!(cases, 4);
     }
 }
