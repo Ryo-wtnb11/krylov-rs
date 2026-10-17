@@ -1,0 +1,90 @@
+# This file is machine-generated - editing it directly is not advised
+
+julia_version = "1.11.6"
+manifest_format = "2.0"
+project_hash = "6ee3641fc4f9d18e5a91144d45c332b47fa9d9ba"
+
+[[deps.Artifacts]]
+uuid = "56f22d72-fd6d-98f1-02f0-08ddc0907c33"
+version = "1.11.0"
+
+[[deps.CompilerSupportLibraries_jll]]
+deps = ["Artifacts", "Libdl"]
+uuid = "e66e0078-7015-5450-92f7-15fbd957f2ae"
+version = "1.1.1+0"
+
+[[deps.KrylovKit]]
+deps = ["LinearAlgebra", "PackageExtensionCompat", "Printf", "Random", "VectorInterface"]
+git-tree-sha1 = "a3babd26e875e83b461e1c0f945bff52701e8181"
+uuid = "0b1a1467-8014-51b9-945f-bf0ae24f4b77"
+version = "0.10.4"
+
+    [deps.KrylovKit.extensions]
+    KrylovKitChainRulesCoreExt = "ChainRulesCore"
+
+    [deps.KrylovKit.weakdeps]
+    ChainRulesCore = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
+
+[[deps.Libdl]]
+uuid = "8f399da3-3557-5675-b5ff-fb832c97cbdb"
+version = "1.11.0"
+
+[[deps.LinearAlgebra]]
+deps = ["Libdl", "OpenBLAS_jll", "libblastrampoline_jll"]
+uuid = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+version = "1.11.0"
+
+[[deps.OpenBLAS_jll]]
+deps = ["Artifacts", "CompilerSupportLibraries_jll", "Libdl"]
+uuid = "4536629a-c528-5b80-bd46-f80d51c5b363"
+version = "0.3.27+1"
+
+[[deps.PackageExtensionCompat]]
+git-tree-sha1 = "fb28e33b8a95c4cee25ce296c817d89cc2e53518"
+uuid = "65ce6f38-6b18-4e1d-a461-8949797d7930"
+version = "1.0.2"
+
+    [deps.PackageExtensionCompat.weakdeps]
+    Requires = "ae029012-a4dd-5104-9daa-d747884805df"
+    TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
+
+[[deps.Printf]]
+deps = ["Unicode"]
+uuid = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+version = "1.11.0"
+
+[[deps.Random]]
+deps = ["SHA"]
+uuid = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+version = "1.11.0"
+
+[[deps.SHA]]
+uuid = "ea8e919c-243c-51af-8825-aaa63cd721ce"
+version = "0.7.0"
+
+[[deps.Unicode]]
+uuid = "4ec0a83e-493e-50e2-b9ac-8f72acf5a8f5"
+version = "1.11.0"
+
+[[deps.VectorInterface]]
+deps = ["LinearAlgebra"]
+git-tree-sha1 = "616c7ddfed0c9e991602f247cb754b3d632dbc14"
+uuid = "409d34a3-91d5-4945-b6ec-7529ddf182d8"
+version = "0.6.1"
+
+    [deps.VectorInterface.extensions]
+    VectorInterfaceChainRulesCoreExt = "ChainRulesCore"
+    VectorInterfaceEnzymeExt = "Enzyme"
+    VectorInterfaceMooncakeExt = "Mooncake"
+    VectorInterfaceStaticArraysExt = "StaticArrays"
+
+    [deps.VectorInterface.weakdeps]
+    ChainRulesCore = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
+    Enzyme = "7da242da-08ed-463a-9acd-ee780be4f1d9"
+    Mooncake = "da2b9cff-9c12-43a0-ae48-6db2b0edb7d6"
+    StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+
+[[deps.libblastrampoline_jll]]
+deps = ["Artifacts", "Libdl"]
+uuid = "8e850b90-86db-534c-a0d3-1478176c7d93"
+version = "5.11.0+0"

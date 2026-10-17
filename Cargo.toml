@@ -12,3 +12,8 @@ categories = ["mathematics", "science", "algorithms"]
 publish = false
 
 [dependencies]
+num-complex = "0.4.6"
+num-traits = { version = "0.2.19", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+nalgebra = "0.35.0"
