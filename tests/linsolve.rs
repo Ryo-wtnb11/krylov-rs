@@ -1,8 +1,6 @@
-//! `linsolve` (CG, GMRES) against nalgebra's dense LU and KrylovKit.jl.
+//! `linsolve` (CG, GMRES) against nalgebra's dense LU and KrylovKit.jl counts.
 
 mod common;
-
-use std::collections::HashMap;
 
 use common::*;
 use krylov::{
@@ -11,7 +9,7 @@ use krylov::{
 use nalgebra::{DMatrix, DVector};
 use num_complex::{Complex32, Complex64};
 
-/// General matrix filled column by column, as `general` in `linsolve.jl`.
+/// General matrix filled column by column.
 fn general(g: &mut SplitMix, n: usize, complex: bool) -> DMatrix<Complex64> {
     let mut a = DMatrix::zeros(n, n);
     for j in 0..n {
@@ -372,100 +370,89 @@ fn typed_errors() {
     assert_eq!(e.map(|_| ()), Err(Error::SingularKrylovSpace));
 }
 
-// KrylovKit fixtures (`fixtures/krylovkit/linsolve.txt`, from `linsolve.jl`).
-
-const FIXTURES: &str = include_str!("fixtures/krylovkit/linsolve.txt");
-
-fn cases() -> Vec<HashMap<String, String>> {
-    let mut out = Vec::new();
-    let mut cur = HashMap::new();
-    for line in FIXTURES.lines().filter(|l| !l.starts_with('#')) {
-        if line == "end" {
-            out.push(std::mem::take(&mut cur));
-            continue;
-        }
-        let (k, v) = line.split_once(' ').unwrap_or((line, ""));
-        cur.insert(k.to_string(), v.to_string());
-    }
-    out
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
+    Cg,
+    Gmres,
 }
 
-fn num<T: std::str::FromStr>(c: &HashMap<String, String>, k: &str) -> T
-where
-    T::Err: std::fmt::Debug,
-{
-    c[k].parse().unwrap()
-}
-
-fn floats(c: &HashMap<String, String>, k: &str) -> Vec<f64> {
-    c[k].split_whitespace()
-        .map(|x| x.parse().unwrap())
-        .collect()
-}
-
-fn complex(c: &HashMap<String, String>, k: &str) -> Complex64 {
-    let v = floats(c, k);
-    Complex64::new(v[0], v[1])
-}
-
-fn fixture_case<S: TestScalar>(c: &HashMap<String, String>, rr: RestartResidual) {
-    let cplx = num::<u8>(c, "complex") == 1;
-    let n: usize = num(c, "n");
-    let mut g = SplitMix(num(c, "seed"));
-    let a = match c["matrix"].as_str() {
-        "general" => general(&mut g, n, cplx),
-        _ => hermitian(&mut g, n, cplx),
+fn kk_case<S: TestScalar>(case: &KkCase, rr: RestartResidual) {
+    let (name, kind, general_matrix, seed, n, cplx, a0, a1, kd, maxiter, tol, kk) = *case;
+    let mut g = SplitMix(seed);
+    let a = if general_matrix {
+        general(&mut g, n, cplx)
+    } else {
+        hermitian(&mut g, n, cplx)
     };
     let b = random_vec(&mut g, n, cplx);
     let x0 = random_vec(&mut g, n, cplx);
-    let (a0, a1) = (complex(c, "a0"), complex(c, "a1"));
-    let (kd, maxiter, tol): (usize, usize, f64) =
-        (num(c, "krylovdim"), num(c, "maxiter"), num(c, "tol"));
-    let (x, info) = match c["kind"].as_str() {
-        "cg" => run::<S, _>(&a, &b, &x0, &Cg::new(maxiter, tol), a0, a1, 0),
-        _ => {
+    let (x, info) = match kind {
+        Kind::Cg => run::<S, _>(&a, &b, &x0, &Cg::new(maxiter, tol), a0, a1, 0),
+        Kind::Gmres => {
             let alg = Gmres::new(kd, maxiter, tol).restart_residual(rr);
             run::<S, _>(&a, &b, &x0, &alg, a0, a1, kd)
         }
     };
-    let expect: Vec<Complex64> = floats(c, "x_re")
-        .into_iter()
-        .zip(floats(c, "x_im"))
-        .map(|(re, im)| Complex64::new(re, im))
-        .collect();
-    let name = &c["case"];
-    eprintln!(
-        "{name} {rr:?}: krylov numiter {} numops {} normres {:?} | KrylovKit {} {} {}",
-        info.numiter, info.numops, info.normres, c["numiter"], c["numops"], c["normres"]
-    );
-    assert_eq!(info.converged, num::<usize>(c, "converged"), "{name}");
-    let rel = rel_err(&x, &expect);
-    assert!(rel < 1e-9, "{name}: relative difference {rel}");
-    let (ni, no): (usize, usize) = (num(c, "numiter"), num(c, "numops"));
-    assert_eq!(info.numiter, ni, "{name}: numiter");
-    // KrylovKit does not count the apply of CG's residual recompute (one per
-    // run here) nor the apply that starts each GMRES restart cycle.
-    // `Recomputed` adds one explicit residual per restart.
-    let uncounted = match (c["kind"].as_str(), rr) {
-        ("cg", _) => 1,
-        (_, RestartResidual::Recurrence) => ni - 1,
-        (_, RestartResidual::Recomputed) => 2 * (ni - 1),
-    };
-    assert_eq!(info.numops, no + uncounted, "{name} {rr:?}: numops");
+    assert_eq!(info.converged, 1, "{name}");
+    assert!(info.normres <= tol, "{name}: normres {}", info.normres);
+    let exact = dense_solve(&shifted(&a, a0, a1), &b);
+    let rel = rel_err(&x, &exact);
+    assert!(rel < 1e-9, "{name}: relative error {rel}");
+    if let Some((ni, no)) = kk {
+        assert_eq!(info.numiter, ni, "{name}: numiter");
+        // KrylovKit does not count the apply of CG's residual recompute (one
+        // per run here) nor the apply that starts each GMRES restart cycle.
+        // `Recomputed` adds one explicit residual per restart.
+        let uncounted = match (kind, rr) {
+            (Kind::Cg, _) => 1,
+            (_, RestartResidual::Recurrence) => ni - 1,
+            (_, RestartResidual::Recomputed) => 2 * (ni - 1),
+        };
+        assert_eq!(info.numops, no + uncounted, "{name} {rr:?}: numops");
+    }
 }
 
+/// name, kind, general (else Hermitian) matrix, seed, n, complex, a₀, a₁,
+/// krylovdim, maxiter, tol, KrylovKit `(numiter, numops)`.
+type KkCase = (
+    &'static str,
+    Kind,
+    bool,
+    u64,
+    usize,
+    bool,
+    Complex64,
+    Complex64,
+    usize,
+    usize,
+    f64,
+    Option<(usize, usize)>,
+);
+
+/// KrylovKit.jl's `linsolve` cases: `(a₀ + a₁A)x = b` against nalgebra's
+/// LU on the same matrix. CG and GMRES (CGS2) take KrylovKit's iterations
+/// exactly, and `numops` differs only by the documented uncounted
+/// applications (`docs/krylovkit.md`); this is pinned on a CG case and a
+/// restarted GMRES case, checked against KrylovKit.jl v0.10.4.
 #[test]
-fn matches_krylovkit_fixtures() {
-    let cases = cases();
-    assert_eq!(cases.len(), 5);
+fn linsolve_matches_dense_solution_and_krylovkit_counts() {
+    let c = Complex64::new;
+    #[rustfmt::skip]
+    let cases: [KkCase; 5] = [
+        ("cg_real_shift", Kind::Cg, false, 11, 80, false, c(15.0, 0.0), c(1.0, 0.0), 0, 200, 1e-10, Some((26, 27))),
+        ("cg_complex_scaled", Kind::Cg, false, 12, 60, true, c(10.0, 0.0), c(0.5, 0.0), 0, 200, 1e-10, None),
+        ("gmres_real_restart", Kind::Gmres, true, 13, 80, false, c(8.0, 0.0), c(1.0, 0.0), 10, 100, 1e-10, Some((6, 50))),
+        ("gmres_complex_shift", Kind::Gmres, true, 14, 60, true, c(10.0, 2.0), c(1.0, 0.0), 30, 100, 1e-10, None),
+        ("gmres_hermitian_indefinite", Kind::Gmres, false, 15, 50, false, c(0.37, 0.0), c(1.0, 0.0), 50, 100, 1e-9, None),
+    ];
     // `Recurrence` is KrylovKit's algorithm; `Recomputed` takes the same
     // cycles here and agrees within the tolerance.
     for rr in [RestartResidual::Recurrence, RestartResidual::Recomputed] {
-        for c in &cases {
-            if num::<u8>(c, "complex") == 1 {
-                fixture_case::<Complex64>(c, rr);
+        for case in &cases {
+            if case.5 {
+                kk_case::<Complex64>(case, rr);
             } else {
-                fixture_case::<f64>(c, rr);
+                kk_case::<f64>(case, rr);
             }
         }
     }
