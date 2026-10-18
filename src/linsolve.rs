@@ -43,7 +43,7 @@ pub enum RestartResidual {
     /// `b - a₀x - a₁A·x`, computed explicitly: one extra map application
     /// per restart, at most `1/krylovdim` of the applications. The default:
     /// every cycle minimizes the true residual, also for vectors whose
-    /// arithmetic truncates (README, "Low-rank and tensor-network vectors").
+    /// arithmetic truncates (docs/guide.md, "Low-rank and tensor-network vectors").
     #[default]
     Recomputed,
     /// The GMRES recurrence over the Krylov basis, as KrylovKit does: no

@@ -4,7 +4,9 @@
 //! small projected problem, convergence tests and restarts). Vector
 //! arithmetic and the linear map belong to the caller through three traits:
 //! [`Vector`], [`Basis`] and [`LinearMap`]. The API and the algorithms are
-//! modelled on [KrylovKit.jl](https://github.com/Jutho/KrylovKit.jl).
+//! modelled on [KrylovKit.jl](https://github.com/Jutho/KrylovKit.jl); every
+//! difference is listed with its reason in
+//! [docs/krylovkit.md](https://github.com/Ryo-wtnb11/krylov-rs/blob/main/docs/krylovkit.md).
 //!
 //! Stage 1 provides Hermitian Lanczos [`eigsolve`] (thick restart) and
 //! [`exponentiate`]; [`expintegrator`] generalizes the latter to
