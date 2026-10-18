@@ -44,7 +44,7 @@ fn arnoldi_allocations_do_not_grow_with_the_step_count() {
     let u: Vec<DVec<Complex64>> = (0..3)
         .map(|_| to_dvec(&random_vec(&mut g, n, true)))
         .collect();
-    let alg = Arnoldi::new().krylovdim(8).tol(1e-10);
+    let alg = Arnoldi::new(8, 100, 1e-10);
     let mut ws = Workspace::with_capacity(&u[0], 8).unwrap();
     let mut run = |t: f64| {
         let mut op = DenseOp::<Complex64>::new(&a);

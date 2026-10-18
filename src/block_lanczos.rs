@@ -14,10 +14,9 @@ use crate::traits::{Basis, LinearMap, Vector, Workspace};
 /// Block Lanczos settings for Hermitian maps with (nearly) repeated
 /// eigenvalues.
 ///
-/// Mirrors KrylovKit's `BlockLanczos`: `krylovdim` (default 100) is the
-/// maximal Krylov dimension before a restart, `maxiter` (default 100) the
-/// number of Krylov subspaces built, `tol` (default `1e-12`) an absolute
-/// residual norm, `qr_tol` (default `1e-12`) the norm below which a vector of
+/// Mirrors KrylovKit's `BlockLanczos`: `krylovdim` is the maximal Krylov
+/// dimension before a restart, `maxiter` the number of Krylov subspaces built,
+/// `tol` an absolute residual norm, `qr_tol` the norm below which a vector of
 /// a new block counts as linearly dependent and is dropped, and `eager`
 /// (default `false`) evaluates the projected problem after every block step.
 /// The start block size bounds the multiplicity that can be resolved.
@@ -31,43 +30,19 @@ pub struct BlockLanczos {
     eager: bool,
 }
 
-impl Default for BlockLanczos {
-    fn default() -> Self {
+impl BlockLanczos {
+    /// Settings with the given problem-dependent parameters; the variant
+    /// options start at their documented defaults. The values are validated
+    /// when a solver is called.
+    pub fn new(krylovdim: usize, maxiter: usize, tol: f64, qr_tol: f64) -> Self {
         Self {
-            krylovdim: 100,
-            maxiter: 100,
-            tol: 1e-12,
-            qr_tol: 1e-12,
+            krylovdim,
+            maxiter,
+            tol,
+            qr_tol,
             orth: Orth::Cgs2,
             eager: false,
         }
-    }
-}
-
-impl BlockLanczos {
-    /// Default settings.
-    pub fn new() -> Self {
-        Self::default()
-    }
-    /// Sets the maximal Krylov dimension.
-    pub fn krylovdim(mut self, krylovdim: usize) -> Self {
-        self.krylovdim = krylovdim;
-        self
-    }
-    /// Sets the maximal number of Krylov subspaces built.
-    pub fn maxiter(mut self, maxiter: usize) -> Self {
-        self.maxiter = maxiter;
-        self
-    }
-    /// Sets the residual tolerance.
-    pub fn tol(mut self, tol: f64) -> Self {
-        self.tol = tol;
-        self
-    }
-    /// Sets the rank tolerance of the block QR.
-    pub fn qr_tol(mut self, qr_tol: f64) -> Self {
-        self.qr_tol = qr_tol;
-        self
     }
     /// Sets the orthogonalizer.
     pub fn orth(mut self, orth: Orth) -> Self {

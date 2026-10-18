@@ -65,7 +65,7 @@ fn random_real_symmetric_all_selectors() {
         Which::LargestReal,
         Which::LargestMagnitude,
     ] {
-        let alg = Lanczos::new().krylovdim(24).tol(1e-10);
+        let alg = Lanczos::new(24, 100, 1e-10);
         let info = check::<f64>(
             &Case {
                 a: &a,
@@ -88,7 +88,7 @@ fn random_complex_hermitian_cgs2_and_mgs2() {
     let a = hermitian(&mut g, 120, true);
     let x0 = random_vec(&mut g, 120, true);
     for orth in [Orth::Cgs2, Orth::Mgs2] {
-        let alg = Lanczos::new().krylovdim(20).tol(1e-10).orth(orth);
+        let alg = Lanczos::new(20, 100, 1e-10).orth(orth);
         let info = check::<Complex64>(
             &Case {
                 a: &a,
@@ -147,7 +147,7 @@ fn degenerate_and_clustered_spectra() {
     eigs[2] = eigs[0];
     let a = with_spectrum(&mut g, &eigs, true);
     let x0 = random_vec(&mut g, 80, true);
-    let alg = Lanczos::new().krylovdim(20).tol(1e-10);
+    let alg = Lanczos::new(20, 100, 1e-10);
     let x = to_dvec::<Complex64>(&x0);
     let mut ws = Workspace::with_capacity(&x, 20).unwrap();
     let (vals, vecs, info) = eigsolve(
@@ -186,7 +186,7 @@ fn degenerate_and_clustered_spectra() {
         .collect();
     let a = with_spectrum(&mut g, &eigs, false);
     let x0 = random_vec(&mut g, 100, false);
-    let alg = Lanczos::new().krylovdim(30).tol(1e-11);
+    let alg = Lanczos::new(30, 100, 1e-11);
     check::<f64>(
         &Case {
             a: &a,
@@ -206,7 +206,7 @@ fn invariant_subspace_stops_without_restart() {
     let eigs: Vec<f64> = (0..50).map(|i| (i % 5) as f64 - 2.0).collect();
     let a = with_spectrum(&mut g, &eigs, false);
     let x0 = to_dvec::<f64>(&random_vec(&mut g, 50, false));
-    let alg = Lanczos::new().krylovdim(20).tol(1e-10);
+    let alg = Lanczos::new(20, 100, 1e-10);
     let mut ws = Workspace::with_capacity(&x0, 20).unwrap();
     let (vals, vecs, info) = eigsolve(
         &mut DenseOp::new(&a),
@@ -238,7 +238,7 @@ fn invariant_subspace_stops_without_restart() {
         &e2,
         2,
         Which::LargestReal,
-        &Lanczos::new().krylovdim(3),
+        &Lanczos::new(3, 100, 1e-12),
         &mut ws,
     )
     .unwrap();
@@ -252,7 +252,7 @@ fn tiny_krylov_dimensions() {
     let a = hermitian(&mut g, 30, false);
     let x0 = random_vec(&mut g, 30, false);
     // krylovdim 2: keep = 1, one new vector per restart (steepest-descent like).
-    let alg = Lanczos::new().krylovdim(2).tol(1e-8).maxiter(5000);
+    let alg = Lanczos::new(2, 5000, 1e-8);
     check::<f64>(
         &Case {
             a: &a,
@@ -265,7 +265,7 @@ fn tiny_krylov_dimensions() {
         1e-7,
     );
     // krylovdim 3: keep is 1 or 2, i.e. at most two new vectors per restart.
-    let alg = Lanczos::new().krylovdim(3).tol(1e-8).maxiter(5000);
+    let alg = Lanczos::new(3, 5000, 1e-8);
     check::<f64>(
         &Case {
             a: &a,
@@ -285,7 +285,7 @@ fn tiny_krylov_dimensions() {
         &x,
         1,
         Which::LargestReal,
-        &Lanczos::new().krylovdim(1),
+        &Lanczos::new(1, 100, 1e-12),
         &mut ws,
     )
     .unwrap();
@@ -303,7 +303,7 @@ fn eager_returns_early() {
         .collect();
     let a = with_spectrum(&mut g, &eigs, false);
     let x0 = random_vec(&mut g, 200, false);
-    let lazy = Lanczos::new().krylovdim(40).tol(1e-10);
+    let lazy = Lanczos::new(40, 100, 1e-10);
     let i_lazy = check::<f64>(
         &Case {
             a: &a,
@@ -336,7 +336,7 @@ fn single_precision_real_and_complex() {
     let mut g = SplitMix(17);
     let a = hermitian(&mut g, 80, true);
     let x0 = random_vec(&mut g, 80, true);
-    let alg = Lanczos::new().krylovdim(20).tol(1e-4);
+    let alg = Lanczos::new(20, 100, 1e-4);
     check::<Complex32>(
         &Case {
             a: &a,
@@ -370,7 +370,7 @@ fn non_hermitian_imaginary_part_is_recorded() {
     let a = DMatrix::from_fn(n, n, |_, _| g.scalar(true));
     let x0 = to_dvec::<Complex64>(&random_vec(&mut g, n, true));
     let mut ws = Workspace::with_capacity(&x0, 10).unwrap();
-    let alg = Lanczos::new().krylovdim(10).maxiter(1);
+    let alg = Lanczos::new(10, 1, 1e-12);
     let (_, _, info) = eigsolve(
         &mut DenseOp::new(&a),
         &x0,
@@ -394,7 +394,7 @@ fn errors() {
             .map(|_| ())
             .unwrap_err()
     };
-    let alg = Lanczos::new().krylovdim(3);
+    let alg = Lanczos::new(3, 100, 1e-12);
     assert_eq!(
         run(&mut op, &DVec(vec![0.0; 4]), 1, alg, &mut ws),
         Error::ZeroStartVector
@@ -411,18 +411,18 @@ fn errors() {
         }
     );
     assert_eq!(
-        run(&mut op, &x, 1, Lanczos::new().krylovdim(4), &mut ws),
+        run(&mut op, &x, 1, Lanczos::new(4, 100, 1e-12), &mut ws),
         Error::InsufficientCapacity {
             needed: 4,
             capacity: 3
         }
     );
     assert!(matches!(
-        run(&mut op, &x, 1, alg.maxiter(0), &mut ws),
+        run(&mut op, &x, 1, Lanczos::new(3, 0, 1e-12), &mut ws),
         Error::InvalidArgument(_)
     ));
     assert!(matches!(
-        run(&mut op, &x, 1, alg.tol(f64::NAN), &mut ws),
+        run(&mut op, &x, 1, Lanczos::new(3, 100, f64::NAN), &mut ws),
         Error::InvalidArgument(_)
     ));
 }
@@ -432,7 +432,7 @@ fn warm_solve_allocates_only_returned_vectors() {
     let mut g = SplitMix(19);
     let a = hermitian(&mut g, 100, true);
     let x0 = to_dvec::<Complex64>(&random_vec(&mut g, 100, true));
-    let alg = Lanczos::new().krylovdim(16).tol(1e-10);
+    let alg = Lanczos::new(16, 100, 1e-10);
     let mut op = DenseOp::new(&a);
     let mut ws = Workspace::with_capacity(&x0, 16).unwrap();
     for _ in 0..2 {
@@ -457,7 +457,7 @@ fn basis_stays_orthonormal_across_restarts() {
     let a = with_spectrum(&mut g, &eigs, false);
     let x0 = to_dvec::<f64>(&random_vec(&mut g, 300, false));
     for orth in [Orth::Cgs2, Orth::Mgs2] {
-        let alg = Lanczos::new().krylovdim(40).tol(1e-6).orth(orth).maxiter(6);
+        let alg = Lanczos::new(40, 6, 1e-6).orth(orth);
         let mut ws = Workspace::with_capacity(&x0, 40).unwrap();
         let _ = eigsolve(
             &mut DenseOp::new(&a),
@@ -516,7 +516,7 @@ fn defaulted_mgs_methods_match_overrides() {
     let mut g = SplitMix(21);
     let a = hermitian(&mut g, 60, false);
     let x0 = to_dvec::<f64>(&random_vec(&mut g, 60, false));
-    let alg = Lanczos::new().krylovdim(12).tol(1e-10).orth(Orth::Mgs2);
+    let alg = Lanczos::new(12, 100, 1e-10).orth(Orth::Mgs2);
     let mut ws1 = Workspace::with_capacity(&x0, 12).unwrap();
     let mut ws2 = Workspace::new(Minimal(VecBasis::with_capacity(&x0, 12).unwrap()), &x0).unwrap();
     let (v1, _, i1) = eigsolve(

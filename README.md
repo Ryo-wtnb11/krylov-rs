@@ -30,7 +30,7 @@ fn evolve_ground_state<V: Vector<Scalar = f64>>(
     h: &mut impl LinearMap<V>,
     x0: &V,
 ) -> Result<V, Error<V::Error>> {
-    let alg = Lanczos::new().krylovdim(30).tol(1e-12);
+    let alg = Lanczos::new(30, 100, 1e-12);
     // The only basis allocations: done once, reused while the space is fixed.
     let mut ws = Workspace::with_capacity(x0, alg.get_krylovdim()).map_err(Error::Vector)?;
     let (_energies, mut states, info) = eigsolve(h, x0, 1, Which::SmallestReal, &alg, &mut ws)?;
@@ -43,6 +43,29 @@ fn evolve_ground_state<V: Vector<Scalar = f64>>(
 
 A runnable version with a `Vec<f64>` vector type is in the crate
 documentation (`src/lib.rs`).
+
+## Parameters
+
+The problem-dependent numbers are required constructor arguments, with no
+defaults: `Lanczos::new(krylovdim, maxiter, tol)`, likewise `Arnoldi`, `Gkl`
+and `Gmres`, `BlockLanczos::new(krylovdim, maxiter, tol, qr_tol)` and
+`Cg::new(maxiter, tol)`.
+
+- `krylovdim` fixes the memory: a Krylov factorization stores `krylovdim + 1`
+  vectors (basis plus residual; for tensor-network vectors, whole MPS). The
+  `Workspace` of capacity `krylovdim` holds them together with the operator
+  input and output (`krylovdim + 3` vectors, see below).
+- `tol` is the accuracy contract and depends on the scalar type (a tolerance
+  reachable in `f64` is not in `f32`).
+- `maxiter` bounds the work.
+
+Algorithm-variant options keep builder defaults: `.orth(Orth)` (default
+`Orth::Cgs2`) and `.eager(bool)` (default `false`). The arguments are
+validated when a solver is called and violations are returned as
+`Error::InvalidArgument` (see the restricted inputs below). KrylovKit gives
+these parameters keyword defaults (`krylovdim = 30`, `maxiter = 100`,
+`tol = 1e-12`, `100` for `BlockLanczos`'s `krylovdim`); krylov does not, so
+cost and accuracy are always visible at the call site.
 
 ## LAPACK provider
 

@@ -11,11 +11,11 @@ use crate::traits::{Basis, LinearMap, Vector, Workspace};
 /// Lanczos algorithm settings for Hermitian (real symmetric or complex
 /// Hermitian) linear maps.
 ///
-/// Mirrors KrylovKit's `Lanczos`: `krylovdim` (default 30) is the maximal
-/// Krylov dimension, `maxiter` (default 100) the number of Krylov subspaces
-/// built (restarts + 1), `tol` (default `1e-12`) an absolute residual norm for
-/// `eigsolve` and an error per unit time for `exponentiate`, and `eager`
-/// (default `false`) evaluates the projected problem after every expansion.
+/// Mirrors KrylovKit's `Lanczos`: `krylovdim` is the maximal Krylov
+/// dimension, `maxiter` the number of Krylov subspaces built (restarts + 1),
+/// `tol` an absolute residual norm for `eigsolve` and an error per unit time
+/// for `exponentiate`, and `eager` (default `false`) evaluates the projected
+/// problem after every expansion.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Lanczos {
     krylovdim: usize,
@@ -25,37 +25,18 @@ pub struct Lanczos {
     eager: bool,
 }
 
-impl Default for Lanczos {
-    fn default() -> Self {
+impl Lanczos {
+    /// Settings with the given problem-dependent parameters; the variant
+    /// options start at their documented defaults. The values are validated
+    /// when a solver is called.
+    pub fn new(krylovdim: usize, maxiter: usize, tol: f64) -> Self {
         Self {
-            krylovdim: 30,
-            maxiter: 100,
-            tol: 1e-12,
+            krylovdim,
+            maxiter,
+            tol,
             orth: Orth::Cgs2,
             eager: false,
         }
-    }
-}
-
-impl Lanczos {
-    /// Default settings.
-    pub fn new() -> Self {
-        Self::default()
-    }
-    /// Sets the maximal Krylov dimension.
-    pub fn krylovdim(mut self, krylovdim: usize) -> Self {
-        self.krylovdim = krylovdim;
-        self
-    }
-    /// Sets the maximal number of Krylov subspaces built.
-    pub fn maxiter(mut self, maxiter: usize) -> Self {
-        self.maxiter = maxiter;
-        self
-    }
-    /// Sets the tolerance.
-    pub fn tol(mut self, tol: f64) -> Self {
-        self.tol = tol;
-        self
     }
     /// Sets the orthogonalizer.
     pub fn orth(mut self, orth: Orth) -> Self {

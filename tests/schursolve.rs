@@ -231,11 +231,8 @@ fn matches_krylovkit_fixtures() {
             "SI" => Which::SmallestImag,
             w => panic!("unknown selector {w}"),
         };
-        let alg = Arnoldi::new()
-            .krylovdim(num(c, "krylovdim"))
-            .tol(num(c, "tol"))
-            .eager(num::<u8>(c, "eager") == 1)
-            .maxiter(100);
+        let alg =
+            Arnoldi::new(num(c, "krylovdim"), 100, num(c, "tol")).eager(num::<u8>(c, "eager") == 1);
         let howmany = num(c, "howmany");
         let out = match (c["kind"].as_str(), complex) {
             ("schur", false) => run_schur::<f64>(&a, &x0, howmany, which, &alg),
@@ -281,7 +278,7 @@ fn matches_krylovkit_fixtures() {
 #[test]
 fn single_precision_and_complex32() {
     let n = 40;
-    let alg = Arnoldi::new().krylovdim(16).tol(1e-4);
+    let alg = Arnoldi::new(16, 100, 1e-4);
     let mut g = SplitMix(41);
     let a = outliers(&mut g, n, false);
     let x0 = random_vec(&mut g, n, false);
@@ -324,7 +321,7 @@ fn allocates_only_the_returned_vectors() {
     let mut g = SplitMix(43);
     let a = outliers(&mut g, n, true);
     let x0 = to_dvec::<Complex64>(&random_vec(&mut g, n, true));
-    let alg = Arnoldi::new().krylovdim(12).tol(1e-10);
+    let alg = Arnoldi::new(12, 100, 1e-10);
     let mut op = DenseOp::<Complex64>::new(&a);
     let mut ws = Workspace::with_capacity(&x0, 12).unwrap();
     for _ in 0..2 {
@@ -361,7 +358,7 @@ fn typed_errors() {
     let a = outliers(&mut g, n, false);
     let x0 = random_vec(&mut g, n, false);
     let xr = to_dvec::<f64>(&x0);
-    let alg = Arnoldi::new().krylovdim(10).tol(1e-10);
+    let alg = Arnoldi::new(10, 100, 1e-10);
     let mut op = DenseOp::<f64>::new(&a);
     let mut ws = Workspace::with_capacity(&xr, 10).unwrap();
     for which in [Which::LargestImag, Which::SmallestImag] {
@@ -382,7 +379,7 @@ fn typed_errors() {
                 &xr,
                 1,
                 which,
-                &Lanczos::new().krylovdim(10),
+                &Lanczos::new(10, 100, 1e-12),
                 &mut ws
             ),
             Err(Error::InvalidArgument(_))
@@ -395,7 +392,7 @@ fn typed_errors() {
                 &block,
                 1,
                 which,
-                &BlockLanczos::new().krylovdim(10),
+                &BlockLanczos::new(10, 100, 1e-12, 1e-12),
                 &mut wsb
             ),
             Err(Error::InvalidArgument(_))
@@ -403,7 +400,7 @@ fn typed_errors() {
     }
     // The largest-magnitude eigenvalues of `outliers` are 3, -2.5, 2 and the
     // pair 1.5 ± 1.2i: asking realeigsolve for four is a complex eigenvalue.
-    let alg = Arnoldi::new().krylovdim(20).tol(1e-10);
+    let alg = Arnoldi::new(20, 100, 1e-10);
     let mut ws = Workspace::with_capacity(&xr, 20).unwrap();
     assert_eq!(
         realeigsolve(&mut op, &xr, 4, Which::LargestMagnitude, &alg, &mut ws).err(),
@@ -448,7 +445,7 @@ fn real_pair_is_completed_and_exhausted_space_returns_what_exists() {
     let mut g = SplitMix(45);
     let a = outliers(&mut g, n, false);
     let x0 = random_vec(&mut g, n, false);
-    let alg = Arnoldi::new().krylovdim(20).tol(1e-10);
+    let alg = Arnoldi::new(20, 100, 1e-10);
     let out = run_schur::<f64>(&a, &x0, 4, Which::LargestMagnitude, &alg);
     assert!(out.values.len() >= 5);
     assert!(out.values[3].im != 0.0 && out.values[3].conj() == out.values[4]);
@@ -466,7 +463,7 @@ fn real_pair_is_completed_and_exhausted_space_returns_what_exists() {
         )
     });
     let x = vec![Complex64::new(1.0, 0.0); 6];
-    let out = run_schur::<f64>(&d, &x, 3, Which::LargestReal, &Arnoldi::new().krylovdim(10));
+    let out = run_schur::<f64>(&d, &x, 3, Which::LargestReal, &Arnoldi::new(10, 100, 1e-12));
     assert_eq!(out.numiter, 1);
     assert!(out.converged >= 3);
     for (i, v) in out.values.iter().take(3).enumerate() {

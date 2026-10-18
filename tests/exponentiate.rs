@@ -32,7 +32,7 @@ fn imaginary_time_real_symmetric() {
     let a = hermitian(&mut g, 80, false) * Complex64::new(0.12, 0.0);
     let x = random_vec(&mut g, 80, false);
     for (t, kd) in [(-0.1, 30), (-1.0, 8), (-4.0, 10)] {
-        let alg = Lanczos::new().krylovdim(kd).tol(1e-12);
+        let alg = Lanczos::new(kd, 100, 1e-12);
         let (err, info) = run::<f64>(&a, Complex64::new(t, 0.0), &x, alg);
         assert_eq!(info.converged, 1, "t = {t}: {info:?}");
         assert!(err < 1e-10, "t = {t}: relative error {err}");
@@ -48,7 +48,7 @@ fn real_time_complex_hermitian() {
     let a = hermitian(&mut g, 80, true);
     let x = random_vec(&mut g, 80, true);
     for (tau, kd) in [(0.5, 15), (5.0, 15), (20.0, 30)] {
-        let alg = Lanczos::new().krylovdim(kd).tol(1e-12);
+        let alg = Lanczos::new(kd, 100, 1e-12);
         let (err, info) = run::<Complex64>(&a, Complex64::new(0.0, -tau), &x, alg);
         assert_eq!(info.converged, 1, "tau = {tau}: {info:?}");
         assert!(err < 1e-9, "tau = {tau}: relative error {err}");
@@ -63,7 +63,7 @@ fn real_time_complex_hermitian() {
         &a,
         Complex64::new(0.0, 3.0),
         &x,
-        Lanczos::new().krylovdim(20),
+        Lanczos::new(20, 100, 1e-12),
     );
     assert!(err < 1e-10);
 }
@@ -74,9 +74,9 @@ fn complex_time_and_eager() {
     let a = hermitian(&mut g, 60, true);
     let x = random_vec(&mut g, 60, true);
     let t = Complex64::new(-0.3, 1.2);
-    let (err, lazy) = run::<Complex64>(&a, t, &x, Lanczos::new().krylovdim(40));
+    let (err, lazy) = run::<Complex64>(&a, t, &x, Lanczos::new(40, 100, 1e-12));
     assert!(err < 1e-10);
-    let (err, eager) = run::<Complex64>(&a, t, &x, Lanczos::new().krylovdim(40).eager(true));
+    let (err, eager) = run::<Complex64>(&a, t, &x, Lanczos::new(40, 100, 1e-12).eager(true));
     assert!(err < 1e-10);
     assert!(eager.numops < lazy.numops);
 }
@@ -91,7 +91,7 @@ fn small_time_uses_series_branch() {
         &a,
         Complex64::new(-1e-3, 0.0),
         &x,
-        Lanczos::new().krylovdim(10),
+        Lanczos::new(10, 100, 1e-12),
     );
     assert_eq!(info.numiter, 1);
     assert!(err < 1e-14, "relative error {err}");
@@ -105,7 +105,7 @@ fn fixed_point_and_zero_time() {
     let x = [1.0, 0.0, -1.0].map(|v| Complex64::new(v, 0.0));
     let xv = to_dvec::<f64>(&x);
     let mut ws = Workspace::with_capacity(&xv, 3).unwrap();
-    let alg = Lanczos::new().krylovdim(3);
+    let alg = Lanczos::new(3, 100, 1e-12);
     let (y, info) = exponentiate(&mut DenseOp::new(&a), -1.0, &xv, &alg, &mut ws).unwrap();
     assert_eq!(y, xv);
     assert_eq!((info.converged, info.numops, info.numiter), (1, 1, 0));
@@ -123,7 +123,7 @@ fn fixed_point_and_zero_time() {
         &a,
         Complex64::new(-2.0, 0.0),
         &x,
-        Lanczos::new().krylovdim(10),
+        Lanczos::new(10, 100, 1e-12),
     );
     assert!(err < 1e-12);
     assert_eq!(info.numiter, 1);
@@ -134,7 +134,7 @@ fn single_precision() {
     let mut g = SplitMix(36);
     let a = hermitian(&mut g, 40, true);
     let x = random_vec(&mut g, 40, true);
-    let alg = Lanczos::new().krylovdim(15).tol(1e-5);
+    let alg = Lanczos::new(15, 100, 1e-5);
     let (err, info) = run::<Complex32>(&a, Complex64::new(0.0, -2.0), &x, alg);
     assert_eq!(info.converged, 1);
     assert!(err < 1e-4, "relative error {err}");
@@ -149,7 +149,7 @@ fn warm_call_allocates_only_the_result() {
     let mut g = SplitMix(37);
     let a = hermitian(&mut g, 60, true);
     let x = to_dvec::<Complex64>(&random_vec(&mut g, 60, true));
-    let alg = Lanczos::new().krylovdim(10);
+    let alg = Lanczos::new(10, 100, 1e-12);
     let mut op = DenseOp::new(&a);
     let mut ws = Workspace::with_capacity(&x, 10).unwrap();
     for _ in 0..2 {
@@ -167,14 +167,20 @@ fn errors() {
     let x = DVec(vec![1.0f64, 2.0, 3.0]);
     let mut op = DenseOp::<f64>::new(&a);
     let mut ws = Workspace::with_capacity(&x, 3).unwrap();
-    let alg = Lanczos::new().krylovdim(3);
+    let alg = Lanczos::new(3, 100, 1e-12);
     let e = |r: Result<_, Error<_>>| r.map(|_| ()).unwrap_err();
     assert!(matches!(
         e(exponentiate(&mut op, f64::INFINITY, &x, &alg, &mut ws)),
         Error::InvalidArgument(_)
     ));
     assert!(matches!(
-        e(exponentiate(&mut op, 1.0, &x, &alg.tol(0.0), &mut ws)),
+        e(exponentiate(
+            &mut op,
+            1.0,
+            &x,
+            &Lanczos::new(3, 100, 0.0),
+            &mut ws
+        )),
         Error::InvalidArgument(_)
     ));
     assert_eq!(
@@ -192,7 +198,7 @@ fn errors() {
             &mut op,
             1.0,
             &x,
-            &Lanczos::new().krylovdim(5),
+            &Lanczos::new(5, 100, 1e-12),
             &mut ws
         )),
         Error::InsufficientCapacity {
@@ -225,7 +231,7 @@ fn phi_combinations_match_dense_oracle() {
     let u: Vec<_> = (0..5).map(|_| random_vec(&mut g, 70, false)).collect();
     for nu in 2..=5 {
         for (t, kd) in [(-0.05, 20), (-1.0, 10), (-3.0, 12)] {
-            let alg = Lanczos::new().krylovdim(kd);
+            let alg = Lanczos::new(kd, 100, 1e-12);
             let (err, info) = run_int::<f64>(&a, Complex64::new(t, 0.0), &u[..nu], alg);
             assert_eq!(info.converged, 1, "nu={nu} t={t}: {info:?}");
             assert!(err < 1e-10, "nu={nu} t={t}: relative error {err}");
@@ -239,7 +245,7 @@ fn phi_combinations_match_dense_oracle() {
             (Complex64::new(-0.2, 1.0), 25),
         ] {
             for eager in [false, true] {
-                let alg = Lanczos::new().krylovdim(kd).eager(eager);
+                let alg = Lanczos::new(kd, 100, 1e-12).eager(eager);
                 let (err, info) = run_int::<Complex64>(&a, t, &u[..nu], alg);
                 assert_eq!(info.converged, 1, "nu={nu} t={t}: {info:?}");
                 assert!(err < 1e-9, "nu={nu} t={t}: relative error {err}");
@@ -258,7 +264,7 @@ fn exponentiate_is_the_single_vector_case() {
     let x = random_vec(&mut g, 50, true);
     let zero = vec![Complex64::new(0.0, 0.0); 50];
     let t = Complex64::new(0.0, -2.0);
-    let alg = Lanczos::new().krylovdim(15);
+    let alg = Lanczos::new(15, 100, 1e-12);
     let (e1, i1) = run_int::<Complex64>(&a, t, std::slice::from_ref(&x), alg);
     let (e2, i2) = run_int::<Complex64>(&a, t, &[x, zero], alg);
     assert!(e1 < 1e-10 && e2 < 1e-10);
@@ -270,7 +276,7 @@ fn phi_combinations_single_precision() {
     let mut g = SplitMix(43);
     let a = hermitian(&mut g, 40, true);
     let u: Vec<_> = (0..3).map(|_| random_vec(&mut g, 40, true)).collect();
-    let alg = Lanczos::new().krylovdim(15).tol(1e-5);
+    let alg = Lanczos::new(15, 100, 1e-5);
     let (err, info) = run_int::<Complex32>(&a, Complex64::new(0.0, -2.0), &u, alg);
     assert_eq!(info.converged, 1);
     assert!(err < 1e-4, "relative error {err}");
@@ -293,7 +299,7 @@ fn exact_polynomial_and_fixed_point() {
     ];
     let uv: Vec<DVec<f64>> = u.iter().map(|x| to_dvec(x)).collect();
     let mut ws = Workspace::with_capacity(&uv[0], 4).unwrap();
-    let alg = Lanczos::new().krylovdim(4);
+    let alg = Lanczos::new(4, 100, 1e-12);
     let (y, info) = expintegrator(&mut DenseOp::new(&a), -1.5, &uv, &alg, &mut ws).unwrap();
     for i in 0..n {
         assert!((y.0[i] - (uv[0].0[i] - 1.5 * uv[1].0[i])).abs() < 1e-15);
@@ -321,7 +327,7 @@ fn warm_expintegrator_allocates_p_vectors() {
     let u: Vec<_> = (0..4)
         .map(|_| to_dvec::<Complex64>(&random_vec(&mut g, 60, true)))
         .collect();
-    let alg = Lanczos::new().krylovdim(10);
+    let alg = Lanczos::new(10, 100, 1e-12);
     let mut op = DenseOp::new(&a);
     let mut ws = Workspace::with_capacity(&u[0], 10).unwrap();
     for _ in 0..2 {
@@ -339,7 +345,7 @@ fn expintegrator_errors() {
     let x = DVec(vec![1.0f64, 2.0, 3.0]);
     let mut op = DenseOp::<f64>::new(&a);
     let mut ws = Workspace::with_capacity(&x, 3).unwrap();
-    let alg = Lanczos::new().krylovdim(3);
+    let alg = Lanczos::new(3, 100, 1e-12);
     let e = |r: Result<_, Error<_>>| r.map(|_| ()).unwrap_err();
     assert!(matches!(
         e(expintegrator(&mut op, 1.0, &[], &alg, &mut ws)),
@@ -386,11 +392,8 @@ fn matches_krylovkit_expintegrator_fixtures() {
             .collect();
         let t = floats(&c["t"]);
         let t = Complex64::new(t[0], t[1]);
-        let alg = Lanczos::new()
-            .krylovdim(num("krylovdim"))
-            .tol(c["tol"].parse().unwrap())
-            .eager(num("eager") == 1)
-            .maxiter(100);
+        let alg =
+            Lanczos::new(num("krylovdim"), 100, c["tol"].parse().unwrap()).eager(num("eager") == 1);
         let uv: Vec<DVec<Complex64>> = u.iter().map(|x| to_dvec(x)).collect();
         let mut ws = Workspace::with_capacity(&uv[0], alg.get_krylovdim()).unwrap();
         let (y, info) = expintegrator(&mut DenseOp::new(&a), t, &uv, &alg, &mut ws).unwrap();
@@ -479,11 +482,8 @@ fn arnoldi_matches_krylovkit_fixtures() {
             .collect();
         let t = floats(&c["t"]);
         let t = Complex64::new(t[0], t[1]);
-        let alg = Arnoldi::new()
-            .krylovdim(num("krylovdim"))
-            .tol(c["tol"].parse().unwrap())
-            .eager(num("eager") == 1)
-            .maxiter(100);
+        let alg =
+            Arnoldi::new(num("krylovdim"), 100, c["tol"].parse().unwrap()).eager(num("eager") == 1);
         let kd = alg.get_krylovdim();
         // Real vectors for real t and a real map, as in the fixture.
         let (y, oracle_err, info) = if complex {
@@ -566,7 +566,7 @@ fn arnoldi_matches_dense_oracle_on_non_normal_maps() {
             for nu in 1..=4 {
                 for &t in ts {
                     for (kd, eager) in [(20, false), (10, true)] {
-                        let alg = Arnoldi::new().krylovdim(kd).eager(eager);
+                        let alg = Arnoldi::new(kd, 100, 1e-12).eager(eager);
                         let (_, err, info) = if complex {
                             run_alg::<Complex64, _>(&a, t, &u[..nu], &alg, kd)
                         } else {
@@ -590,8 +590,8 @@ fn arnoldi_agrees_with_lanczos_on_hermitian_maps() {
     let a = hermitian(&mut g, 50, true);
     let u: Vec<_> = (0..3).map(|_| random_vec(&mut g, 50, true)).collect();
     let t = Complex64::new(0.0, -2.0);
-    let (yl, el, _) = run_alg::<Complex64, _>(&a, t, &u, &Lanczos::new().krylovdim(15), 15);
-    let (ya, ea, _) = run_alg::<Complex64, _>(&a, t, &u, &Arnoldi::new().krylovdim(15), 15);
+    let (yl, el, _) = run_alg::<Complex64, _>(&a, t, &u, &Lanczos::new(15, 100, 1e-12), 15);
+    let (ya, ea, _) = run_alg::<Complex64, _>(&a, t, &u, &Arnoldi::new(15, 100, 1e-12), 15);
     assert!(el < 1e-10 && ea < 1e-10);
     assert!(diff_norm(&yl, &ya) / norm(&yl) < 1e-10);
 }
@@ -601,7 +601,7 @@ fn arnoldi_single_precision() {
     let mut g = SplitMix(73);
     let a = non_normal(&mut g, 40, true, 1.0);
     let u: Vec<_> = (0..3).map(|_| random_vec(&mut g, 40, true)).collect();
-    let alg = Arnoldi::new().krylovdim(15).tol(1e-5);
+    let alg = Arnoldi::new(15, 100, 1e-5);
     let (_, err, info) = run_alg::<Complex32, _>(&a, Complex64::new(0.0, -2.0), &u, &alg, 15);
     assert_eq!(info.converged, 1);
     assert!(err < 1e-4, "relative error {err}");
@@ -624,7 +624,7 @@ fn arnoldi_exact_polynomial_and_fixed_point() {
     ];
     let uv: Vec<DVec<f64>> = u.iter().map(|x| to_dvec(x)).collect();
     let mut ws = Workspace::with_capacity(&uv[0], 4).unwrap();
-    let alg = Arnoldi::new().krylovdim(4);
+    let alg = Arnoldi::new(4, 100, 1e-12);
     let (y, info) = expintegrator(&mut DenseOp::new(&a), -1.5, &uv, &alg, &mut ws).unwrap();
     for i in 0..n {
         assert!((y.0[i] - (uv[0].0[i] - 1.5 * uv[1].0[i])).abs() < 1e-15);
@@ -652,7 +652,7 @@ fn arnoldi_exact_polynomial_and_fixed_point() {
     });
     let a = &q * &s * t * s.try_inverse().unwrap() * q.adjoint();
     let x = random_vec(&mut g, 30, false);
-    let alg = Arnoldi::new().krylovdim(10);
+    let alg = Arnoldi::new(10, 100, 1e-12);
     let (_, err, info) = run_alg::<f64, _>(&a, Complex64::new(-1.0, 0.0), &[x], &alg, 10);
     assert!(err < 1e-10, "relative error {err}");
     assert_eq!(info.numiter, 1);
@@ -665,7 +665,7 @@ fn arnoldi_warm_calls_allocate_only_the_result_and_scratch() {
     let u: Vec<_> = (0..4)
         .map(|_| to_dvec::<Complex64>(&random_vec(&mut g, 60, true)))
         .collect();
-    let alg = Arnoldi::new().krylovdim(10);
+    let alg = Arnoldi::new(10, 100, 1e-12);
     let mut op = DenseOp::new(&a);
     let mut ws = Workspace::with_capacity(&u[0], 10).unwrap();
     for _ in 0..2 {
@@ -688,7 +688,7 @@ fn arnoldi_errors() {
     let x = DVec(vec![1.0f64, 2.0, 3.0]);
     let mut op = DenseOp::<f64>::new(&a);
     let mut ws = Workspace::with_capacity(&x, 3).unwrap();
-    let alg = Arnoldi::new().krylovdim(3);
+    let alg = Arnoldi::new(3, 100, 1e-12);
     let e = |r: Result<_, Error<_>>| r.map(|_| ()).unwrap_err();
     assert!(matches!(
         e(expintegrator(&mut op, 1.0, &[], &alg, &mut ws)),
@@ -699,10 +699,10 @@ fn arnoldi_errors() {
         Error::InvalidArgument(_)
     ));
     for bad in [
-        alg.tol(0.0),
-        alg.tol(f64::NAN),
-        alg.krylovdim(0),
-        alg.maxiter(0),
+        Arnoldi::new(3, 100, 0.0),
+        Arnoldi::new(3, 100, f64::NAN),
+        Arnoldi::new(0, 100, 1e-12),
+        Arnoldi::new(3, 0, 1e-12),
     ] {
         assert!(matches!(
             e(exponentiate(&mut op, 1.0, &x, &bad, &mut ws)),
@@ -720,7 +720,13 @@ fn arnoldi_errors() {
         Error::NonFiniteStartVector
     );
     assert_eq!(
-        e(exponentiate(&mut op, 1.0, &x, &alg.krylovdim(5), &mut ws)),
+        e(exponentiate(
+            &mut op,
+            1.0,
+            &x,
+            &Arnoldi::new(5, 100, 1e-12),
+            &mut ws
+        )),
         Error::InsufficientCapacity {
             needed: 5,
             capacity: 3
@@ -752,8 +758,8 @@ fn sealed_entry<L: KrylovProcess>(alg: &L) -> Error<std::convert::Infallible> {
 #[test]
 fn sealed_entry_rejects_empty_u() {
     for e in [
-        sealed_entry(&Lanczos::new().krylovdim(3)),
-        sealed_entry(&Arnoldi::new().krylovdim(3)),
+        sealed_entry(&Lanczos::new(3, 100, 1e-12)),
+        sealed_entry(&Arnoldi::new(3, 100, 1e-12)),
     ] {
         assert!(matches!(e, Error::InvalidArgument(_)));
     }
@@ -792,8 +798,8 @@ fn overflowing_step_is_rejected_and_shrunk() {
         assert!(err < 1e-3, "{what}: relative error {err}");
         assert!(numiter > 1, "{what}: the overflowing step must be split");
     };
-    let lanczos = Lanczos::new().krylovdim(8).tol(1e-6);
-    let arnoldi = Arnoldi::new().krylovdim(8).tol(1e-6);
+    let lanczos = Lanczos::new(8, 100, 1e-6);
+    let arnoldi = Arnoldi::new(8, 100, 1e-6);
     let (y, _, info) = run_alg::<Complex32, _>(&a, t, u, &lanczos, 8);
     check(y, info.numiter, "lanczos c32");
     let (y, _, info) = run_alg::<f32, _>(&a, t, u, &lanczos, 8);
@@ -824,8 +830,8 @@ fn overflowing_result_is_a_typed_error() {
     // maxiter = 1 forces the single step whose estimate is ∞; otherwise the
     // estimate at the smallest step, the iterate or the result overflows.
     for maxiter in [1, 100] {
-        let lanczos = Lanczos::new().krylovdim(8).maxiter(maxiter);
-        let arnoldi = Arnoldi::new().krylovdim(8).maxiter(maxiter);
+        let lanczos = Lanczos::new(8, maxiter, 1e-12);
+        let arnoldi = Arnoldi::new(8, maxiter, 1e-12);
         for e in [
             go::<Complex64, _>(&a, &x, &lanczos),
             go::<f64, _>(&a, &x, &lanczos),
@@ -859,7 +865,7 @@ fn large_finite_result_with_a_naive_norm_is_returned() {
             );
         }
     }
-    let (lanczos, arnoldi) = (Lanczos::new().krylovdim(8), Arnoldi::new().krylovdim(8));
+    let (lanczos, arnoldi) = (Lanczos::new(8, 100, 1e-12), Arnoldi::new(8, 100, 1e-12));
     go::<f64>(400.0, &lanczos, 1e-12);
     go::<f64>(400.0, &arnoldi, 1e-12);
     go::<Complex64>(400.0, &lanczos, 1e-12);

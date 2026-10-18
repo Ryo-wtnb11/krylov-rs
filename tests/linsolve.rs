@@ -107,7 +107,7 @@ fn cg_matches_dense_solution_real_and_complex() {
         let x0 = random_vec(&mut g, n, complex);
         let (one, zero) = (Complex64::new(1.0, 0.0), Complex64::new(0.0, 0.0));
         let exact = dense_solve(&a, &b);
-        let alg = Cg::new().tol(1e-11).maxiter(500);
+        let alg = Cg::new(500, 1e-11);
         let (x, info) = if complex {
             run::<Complex64, _>(&a, &b, &x0, &alg, zero, one, 0)
         } else {
@@ -132,7 +132,7 @@ fn cg_applies_shift_and_scale_implicitly() {
     let b = random_vec(&mut g, n, true);
     let (a0, a1) = (Complex64::new(6.0, 0.0), Complex64::new(0.5, 0.0));
     let exact = dense_solve(&shifted(&a, a0, a1), &b);
-    let alg = Cg::new().tol(1e-11).maxiter(500);
+    let alg = Cg::new(500, 1e-11);
     let (x, info) = run::<Complex64, _>(&a, &b, &vec![Complex64::default(); n], &alg, a0, a1, 0);
     assert_eq!(info.converged, 1);
     assert!(rel_err(&x, &exact) < 1e-10);
@@ -158,7 +158,7 @@ fn gmres_matches_dense_solution_with_restarts() {
             Complex64::new(a1.re, 0.0)
         };
         let exact = dense_solve(&shifted(&a, a0, a1), &b);
-        let alg = Gmres::new().krylovdim(8).tol(1e-11).orth(orth);
+        let alg = Gmres::new(8, 100, 1e-11).orth(orth);
         let (x, info) = if complex {
             run::<Complex64, _>(&a, &b, &x0, &alg, a0, a1, 8)
         } else {
@@ -178,7 +178,7 @@ fn gmres_solves_hermitian_indefinite_in_full_space() {
     let b = random_vec(&mut g, n, true);
     let (a0, a1) = (Complex64::new(0.21, 0.0), Complex64::new(1.0, 0.0));
     let exact = dense_solve(&shifted(&a, a0, a1), &b);
-    let alg = Gmres::new().krylovdim(n).tol(1e-10);
+    let alg = Gmres::new(n, 100, 1e-10);
     let (x, info) = run::<Complex64, _>(&a, &b, &vec![Complex64::default(); n], &alg, a0, a1, n);
     assert_eq!(info.converged, 1);
     assert_eq!(info.numiter, 1);
@@ -197,13 +197,13 @@ fn single_precision_solves() {
     let x0 = vec![Complex64::default(); n];
     let (zero, one) = (Complex64::new(0.0, 0.0), Complex64::new(1.0, 0.0));
     let exact = dense_solve(&a, &b);
-    let (x, info) = run::<Complex32, _>(&a, &b, &x0, &Cg::new().tol(1e-4), zero, one, 0);
+    let (x, info) = run::<Complex32, _>(&a, &b, &x0, &Cg::new(100, 1e-4), zero, one, 0);
     assert_eq!(info.converged, 1);
     assert!(rel_err(&x, &exact) < 1e-4);
     let ar: DMatrix<Complex64> = a.map(|z| Complex64::new(z.re, 0.0));
     let ar = (&ar + ar.transpose()) * Complex64::new(0.5, 0.0);
     let br: Vec<Complex64> = b.iter().map(|z| Complex64::new(z.re, 0.0)).collect();
-    let alg = Gmres::new().krylovdim(10).tol(1e-4);
+    let alg = Gmres::new(10, 100, 1e-4);
     let (x, info) = run::<f32, _>(&ar, &br, &x0, &alg, Complex64::new(6.0, 0.0), one, 10);
     assert_eq!(info.converged, 1);
     assert!(
@@ -226,14 +226,14 @@ fn exact_start_returns_without_iterations() {
         .collect();
     let one = Complex64::new(1.0, 0.0);
     let zero = Complex64::new(0.0, 0.0);
-    let (_, info) = run::<f64, _>(&a, &b, &x, &Gmres::new().tol(1e-10), zero, one, 30);
+    let (_, info) = run::<f64, _>(&a, &b, &x, &Gmres::new(30, 100, 1e-10), zero, one, 30);
     assert_eq!((info.converged, info.numiter, info.numops), (1, 0, 1));
     let a = shifted(&a, zero, one) + a.transpose(); // symmetric, diagonally dominant
     let b: Vec<Complex64> = (&a * DVector::from_column_slice(&x))
         .iter()
         .copied()
         .collect();
-    let (_, info) = run::<f64, _>(&a, &b, &x, &Cg::new().tol(1e-10), zero, one, 0);
+    let (_, info) = run::<f64, _>(&a, &b, &x, &Cg::new(100, 1e-10), zero, one, 0);
     assert_eq!((info.converged, info.numiter, info.numops), (1, 0, 1));
 }
 
@@ -245,7 +245,7 @@ fn non_convergence_is_reported_not_an_error() {
     let b = random_vec(&mut g, n, true);
     let x0 = vec![Complex64::default(); n];
     let (zero, one) = (Complex64::new(0.0, 0.0), Complex64::new(1.0, 0.0));
-    let alg = Gmres::new().krylovdim(3).maxiter(2).tol(1e-12);
+    let alg = Gmres::new(3, 2, 1e-12);
     let (_, info) = run::<Complex64, _>(&a, &b, &x0, &alg, zero, one, 3);
     assert_eq!((info.converged, info.numiter), (0, 2));
     let spd = with_spectrum(
@@ -253,7 +253,7 @@ fn non_convergence_is_reported_not_an_error() {
         &(1..=n).map(|i| i as f64 * i as f64).collect::<Vec<_>>(),
         true,
     );
-    let (_, info) = run::<Complex64, _>(&spd, &b, &x0, &Cg::new().maxiter(3), zero, one, 0);
+    let (_, info) = run::<Complex64, _>(&spd, &b, &x0, &Cg::new(3, 1e-12), zero, one, 0);
     assert_eq!((info.converged, info.numiter), (0, 3));
 }
 
@@ -271,7 +271,7 @@ fn warm_calls_allocate_only_solution_and_residual() {
         &mut op,
         &b,
         &x0,
-        &Gmres::new().krylovdim(5),
+        &Gmres::new(5, 100, 1e-12),
         0.0,
         1.0,
         &mut ws,
@@ -280,7 +280,7 @@ fn warm_calls_allocate_only_solution_and_residual() {
     assert!(info.numiter > 1);
     assert_eq!(similar_calls() - before, 2);
     let before = similar_calls();
-    let (_, info) = linsolve(&mut op, &b, &x0, &Cg::new(), 0.0, 1.0, &mut ws).unwrap();
+    let (_, info) = linsolve(&mut op, &b, &x0, &Cg::new(100, 1e-12), 0.0, 1.0, &mut ws).unwrap();
     assert_eq!(info.converged, 1);
     assert_eq!(similar_calls() - before, 2);
 }
@@ -299,7 +299,7 @@ fn typed_errors() {
     let mut op = DenseOp::<Complex64>::new(&a);
     let mut ws = Workspace::with_capacity(&b, 4).unwrap();
     let (one, zero) = (Complex64::new(1.0, 0.0), Complex64::new(0.0, 0.0));
-    let cg = Cg::new();
+    let cg = Cg::new(100, 1e-12);
     let e = linsolve(&mut op, &b, &x0, &cg, zero, one, &mut ws).map(|_| ());
     assert_eq!(e, Err(Error::NotPositiveDefinite));
     let e = linsolve(
@@ -313,13 +313,13 @@ fn typed_errors() {
     )
     .map(|_| ());
     assert!(matches!(e, Err(Error::InvalidArgument(_))));
-    let e = linsolve(&mut op, &b, &x0, &Cg::new().tol(-1.0), zero, one, &mut ws).map(|_| ());
+    let e = linsolve(&mut op, &b, &x0, &Cg::new(100, -1.0), zero, one, &mut ws).map(|_| ());
     assert!(matches!(e, Err(Error::InvalidArgument(_))));
     let e = linsolve(
         &mut op,
         &b,
         &x0,
-        &Gmres::new().krylovdim(5),
+        &Gmres::new(5, 100, 1e-12),
         zero,
         one,
         &mut ws,
@@ -336,7 +336,7 @@ fn typed_errors() {
         &mut op,
         &b,
         &x0,
-        &Gmres::new().krylovdim(0),
+        &Gmres::new(0, 100, 1e-12),
         zero,
         one,
         &mut ws,
@@ -349,7 +349,7 @@ fn typed_errors() {
         &mut op,
         &bad,
         &x0,
-        &Gmres::new().krylovdim(4),
+        &Gmres::new(4, 100, 1e-12),
         zero,
         one,
         &mut ws,
@@ -362,7 +362,7 @@ fn typed_errors() {
         &mut zero_op,
         &b,
         &x0,
-        &Gmres::new().krylovdim(4),
+        &Gmres::new(4, 100, 1e-12),
         zero,
         one,
         &mut ws,
@@ -420,9 +420,9 @@ fn fixture_case<S: TestScalar>(c: &HashMap<String, String>) {
     let (kd, maxiter, tol): (usize, usize, f64) =
         (num(c, "krylovdim"), num(c, "maxiter"), num(c, "tol"));
     let (x, info) = match c["kind"].as_str() {
-        "cg" => run::<S, _>(&a, &b, &x0, &Cg::new().maxiter(maxiter).tol(tol), a0, a1, 0),
+        "cg" => run::<S, _>(&a, &b, &x0, &Cg::new(maxiter, tol), a0, a1, 0),
         _ => {
-            let alg = Gmres::new().krylovdim(kd).maxiter(maxiter).tol(tol);
+            let alg = Gmres::new(kd, maxiter, tol);
             run::<S, _>(&a, &b, &x0, &alg, a0, a1, kd)
         }
     };
@@ -476,7 +476,7 @@ fn gmres_singular_krylov_space() {
     b[n / 2] = Complex64::new(1.0, 0.0);
     let x0 = vec![Complex64::default(); n];
     let (zero, one) = (Complex64::new(0.0, 0.0), Complex64::new(1.0, 0.0));
-    let alg = Gmres::new().krylovdim(4).maxiter(1).tol(1e-10);
+    let alg = Gmres::new(4, 1, 1e-10);
     let (x, info) = run::<f64, _>(&a, &b, &x0, &alg, zero, one, 4);
     assert_eq!(info.converged, 0);
     assert!((info.normres - 1.0).abs() < 1e-12, "{}", info.normres);
@@ -487,7 +487,7 @@ fn gmres_singular_krylov_space() {
         &mut DenseOp::new(&a),
         &bv,
         &xv,
-        &alg.maxiter(3),
+        &Gmres::new(4, 3, 1e-10),
         0.0,
         1.0,
         &mut ws,
@@ -502,7 +502,7 @@ fn gmres_with_subnormal_shift() {
     let a = DMatrix::from_row_slice(2, 2, &[0.0, 1.0, -1.0, 0.0]).map(|v| Complex64::new(v, 0.0));
     let b = [Complex64::new(1.0, 0.0), Complex64::new(0.0, 0.0)];
     let x0 = [Complex64::new(0.0, 0.0); 2];
-    let alg = Gmres::new().krylovdim(2).maxiter(3);
+    let alg = Gmres::new(2, 3, 1e-12);
     let (a0, a1) = (Complex64::new(1e-310, 0.0), Complex64::new(1.0, 0.0));
     let (x, info) = run::<f64, _>(&a, &b, &x0, &alg, a0, a1, 2);
     assert_eq!(info.converged, 1);
