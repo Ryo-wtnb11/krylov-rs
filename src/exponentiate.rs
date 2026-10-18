@@ -79,6 +79,9 @@ where
 /// `φ` functions of the tridiagonal Rayleigh quotient through its
 /// eigendecomposition; [`Arnoldi`] (general `op`) takes the dense
 /// exponential of the `(k+p+1)²` augmented Hessenberg matrix, as KrylovKit.
+/// Its scaling exponent `⌈log₂(‖A‖₁/5.4)⌉` (Julia's `exp!`) is found by
+/// exact halving, identical unless libm's `log2` rounds across an integer
+/// (see [docs/krylovkit.md](https://github.com/Ryo-wtnb11/krylov-rs/blob/main/docs/krylovkit.md)).
 ///
 /// The workspace basis needs capacity `>= alg.get_krylovdim()`. The returned
 /// vector and `p - 1` scratch vectors are allocated (`p` per call); the small

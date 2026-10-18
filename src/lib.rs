@@ -8,8 +8,8 @@
 //! difference is listed with its reason in
 //! [docs/krylovkit.md](https://github.com/Ryo-wtnb11/krylov-rs/blob/main/docs/krylovkit.md).
 //!
-//! Stage 1 provides Hermitian Lanczos [`eigsolve`] (thick restart) and
-//! [`exponentiate`]; [`expintegrator`] generalizes the latter to
+//! Hermitian maps use thick-restart Lanczos: [`eigsolve`], and
+//! [`exponentiate`] with its generalization [`expintegrator`] to
 //! `φ`-function combinations. [`linsolve`] solves `(a₀ + a₁·A)·x = b` by
 //! [`Cg`] or [`Gmres`]. [`block_eigsolve`] handles degenerate
 //! spectra with [`BlockLanczos`]. [`svdsolve`] computes partial SVDs of an

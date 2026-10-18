@@ -20,6 +20,11 @@ use crate::traits::{Basis, LinearMap, Vector, Workspace};
 /// a new block counts as linearly dependent and is dropped, and `eager`
 /// (default `false`) evaluates the projected problem after every block step.
 /// The start block size bounds the multiplicity that can be resolved.
+///
+/// Differs from KrylovKit: `orth` defaults to [`Orth::Cgs2`] (KrylovKit
+/// accepts only MGS2), and every new vector is orthogonalized against the
+/// full basis instead of KrylovKit's three-term block step plus one MGS pass.
+/// See [docs/krylovkit.md](https://github.com/Ryo-wtnb11/krylov-rs/blob/main/docs/krylovkit.md).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BlockLanczos {
     krylovdim: usize,
@@ -96,6 +101,18 @@ impl BlockLanczos {
 /// The workspace basis needs capacity `>= alg.get_krylovdim() + x0.len() - 1`;
 /// its operator vectors are unused. A call allocates `2·x0.len()` scratch
 /// vectors plus the returned eigenvectors and residuals.
+///
+/// Differs from KrylovKit (see [docs/krylovkit.md](https://github.com/Ryo-wtnb11/krylov-rs/blob/main/docs/krylovkit.md)):
+/// - [`ConvergenceInfo::numops`] is one lower, because KrylovKit's type-probe
+///   application is skipped (lower by `1 + dropped` when the QR drops start
+///   vectors, since KrylovKit counts the input block size).
+/// - Diagonal blocks of the Rayleigh quotient are symmetrized,
+///   `(M + Mᴴ)/2`, where KrylovKit reads the upper triangle.
+/// - When a whole new block is dropped the iteration stops as an invariant
+///   subspace (KrylovKit throws `ArgumentError`), and exactly zero vectors
+///   are dropped even with `qr_tol == 0`.
+/// - After a restart the residual norm is that of the transformed residual
+///   block (KrylovKit keeps the pre-restart norm).
 #[allow(clippy::type_complexity)]
 pub fn block_eigsolve<V, B, A>(
     op: &mut A,

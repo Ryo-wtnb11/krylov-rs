@@ -77,6 +77,9 @@ pub struct ConvergenceInfo<V: Vector> {
 /// The workspace basis needs capacity `>= alg.get_krylovdim()`. Iterations and
 /// restarts allocate no vectors; only the returned eigenvectors and residuals
 /// are new vectors.
+///
+/// With `krylovdim == 1` there is no room to restart, and the first Rayleigh
+/// quotient is returned (KrylovKit fails there; see [docs/krylovkit.md](https://github.com/Ryo-wtnb11/krylov-rs/blob/main/docs/krylovkit.md)).
 #[allow(clippy::type_complexity)]
 pub fn eigsolve<V, B, A>(
     op: &mut A,
