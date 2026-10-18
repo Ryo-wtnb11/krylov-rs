@@ -96,7 +96,7 @@ pub use eigsolve::{ConvergenceInfo, Which, eigsolve};
 pub use error::Error;
 pub use exponentiate::{ExpInfo, KrylovProcess, expintegrator, exponentiate};
 pub use lanczos::Lanczos;
-pub use linsolve::{Cg, Gmres, LinearSolver, LinsolveInfo, linsolve};
+pub use linsolve::{Cg, Gmres, LinearSolver, LinsolveInfo, RestartResidual, linsolve};
 pub use orth::Orth;
 pub use scalar::{MatRef, Real, RealScalar, Scalar};
 pub use svdsolve::{Gkl, svdsolve};

@@ -192,9 +192,13 @@ krylov's own tests use Accelerate on macOS and the system OpenBLAS elsewhere.
   coefficients return `Error::NonFiniteIterate` instead of a NaN/∞ result.
   For complex vectors with real `t`, the Lanczos `φ` functions are evaluated
   in real arithmetic, so an overflow stays `∞ + 0i`.
-- **`linsolve`**: GMRES forms the restart residual from the dense Givens
-  product (no basis rotation, capacity `krylovdim` instead of `+ 1`).
-  `numops` counts every application, including CG's residual recompute and
+- **`linsolve`**: GMRES restarts by default from the explicitly computed
+  residual `b − a₀x − a₁A·x` (`RestartResidual::Recomputed`, one extra
+  application per restart); KrylovKit uses the basis recurrence, available
+  as `Gmres::restart_residual(RestartResidual::Recurrence)`, which krylov
+  forms from the dense Givens product (no basis rotation, capacity
+  `krylovdim` instead of `+ 1`). `numops` counts every application,
+  including CG's residual recompute, the recomputed restart residuals and
   the apply that starts each GMRES cycle, which KrylovKit omits. CG checks
   `maxiter` after every iteration (KrylovKit always runs two) and stops on an
   exactly zero residual. Non-positive curvature in CG is
@@ -299,17 +303,17 @@ krylov's own tests use Accelerate on macOS and the system OpenBLAS elsewhere.
 ## Low-rank and tensor-network vectors
 
 Vectors whose representation grows under linear combination (MPS/TT, low-rank
-matrices) work with `exponentiate` and `expintegrator` without any krylov
-hook. Every combination krylov performs is a trait method that the user
-implements, so truncation (e.g. SVD rounding to a relative accuracy `τ`)
+matrices) work with `exponentiate`, `expintegrator` and GMRES `linsolve`
+without any krylov hook. Every combination krylov performs is a trait method
+that the user implements, so truncation (e.g. SVD rounding to a relative accuracy `τ`)
 goes inside those methods:
 
 - `LinearMap::apply_into`: truncate the product, as with any tensor-network
   map.
 - `Vector::axpby(a, x, b)` with `a ≠ 0` and `b ≠ 0`, and
-  `Basis::combine_into`: truncate the combination. (`exponentiate` and
-  `expintegrator` never call `Basis::rotate`; only the restart solvers
-  below do, and those are unsupported under truncation.) A real
+  `Basis::combine_into`: truncate the combination. (`exponentiate`,
+  `expintegrator` and GMRES never call `Basis::rotate`; only the
+  thick-restart solvers below do, and those are unsupported under truncation.) A real
   tensor-network `Basis` should implement `combine_into` as one truncated
   sum (for an MPS, bond `kχ` before truncation); the default `VecBasis` loops
   over `axpby` and so truncates once per term.
@@ -329,11 +333,21 @@ relation, not an orthonormal basis (KIOPS, Gaudreault–Rainwater–Tokman
 `tests/truncated.rs` checks this with SVD-truncated matrix vectors on
 `X ↦ L·X + X·Lᵀ` against the exact flow.
 
-Not supported under truncation: the thick-restart solvers (`eigsolve`,
-`block_eigsolve`, `svdsolve`, `schursolve` and its eigen variants), whose
-restart relation the truncated `rotate` breaks, and `linsolve`, which would
-need a relaxed truncation schedule and explicitly computed residuals
-(inexact Krylov).
+`linsolve` with `Gmres` works under the same contract with the default
+`RestartResidual::Recomputed`: every restart cycle starts from `b − A·x`
+and so minimizes the true residual, instead of relying only on the final
+explicit check. The attainable residual is bounded below by the truncation
+floor, about `τ·‖b‖`; with `tol` (absolute) below that floor the run reports
+non-convergence rather than a false success. `RestartResidual::Recurrence`
+is not recommended for truncating vectors: its restart residual differs from
+`b − A·x` by about `τ·‖b‖`, so each cycle minimizes a perturbed residual.
+`tests/truncated.rs` solves
+`(a₀ + A)·X = B` for the same map against a dense solve.
+
+Not supported under truncation: `Cg`, whose short recurrence relies on exact
+orthogonality, and the thick-restart solvers (`eigsolve`, `block_eigsolve`,
+`svdsolve`, `schursolve` and its eigen variants), whose restart relation the
+truncated `rotate` breaks.
 
 ## Status
 

@@ -5,7 +5,9 @@ mod common;
 use std::collections::HashMap;
 
 use common::*;
-use krylov::{Cg, Error, Gmres, LinearSolver, LinsolveInfo, Orth, Workspace, linsolve};
+use krylov::{
+    Cg, Error, Gmres, LinearSolver, LinsolveInfo, Orth, RestartResidual, Workspace, linsolve,
+};
 use nalgebra::{DMatrix, DVector};
 use num_complex::{Complex32, Complex64};
 
@@ -406,7 +408,7 @@ fn complex(c: &HashMap<String, String>, k: &str) -> Complex64 {
     Complex64::new(v[0], v[1])
 }
 
-fn fixture_case<S: TestScalar>(c: &HashMap<String, String>) {
+fn fixture_case<S: TestScalar>(c: &HashMap<String, String>, rr: RestartResidual) {
     let cplx = num::<u8>(c, "complex") == 1;
     let n: usize = num(c, "n");
     let mut g = SplitMix(num(c, "seed"));
@@ -422,7 +424,7 @@ fn fixture_case<S: TestScalar>(c: &HashMap<String, String>) {
     let (x, info) = match c["kind"].as_str() {
         "cg" => run::<S, _>(&a, &b, &x0, &Cg::new(maxiter, tol), a0, a1, 0),
         _ => {
-            let alg = Gmres::new(kd, maxiter, tol);
+            let alg = Gmres::new(kd, maxiter, tol).restart_residual(rr);
             run::<S, _>(&a, &b, &x0, &alg, a0, a1, kd)
         }
     };
@@ -433,7 +435,7 @@ fn fixture_case<S: TestScalar>(c: &HashMap<String, String>) {
         .collect();
     let name = &c["case"];
     eprintln!(
-        "{name}: krylov numiter {} numops {} normres {:?} | KrylovKit {} {} {}",
+        "{name} {rr:?}: krylov numiter {} numops {} normres {:?} | KrylovKit {} {} {}",
         info.numiter, info.numops, info.normres, c["numiter"], c["numops"], c["normres"]
     );
     assert_eq!(info.converged, num::<usize>(c, "converged"), "{name}");
@@ -443,19 +445,28 @@ fn fixture_case<S: TestScalar>(c: &HashMap<String, String>) {
     assert_eq!(info.numiter, ni, "{name}: numiter");
     // KrylovKit does not count the apply of CG's residual recompute (one per
     // run here) nor the apply that starts each GMRES restart cycle.
-    let uncounted = if c["kind"] == "cg" { 1 } else { ni - 1 };
-    assert_eq!(info.numops, no + uncounted, "{name}: numops");
+    // `Recomputed` adds one explicit residual per restart.
+    let uncounted = match (c["kind"].as_str(), rr) {
+        ("cg", _) => 1,
+        (_, RestartResidual::Recurrence) => ni - 1,
+        (_, RestartResidual::Recomputed) => 2 * (ni - 1),
+    };
+    assert_eq!(info.numops, no + uncounted, "{name} {rr:?}: numops");
 }
 
 #[test]
 fn matches_krylovkit_fixtures() {
     let cases = cases();
     assert_eq!(cases.len(), 5);
-    for c in &cases {
-        if num::<u8>(c, "complex") == 1 {
-            fixture_case::<Complex64>(c);
-        } else {
-            fixture_case::<f64>(c);
+    // `Recurrence` is KrylovKit's algorithm; `Recomputed` takes the same
+    // cycles here and agrees within the tolerance.
+    for rr in [RestartResidual::Recurrence, RestartResidual::Recomputed] {
+        for c in &cases {
+            if num::<u8>(c, "complex") == 1 {
+                fixture_case::<Complex64>(c, rr);
+            } else {
+                fixture_case::<f64>(c, rr);
+            }
         }
     }
 }

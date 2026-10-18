@@ -37,19 +37,40 @@ impl Cg {
     }
 }
 
+/// How [`Gmres`] forms the residual that starts each restart cycle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum RestartResidual {
+    /// `b - a₀x - a₁A·x`, computed explicitly: one extra map application
+    /// per restart, at most `1/krylovdim` of the applications. The default:
+    /// every cycle minimizes the true residual, also for vectors whose
+    /// arithmetic truncates (README, "Low-rank and tensor-network vectors").
+    #[default]
+    Recomputed,
+    /// The GMRES recurrence over the Krylov basis, as KrylovKit does: no
+    /// extra application, but it assumes exact vector arithmetic and the
+    /// Arnoldi relation. Not recommended for truncating vectors: there the
+    /// restart residual differs from `b - A·x` by about `τ·‖b‖`, so each
+    /// cycle minimizes a perturbed residual and only the final explicit
+    /// check sees the true one.
+    Recurrence,
+}
+
 /// Restarted GMRES for general `a₀ + a₁·A`.
 ///
 /// Mirrors KrylovKit's `GMRES`: `krylovdim` is the restart
 /// length, `maxiter` the number of restart cycles, `tol`
 /// an absolute bound on the residual norm, met when
 /// strictly smaller, and `orth` (default [`Orth::Cgs2`]) the Arnoldi
-/// orthogonalizer.
+/// orthogonalizer. `restart_residual` (default
+/// [`RestartResidual::Recomputed`]) differs from KrylovKit, which uses
+/// [`RestartResidual::Recurrence`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Gmres {
     krylovdim: usize,
     maxiter: usize,
     tol: f64,
     orth: Orth,
+    restart_residual: RestartResidual,
 }
 
 impl Gmres {
@@ -62,11 +83,17 @@ impl Gmres {
             maxiter,
             tol,
             orth: Orth::Cgs2,
+            restart_residual: RestartResidual::Recomputed,
         }
     }
     /// Sets the orthogonalizer.
     pub fn orth(mut self, orth: Orth) -> Self {
         self.orth = orth;
+        self
+    }
+    /// Sets how the residual that starts a restart cycle is formed.
+    pub fn restart_residual(mut self, restart_residual: RestartResidual) -> Self {
+        self.restart_residual = restart_residual;
         self
     }
     /// Restart length.
@@ -84,6 +111,10 @@ impl Gmres {
     /// Orthogonalizer.
     pub fn get_orth(&self) -> Orth {
         self.orth
+    }
+    /// Restart residual.
+    pub fn get_restart_residual(&self) -> RestartResidual {
+        self.restart_residual
     }
 }
 
@@ -422,7 +453,8 @@ impl LinearSolver for Gmres {
                 .combine_into(&y[..k], &mut x, V::Scalar::one(), V::Scalar::one())
                 .map_err(ve)?;
 
-            if beta > tol && numiter < self.maxiter {
+            let recurrence = self.restart_residual == RestartResidual::Recurrence;
+            let nr = if recurrence && beta > tol && numiter < self.maxiter {
                 // r = y[k]·V_{k+1}·(G₁ᴴ⋯G_kᴴ e_{k+1}) with v_{k+1} = w/‖w‖,
                 // instead of KrylovKit's rotation of the basis itself.
                 c[..=k].fill(s0);
@@ -437,6 +469,7 @@ impl LinearSolver for Gmres {
                     let a = yk * c[k] * V::Scalar::from_real(Real::<V>::one() / normres);
                     r.axpby(a, &ws.w, V::Scalar::one()).map_err(ve)?;
                 }
+                r.norm().map_err(ve)?
             } else {
                 beta = residual_into(op, b, &x, a0, a1, &mut r, ws).map_err(ve)?;
                 numops += 1;
@@ -446,13 +479,11 @@ impl LinearSolver for Gmres {
                 if beta < tol {
                     return Ok((x, info(true, r, beta, numiter, numops)));
                 }
-            }
-            // Reached only after the explicit residual (the restart branch
-            // requires numiter < maxiter and beta > tol >= 0).
-            if numiter >= self.maxiter || beta == zero {
-                return Ok((x, info(false, r, beta, numiter, numops)));
-            }
-            let nr = r.norm().map_err(ve)?;
+                if numiter >= self.maxiter || beta == zero {
+                    return Ok((x, info(false, r, beta, numiter, numops)));
+                }
+                beta
+            };
             normres = arnoldi_step(op, ws, Some(&r), nr, &mut h, &mut scratch, self.orth)?;
             numops += 1;
         }

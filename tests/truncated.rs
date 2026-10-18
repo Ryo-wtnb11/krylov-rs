@@ -1,13 +1,14 @@
-//! `exponentiate` and `expintegrator` with vectors that truncate their rank
-//! inside every rank-growing operation, the way a tensor-network vector
-//! (MPS/TT) would. krylov needs no hook for this: every combination is a
+//! `exponentiate`, `expintegrator` and GMRES `linsolve` with vectors that
+//! truncate their rank inside every rank-growing operation, the way a
+//! tensor-network vector (MPS/TT) would. krylov needs no hook for this: every combination is a
 //! user trait method (README, "Low-rank and tensor-network vectors").
 //!
 //! The vector is an `n × n` matrix `X` truncated by SVD to relative accuracy
 //! `τ` (`‖X − X_r‖_F <= τ·‖X‖_F`, TT-Toolbox `round` semantics). The map is
 //! `X ↦ L·X + X·Lᵀ` (Kronecker sum, the heat-equation structure of
 //! Weigel–Riemer–Stoll arXiv:2607.11293). Its exact flow
-//! `e^{tL}·X₀·e^{tLᵀ}` is an oracle independent of krylov.
+//! `e^{tL}·X₀·e^{tLᵀ}` and the dense solve of the vectorized system are
+//! oracles independent of krylov.
 
 mod common;
 
@@ -15,7 +16,8 @@ use std::cell::Cell;
 
 use common::*;
 use krylov::{
-    Arnoldi, KrylovProcess, Lanczos, LinearMap, Vector, Workspace, expintegrator, exponentiate,
+    Arnoldi, Gmres, KrylovProcess, Lanczos, LinearMap, RestartResidual, Vector, Workspace,
+    expintegrator, exponentiate, linsolve,
 };
 use nalgebra::DMatrix;
 use num_complex::Complex64;
@@ -379,4 +381,91 @@ fn phi<S: TestScalar, P: KrylovProcess>(
         "truncation never dropped anything"
     );
     y.x.as_slice().to_vec()
+}
+
+struct Solve {
+    /// `‖X − X*‖_F / ‖X*‖_F` against the dense solve.
+    err: f64,
+    converged: usize,
+    numiter: usize,
+    drops: usize,
+}
+
+/// `(3 + A)·X = B` with `A: X ↦ L·X + X·Lᵀ` (spectrum in `[0.6, 3]`) by
+/// GMRES with `krylovdim = 3` (several restarts) and the absolute tolerance
+/// `TOL·‖B‖`, checked against the dense LU solve of the vectorized system
+/// `3 + I⊗L + L⊗I`, which shares no code with krylov.
+fn run_gmres<S: TestScalar>(rhs: &DMatrix<Complex64>, tau: f64) -> Solve {
+    reset();
+    let n = rhs.nrows();
+    let l = laplacian(n, 0.3, 0.1);
+    let (a0, a1) = (Complex64::new(3.0, 0.0), Complex64::new(1.0, 0.0));
+    let b = LowRank::<S>::new(rhs.clone(), tau);
+    let x0 = LowRank::<S>::new(DMatrix::zeros(n, n), tau);
+    let alg = Gmres::new(3, 50, TOL * rhs.norm());
+    assert_eq!(alg.get_restart_residual(), RestartResidual::Recomputed);
+    let mut ws = Workspace::with_capacity(&b, 3).unwrap();
+    let (x, info) = linsolve(
+        &mut KronSum(l.clone()),
+        &b,
+        &x0,
+        &alg,
+        S::from_c64(a0),
+        S::from_c64(a1),
+        &mut ws,
+    )
+    .unwrap();
+    let id = DMatrix::<Complex64>::identity(n, n);
+    let m = (id.kronecker(&l) + l.kronecker(&id)) * a1
+        + DMatrix::<Complex64>::identity(n * n, n * n) * a0;
+    let exact = m
+        .lu()
+        .solve(&nalgebra::DVector::from_column_slice(rhs.as_slice()))
+        .unwrap();
+    let exact = DMatrix::from_column_slice(n, n, exact.as_slice());
+    Solve {
+        err: (&x.x - &exact).norm() / exact.norm(),
+        converged: info.converged,
+        numiter: info.numiter,
+        drops: DROPS.with(Cell::get),
+    }
+}
+
+/// A real and a complex right-hand side with decaying singular values.
+fn both_gmres(tau: f64) -> [Solve; 2] {
+    let n = 16;
+    let mut g = SplitMix(85);
+    let b = start(&mut g, n, false, n, 0.1);
+    let real = run_gmres::<f64>(&b, tau);
+    let b = start(&mut g, n, true, n, 0.1);
+    [real, run_gmres::<Complex64>(&b, tau)]
+}
+
+#[test]
+fn gmres_with_truncated_vectors() {
+    // The default `RestartResidual::Recomputed` restarts from `b − A·x`, so
+    // each cycle sees the true residual of the truncated iterate, and the
+    // error stays within a small multiple of `tol + τ`. (`Recurrence` also
+    // converges here, at most one cycle later at τ ≈ tol: its restart
+    // residual is off by about τ·‖b‖, but the final explicit check restarts
+    // from the true residual, so the offset is not asserted.)
+    for tau in [TOL / 10.0, TOL] {
+        for r in both_gmres(tau) {
+            assert_eq!(r.converged, 1, "τ = {tau}");
+            assert!(r.numiter > 1, "restarts exercised");
+            assert!(r.drops > 0, "truncation never dropped anything");
+            assert!(r.err <= 5.0 * (TOL + tau), "τ = {tau}: error {}", r.err);
+        }
+    }
+}
+
+#[test]
+fn gmres_coarse_truncation_sets_the_accuracy_floor() {
+    // τ = 1e3·tol: the recomputed residual cannot drop below the truncation
+    // floor, so the run reports non-convergence instead of a false success,
+    // and the error sits at the floor, far above the tolerance.
+    for r in both_gmres(1e3 * TOL) {
+        assert_eq!(r.converged, 0);
+        assert!(r.err > 10.0 * TOL, "error {} should exceed tol", r.err);
+    }
 }
