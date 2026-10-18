@@ -31,8 +31,8 @@ impl Cg {
     /// called.
     ///
     /// Differs from KrylovKit: there these parameters have keyword defaults
-    /// (`maxiter = 100`, `tol = 1e-12`); here they are required because suitable values depend on the
-    /// problem and the floating-point precision (see
+    /// (`maxiter = 100`, `tol = 1e-12`); here they are required because suitable
+    /// values depend on the problem and the floating-point precision (see
     /// [docs/krylovkit.md](https://github.com/Ryo-wtnb11/krylov-rs/blob/main/docs/krylovkit.md)).
     pub fn new(maxiter: usize, tol: f64) -> Self {
         Self { maxiter, tol }
@@ -95,8 +95,9 @@ impl Gmres {
     /// when a solver is called.
     ///
     /// Differs from KrylovKit: there these parameters have keyword defaults
-    /// (`krylovdim = 30`, `maxiter = 100`, `tol = 1e-12`); here they are required because suitable values depend on the
-    /// problem and the floating-point precision (see
+    /// (`krylovdim = 30`, `maxiter = 100`, `tol = 1e-12`); here they are
+    /// required because suitable values depend on the problem and the
+    /// floating-point precision (see
     /// [docs/krylovkit.md](https://github.com/Ryo-wtnb11/krylov-rs/blob/main/docs/krylovkit.md)).
     pub fn new(krylovdim: usize, maxiter: usize, tol: f64) -> Self {
         Self {

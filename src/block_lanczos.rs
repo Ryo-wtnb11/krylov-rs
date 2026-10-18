@@ -41,8 +41,9 @@ impl BlockLanczos {
     /// when a solver is called.
     ///
     /// Differs from KrylovKit: there these parameters have keyword defaults
-    /// (`krylovdim = 100`, `maxiter = 100`, `tol = 1e-12`); here they are required because suitable values depend on the
-    /// problem and the floating-point precision (see
+    /// (`krylovdim = 100`, `maxiter = 100`, `tol = 1e-12`, `qr_tol = 1e-12`);
+    /// here they are required because suitable values depend on the problem
+    /// and the floating-point precision (see
     /// [docs/krylovkit.md](https://github.com/Ryo-wtnb11/krylov-rs/blob/main/docs/krylovkit.md)).
     pub fn new(krylovdim: usize, maxiter: usize, tol: f64, qr_tol: f64) -> Self {
         Self {
