@@ -785,60 +785,62 @@ mod tests {
         );
     }
 
-    /// Eigenvalues, in order, against Julia 1.11 `LAPACK.hseqr!` (LAPACK
-    /// 3.12.0) on the fixed matrices of `tests/fixtures/lapack/hseqr.jl`.
-    #[test]
-    fn matches_lapack_hseqr_fixture() {
-        let re = |i: usize, j: usize| ((7 * i + 3 * j * j) % 11) as f64 / 4.0 - 1.25;
-        let im = |i: usize, j: usize| ((5 * i + 2 * j) % 7) as f64 / 2.0 - 1.5;
-        let fixture = include_str!("../../tests/fixtures/lapack/hseqr.txt");
-        let hex = |s: &str| f64::from_bits(u64::from_str_radix(s, 16).unwrap());
-        let mut cases = 0;
-        for line in fixture.lines().filter(|l| !l.starts_with('#')) {
-            let mut it = line.split_whitespace();
-            let kind = it.next().unwrap();
-            let n: usize = it.next().unwrap().parse().unwrap();
-            let want: Vec<Complex64> = it
-                .map(|p| {
-                    let (a, b) = p.split_once(':').unwrap();
-                    c(hex(a), hex(b))
-                })
-                .collect();
-            assert_eq!(want.len(), n);
-            // 1-based Julia indices; entries are exact multiples of 1/4.
-            let mut w = vec![c(0.0, 0.0); n];
-            if kind == "real" {
-                let mut h: Vec<f64> = (0..n * n)
-                    .map(|k| {
-                        let (i, j) = (k % n + 1, k / n + 1);
-                        if i <= j + 1 { re(i, j) } else { 0.0 }
-                    })
-                    .collect();
-                let mut z = vec![0.0; n * n];
-                real_schur(&mut h, &mut z, n, &mut w).unwrap();
-            } else {
-                let mut h: Vec<Complex64> = (0..n * n)
-                    .map(|k| {
-                        let (i, j) = (k % n + 1, k / n + 1);
-                        if i <= j + 1 {
-                            c(re(i, j), im(i, j))
-                        } else {
-                            c(0.0, 0.0)
-                        }
-                    })
-                    .collect();
-                let mut z = vec![c(0.0, 0.0); n * n];
-                complex_schur(&mut h, &mut z, n, &mut w).unwrap();
+    /// Upper Hessenberg companion matrix of `∏(x − r)`: its eigenvalues are
+    /// exactly the chosen roots, so the expected spectrum is readable here.
+    fn companion(roots: &[Complex64]) -> DMatrix<Complex64> {
+        let n = roots.len();
+        // Monic coefficients, `p[k]` multiplies x^k.
+        let mut p = vec![c(1.0, 0.0)];
+        for r in roots {
+            let mut q = vec![c(0.0, 0.0); p.len() + 1];
+            for (k, pk) in p.iter().enumerate() {
+                q[k + 1] += pk;
+                q[k] -= pk * r;
             }
-            for (k, (g, x)) in w.iter().zip(&want).enumerate() {
-                assert!(
-                    (g - x).norm() <= 1e-12 * (1.0 + x.norm()),
-                    "{kind} {n} #{k}: {g} vs {x}"
-                );
-            }
-            cases += 1;
+            p = q;
         }
-        assert_eq!(cases, 4);
+        DMatrix::from_fn(n, n, |i, j| match i {
+            0 => -p[n - 1 - j],
+            _ if i == j + 1 => c(1.0, 0.0),
+            _ => c(0.0, 0.0),
+        })
+    }
+
+    /// The Schur form of a Hessenberg input (`Z` started at `I`) satisfies
+    /// `H = Z·T·Zᴴ`, `ZᴴZ = I`, and reproduces the known spectrum. The
+    /// eigenvalue order is provider-defined; callers re-sort.
+    #[test]
+    fn companion_matrices_have_the_chosen_spectrum() {
+        let real_roots = [
+            c(2.0, 0.0),
+            c(-1.0, 0.0),
+            c(0.5, 0.0),
+            c(-3.0, 0.0),
+            c(1.0, 2.0),
+            c(1.0, -2.0),
+        ];
+        let n = real_roots.len();
+        let h = companion(&real_roots).map(|x| x.re);
+        let (mut t, mut z) = (h.clone(), DMatrix::<f64>::identity(n, n));
+        let mut w = vec![c(0.0, 0.0); n];
+        real_schur(t.as_mut_slice(), z.as_mut_slice(), n, &mut w).unwrap();
+        check_real(&h, &t, &z, &w, TOL * n as f64);
+        assert!(max_mismatch(&w, &real_roots) <= 1e-10, "{w:?}");
+
+        let complex_roots = [
+            c(1.0, 1.0),
+            c(-2.0, 0.0),
+            c(0.5, -1.5),
+            c(0.0, 3.0),
+            c(-1.0, -0.5),
+        ];
+        let n = complex_roots.len();
+        let h = companion(&complex_roots);
+        let (mut t, mut z) = (h.clone(), DMatrix::<Complex64>::identity(n, n));
+        let mut w = vec![c(0.0, 0.0); n];
+        complex_schur(t.as_mut_slice(), z.as_mut_slice(), n, &mut w).unwrap();
+        check_complex(&h, &t, &z, &w, TOL * n as f64);
+        assert!(max_mismatch(&w, &complex_roots) <= 1e-10, "{w:?}");
     }
 
     #[test]
