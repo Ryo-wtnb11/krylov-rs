@@ -1,7 +1,7 @@
 //! `exponentiate`, `expintegrator` and GMRES `linsolve` with vectors that
 //! truncate their rank inside every rank-growing operation, the way a
 //! tensor-network vector (MPS/TT) would. krylov needs no hook for this: every combination is a
-//! user trait method (README, "Low-rank and tensor-network vectors").
+//! user trait method (docs/guide.md, "Low-rank and tensor-network vectors").
 //!
 //! The vector is an `n × n` matrix `X` truncated by SVD to relative accuracy
 //! `τ` (`‖X − X_r‖_F <= τ·‖X‖_F`, TT-Toolbox `round` semantics). The map is

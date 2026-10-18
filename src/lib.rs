@@ -4,17 +4,21 @@
 //! small projected problem, convergence tests and restarts). Vector
 //! arithmetic and the linear map belong to the caller through three traits:
 //! [`Vector`], [`Basis`] and [`LinearMap`]. The API and the algorithms are
-//! modelled on [KrylovKit.jl](https://github.com/Jutho/KrylovKit.jl).
+//! modelled on [KrylovKit.jl](https://github.com/Jutho/KrylovKit.jl); every
+//! difference is listed with its reason in
+//! [docs/krylovkit.md](https://github.com/Ryo-wtnb11/krylov-rs/blob/main/docs/krylovkit.md).
 //!
-//! Stage 1 provides Hermitian Lanczos [`eigsolve`] (thick restart) and
-//! [`exponentiate`]; [`expintegrator`] generalizes the latter to
+//! Hermitian maps use thick-restart Lanczos: [`eigsolve`], and
+//! [`exponentiate`] with its generalization [`expintegrator`] to
 //! `φ`-function combinations. [`linsolve`] solves `(a₀ + a₁·A)·x = b` by
 //! [`Cg`] or [`Gmres`]. [`block_eigsolve`] handles degenerate
 //! spectra with [`BlockLanczos`]. [`svdsolve`] computes partial SVDs of an
 //! [`AdjointMap`] by [`Gkl`]. Non-Hermitian maps use the Krylov–Schur method
 //! with [`Arnoldi`]: [`schursolve`], [`arnoldi_eigsolve`] (complex vectors)
 //! and [`realeigsolve`] (real vectors); [`exponentiate`] and
-//! [`expintegrator`] take either process ([`KrylovProcess`]).
+//! [`expintegrator`] take either process ([`KrylovProcess`]). KrylovKit's
+//! `RealVec` (real-linear maps on complex vectors) is not supported; the
+//! vector type's scalar decides which entry points apply.
 //!
 //! The small projected problems call LAPACK through the [`lapack`] crate
 //! declarations, as KrylovKit does. krylov does not pick a LAPACK

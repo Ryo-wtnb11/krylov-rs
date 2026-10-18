@@ -84,6 +84,11 @@ impl<V: Vector> Basis<V> for VecBasis<V> {
     /// Applies `Q` as a product of Householder reflections, in place with the
     /// one scratch vector (`O(len·keep)` axpbys, no allocation).
     ///
+    /// Complex reflectors are formed with the pivot scaled by `1/ν`, unlike
+    /// KrylovKit's `_householder!`, so complex `Q` reach the same range limits
+    /// as real ones (entries whose squares stay finite); see
+    /// [docs/krylovkit.md](https://github.com/Ryo-wtnb11/krylov-rs/blob/main/docs/krylovkit.md).
+    ///
     /// # Panics
     ///
     /// Panics if `q.nrows() != len()` or `keep > min(q.ncols(), len())`.

@@ -15,6 +15,11 @@ use crate::traits::{Basis, LinearMap, Vector, Workspace};
 /// Mirrors KrylovKit's `CG`: `maxiter` bounds the number of
 /// iterations, and `tol` is an absolute bound on the
 /// residual norm `‖b - a₀x - a₁A·x‖`, met when strictly smaller.
+///
+/// Differs from KrylovKit (see [docs/krylovkit.md](https://github.com/Ryo-wtnb11/krylov-rs/blob/main/docs/krylovkit.md)): `maxiter` is checked after every
+/// iteration (KrylovKit always runs two), an exactly zero residual stops the
+/// iteration, [`LinsolveInfo::numops`] includes the residual recompute, and
+/// non-positive curvature is [`Error::NotPositiveDefinite`] (KrylovKit: NaN).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Cg {
     maxiter: usize,
@@ -43,7 +48,7 @@ pub enum RestartResidual {
     /// `b - a₀x - a₁A·x`, computed explicitly: one extra map application
     /// per restart, at most `1/krylovdim` of the applications. The default:
     /// every cycle minimizes the true residual, also for vectors whose
-    /// arithmetic truncates (README, "Low-rank and tensor-network vectors").
+    /// arithmetic truncates (docs/guide.md, "Low-rank and tensor-network vectors").
     #[default]
     Recomputed,
     /// The GMRES recurrence over the Krylov basis, as KrylovKit does: no
@@ -64,6 +69,12 @@ pub enum RestartResidual {
 /// orthogonalizer. `restart_residual` (default
 /// [`RestartResidual::Recomputed`]) differs from KrylovKit, which uses
 /// [`RestartResidual::Recurrence`].
+///
+/// Also differs from KrylovKit (see [docs/krylovkit.md](https://github.com/Ryo-wtnb11/krylov-rs/blob/main/docs/krylovkit.md)): `orth` defaults to CGS2
+/// (KrylovKit: MGS2), [`LinsolveInfo::numops`] counts the recomputed restart
+/// residuals and the application that starts each cycle, and an exactly
+/// singular pivot is [`Error::SingularKrylovSpace`] (KrylovKit:
+/// `SingularException`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Gmres {
     krylovdim: usize,

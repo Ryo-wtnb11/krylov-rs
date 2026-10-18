@@ -16,6 +16,11 @@ use crate::traits::{Basis, LinearMap, Vector, Workspace};
 /// `tol` an absolute residual norm for `eigsolve` and an error per unit time
 /// for `exponentiate`, and `eager` (default `false`) evaluates the projected
 /// problem after every expansion.
+///
+/// Differs from KrylovKit: `orth` defaults to [`Orth::Cgs2`] (KrylovKit:
+/// MGS2), and each Lanczos step orthogonalizes against the full basis twice,
+/// where KrylovKit's CGS2 recurrence uses the three-term recurrence for its
+/// first pass. See [docs/krylovkit.md](https://github.com/Ryo-wtnb11/krylov-rs/blob/main/docs/krylovkit.md).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Lanczos {
     krylovdim: usize,

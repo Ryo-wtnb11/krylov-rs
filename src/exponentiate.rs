@@ -67,7 +67,7 @@ where
 /// bounds the number of Krylov subspaces (time steps), and the last one is
 /// forced to reach `t`. `t` may be complex (use a complex vector type for
 /// real-time evolution `t = -iτ`). `u` must be non-empty, `tol` positive and
-/// `t` finite. When `w_{p+1} = 0` with `p ≥ 2`, `y` is the exact polynomial
+/// `t` finite (KrylovKit allows `t = ±∞` for `p = 1`). When `w_{p+1} = 0` with `p ≥ 2`, `y` is the exact polynomial
 /// in `t` and is returned without a Krylov space (KrylovKit divides by zero
 /// there). A non-finite (overflowed or NaN) step error estimate rejects the
 /// step, which KrylovKit accepts when the estimate is NaN; if it stays
@@ -79,6 +79,9 @@ where
 /// `φ` functions of the tridiagonal Rayleigh quotient through its
 /// eigendecomposition; [`Arnoldi`] (general `op`) takes the dense
 /// exponential of the `(k+p+1)²` augmented Hessenberg matrix, as KrylovKit.
+/// Its scaling exponent `⌈log₂(‖A‖₁/5.4)⌉` (Julia's `exp!`) is found by
+/// exact halving, identical unless libm's `log2` rounds across an integer
+/// (see [docs/krylovkit.md](https://github.com/Ryo-wtnb11/krylov-rs/blob/main/docs/krylovkit.md)).
 ///
 /// The workspace basis needs capacity `>= alg.get_krylovdim()`. The returned
 /// vector and `p - 1` scratch vectors are allocated (`p` per call); the small

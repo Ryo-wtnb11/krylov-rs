@@ -19,7 +19,9 @@ use crate::traits::{AdjointMap, Basis, Vector, Workspace};
 /// norms (met when strictly smaller), `eager` (default `false`) evaluates the
 /// projected problem after every expansion, and `orth` (default
 /// [`Orth::Cgs2`]) orthogonalizes each new vector twice against the full
-/// basis on both sides.
+/// basis on both sides. This differs from KrylovKit, whose CGS2 GKL keeps the
+/// right side local and makes one pass on the left (six reductions per step
+/// instead of three; see [docs/krylovkit.md](https://github.com/Ryo-wtnb11/krylov-rs/blob/main/docs/krylovkit.md)).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Gkl {
     krylovdim: usize,
@@ -226,6 +228,10 @@ impl<S: Scalar> Fact<S> {
 /// of `op`. `info.residual` lives in the codomain. Both bases need
 /// capacity `>= alg.get_krylovdim()`. Iterations and restarts allocate no
 /// vectors; a call allocates the `3·n` returned vectors.
+///
+/// A failed start check `⟨u, A·v⟩ = ‖Aᴴu‖` (with `v = Aᴴu/‖Aᴴu‖`) is
+/// [`Error::IncompatibleAdjoint`] (KrylovKit: `ArgumentError`; see
+/// [docs/krylovkit.md](https://github.com/Ryo-wtnb11/krylov-rs/blob/main/docs/krylovkit.md)).
 #[allow(clippy::type_complexity)]
 pub fn svdsolve<V, W, BU, BV, A>(
     op: &mut A,
