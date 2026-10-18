@@ -51,10 +51,12 @@ defaults: `Lanczos::new(krylovdim, maxiter, tol)`, likewise `Arnoldi`, `Gkl`
 and `Gmres`, `BlockLanczos::new(krylovdim, maxiter, tol, qr_tol)` and
 `Cg::new(maxiter, tol)`.
 
-- `krylovdim` fixes the memory: a Krylov factorization stores `krylovdim + 1`
-  vectors (basis plus residual; for tensor-network vectors, whole MPS). The
-  `Workspace` of capacity `krylovdim` holds them together with the operator
-  input and output (`krylovdim + 3` vectors, see below).
+- `krylovdim` fixes the memory (for tensor-network vectors, whole MPS): a
+  `Workspace` of capacity `krylovdim` holds `krylovdim + 3` vectors, namely
+  the basis, one restart scratch vector, and the operator input and output
+  (the residual lives in the operator output). `BlockLanczos` with a start
+  block of size `b` needs capacity `krylovdim + b - 1`, and `svdsolve` uses
+  two workspaces of capacity `krylovdim` (codomain and domain).
 - `tol` is the accuracy contract and depends on the scalar type (a tolerance
   reachable in `f64` is not in `f32`).
 - `maxiter` bounds the work.
@@ -172,7 +174,8 @@ krylov's own tests use Accelerate on macOS and the system OpenBLAS elsewhere.
   step sequence equal to KrylovKit's.
 - **CGS2 Lanczos step** orthogonalizes against the full basis twice; KrylovKit's
   CGS2 recurrence uses the three-term recurrence for its first pass.
-- Restricted inputs, reported as typed errors: `krylovdim >= 1`,
+- Restricted inputs, reported as typed errors: `krylovdim >= 1`
+  (`>= 2` for `Gkl`, `>` the start block size for `BlockLanczos`),
   `maxiter >= 1`, `tol >= 0` (`> 0` for `exponentiate`), finite `t`. With
   `krylovdim == 1`, `eigsolve` cannot restart and returns the first Rayleigh
   quotient (KrylovKit fails there). `exponentiate`/`expintegrator` with
