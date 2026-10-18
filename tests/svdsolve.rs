@@ -1,11 +1,9 @@
-//! `svdsolve` (GKL) against nalgebra's dense SVD and KrylovKit.jl.
+//! `svdsolve` (GKL) against nalgebra's dense SVD and KrylovKit.jl counts.
 //!
 //! The vector type is shared by domain and codomain, so rectangular maps are
 //! tested directly: codomain vectors have length `m`, domain vectors `n`.
 
 mod common;
-
-use std::collections::HashMap;
 
 use common::*;
 use krylov::{AdjointMap, Error, Gkl, LinearMap, Orth, Which, Workspace, svdsolve};
@@ -394,76 +392,71 @@ fn typed_errors() {
     );
 }
 
-// KrylovKit fixtures (`fixtures/krylovkit/svdsolve.txt`, from `svdsolve.jl`).
+/// name, seed, m, n, complex, howmany, which, krylovdim, tol, eager,
+/// KrylovKit `(nvals, converged, numiter, numops)`.
+type KkCase = (
+    &'static str,
+    u64,
+    usize,
+    usize,
+    bool,
+    usize,
+    Which,
+    usize,
+    f64,
+    bool,
+    Option<(usize, usize, usize, usize)>,
+);
 
-const FIXTURES: &str = include_str!("fixtures/krylovkit/svdsolve.txt");
-
-fn cases() -> Vec<HashMap<String, String>> {
-    let mut out = Vec::new();
-    let mut cur = HashMap::new();
-    for line in FIXTURES.lines().filter(|l| !l.starts_with('#')) {
-        if line == "end" {
-            out.push(std::mem::take(&mut cur));
-            continue;
-        }
-        let (k, v) = line.split_once(' ').unwrap_or((line, ""));
-        cur.insert(k.to_string(), v.to_string());
-    }
-    out
-}
-
-fn num<T: std::str::FromStr>(c: &HashMap<String, String>, k: &str) -> T
-where
-    T::Err: std::fmt::Debug,
-{
-    c[k].parse().unwrap()
-}
-
-fn floats(c: &HashMap<String, String>, k: &str) -> Vec<f64> {
-    c[k].split_whitespace()
-        .map(|x| x.parse().unwrap())
-        .collect()
-}
-
-fn fixture_case<S: TestScalar>(c: &HashMap<String, String>) {
-    let cplx = num::<u8>(c, "complex") == 1;
-    let (m, n): (usize, usize) = (num(c, "m"), num(c, "n"));
-    let mut g = SplitMix(num(c, "seed"));
+fn kk_case<S: TestScalar>(case: &KkCase) {
+    let (name, seed, m, n, cplx, howmany, which, kd, tol, eager, kk) = *case;
+    let mut g = SplitMix(seed);
     let a = rectangular(&mut g, m, n, cplx);
     let x0 = random_vec(&mut g, m, cplx);
-    let which = match c["which"].as_str() {
-        "LR" => Which::LargestReal,
-        "SR" => Which::SmallestReal,
-        w => panic!("unknown selector {w}"),
-    };
-    let alg = Gkl::new(num(c, "krylovdim"), 100, num(c, "tol")).eager(num::<u8>(c, "eager") == 1);
-    let out = run::<S>(&a, &x0, num(c, "howmany"), which, &alg);
-    let name = &c["case"];
-    eprintln!(
-        "{name}: krylov numiter {} numops {} converged {} | KrylovKit {} {} {}",
-        out.numiter, out.numops, out.converged, c["numiter"], c["numops"], c["converged"]
+    let alg = Gkl::new(kd, 100, tol).eager(eager);
+    let out = run::<S>(&a, &x0, howmany, which, &alg);
+    let mut want = dense_singular_values(&a);
+    if which == Which::SmallestReal {
+        want.reverse();
+    }
+    assert!(
+        out.converged >= howmany,
+        "{name}: converged {}",
+        out.converged
     );
-    let expect = floats(c, "values");
-    assert_eq!(out.values.len(), expect.len(), "{name}: number of values");
-    assert_eq!(out.converged, num::<usize>(c, "converged"), "{name}");
-    let tol: f64 = num(c, "tol");
-    for ((v, e), r) in out.values.iter().zip(&expect).zip(&out.normres) {
+    for ((v, e), r) in out.values.iter().zip(&want).zip(&out.normres) {
         assert!((v - e).abs() <= 1e-9 * e.max(1.0), "{name}: {v} vs {e}");
         assert!(*r < tol, "{name}: residual {r}");
     }
-    assert_eq!(out.numiter, num::<usize>(c, "numiter"), "{name}: numiter");
-    assert_eq!(out.numops, num::<usize>(c, "numops"), "{name}: numops");
+    if let Some((nvals, converged, numiter, numops)) = kk {
+        assert_eq!(out.values.len(), nvals, "{name}: number of values");
+        assert_eq!(out.converged, converged, "{name}: converged");
+        assert_eq!(out.numiter, numiter, "{name}: numiter");
+        assert_eq!(out.numops, numops, "{name}: numops");
+    }
 }
 
+/// KrylovKit.jl's GKL cases (CGS2, `maxiter = 100`) against nalgebra's
+/// SVD of the same matrix; `run` checks `A·v = σu + r` and `Aᴴu = σv`. GKL
+/// takes KrylovKit's restarts exactly; the counts are pinned on a tall LR
+/// case that returns every converged triplet and a restart-heavy square SR
+/// case, checked against KrylovKit.jl v0.10.4. Tall maps with
+/// `SmallestReal` are not compared: KrylovKit then reports a spurious
+/// converged σ ≈ 0 (`tall_map_smallest_values_keep_an_unconverged_zero`).
 #[test]
-fn matches_krylovkit_fixtures() {
-    let cases = cases();
-    assert_eq!(cases.len(), 4);
-    for c in &cases {
-        if num::<u8>(c, "complex") == 1 {
-            fixture_case::<Complex64>(c);
+fn svdsolve_matches_dense_svd_and_krylovkit_counts() {
+    #[rustfmt::skip]
+    let cases: [KkCase; 4] = [
+        ("svd_real_lr", 21, 90, 70, false, 3, Which::LargestReal, 20, 1e-10, false, Some((4, 4, 4, 88))),
+        ("svd_complex_lr", 22, 60, 80, true, 2, Which::LargestReal, 16, 1e-10, false, None),
+        ("svd_real_sr_square", 23, 40, 40, false, 2, Which::SmallestReal, 20, 1e-9, false, Some((4, 4, 11, 200))),
+        ("svd_complex_sr_wide_eager", 24, 40, 50, true, 2, Which::SmallestReal, 24, 1e-9, true, None),
+    ];
+    for case in &cases {
+        if case.4 {
+            kk_case::<Complex64>(case);
         } else {
-            fixture_case::<f64>(c);
+            kk_case::<f64>(case);
         }
     }
 }

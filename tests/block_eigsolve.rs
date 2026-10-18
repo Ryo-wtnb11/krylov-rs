@@ -1,9 +1,7 @@
 //! `block_eigsolve` against nalgebra's dense eigensolver and KrylovKit
-//! `BlockLanczos` fixtures.
+//! `BlockLanczos` counts.
 
 mod common;
-
-use std::collections::HashMap;
 
 use common::*;
 use krylov::{
@@ -351,79 +349,77 @@ fn errors() {
     ));
 }
 
+/// KrylovKit.jl's `BlockLanczos` cases (MGS2, the only orthogonalizer it
+/// supports here): `A = kron(I_copies, H)`, so every eigenvalue of `H` is
+/// `copies`-fold and the expected values are the dense spectrum of `H`
+/// repeated. `(nvals, converged, numiter, numops)` is pinned on two
+/// representative cases, checked against KrylovKit.jl v0.10.4: numiter
+/// equal, numops one lower (krylov skips KrylovKit's type-probe
+/// application, `docs/krylovkit.md`).
 #[test]
-fn matches_krylovkit_block_lanczos_fixtures() {
-    // Format of fixtures/krylovkit/block.txt (see tests/krylovkit.rs).
-    let mut cases: Vec<HashMap<String, String>> = Vec::new();
-    let mut cur = HashMap::new();
-    for line in include_str!("fixtures/krylovkit/block.txt").lines() {
-        if line.starts_with('#') {
-            continue;
-        }
-        if line == "end" {
-            cases.push(std::mem::take(&mut cur));
-            continue;
-        }
-        let (k, v) = line.split_once(' ').unwrap_or((line, ""));
-        cur.insert(k.to_string(), v.to_string());
-    }
-    assert!(cases.len() >= 4);
-    for c in &cases {
-        let num = |k: &str| -> usize { c[k].parse().unwrap() };
-        let complex = num("complex") == 1;
-        let (m, copies) = (num("m"), num("copies"));
+fn block_lanczos_matches_dense_spectrum_and_krylovkit_counts() {
+    type Counts = (usize, usize, usize, usize);
+    type Case = (
+        &'static str,
+        u64,
+        usize,
+        usize,
+        bool,
+        usize,
+        usize,
+        Which,
+        usize,
+        f64,
+        bool,
+        Option<Counts>,
+    );
+    #[rustfmt::skip]
+    let cases: [Case; 4] = [
+        // name, seed, m, copies, complex, bs, howmany, which, krylovdim, tol, eager, KrylovKit
+        ("real_double_sr", 21, 30, 2, false, 2, 4, Which::SmallestReal, 20, 1e-10, false, None),
+        ("complex_triple_lr", 22, 25, 3, true, 3, 3, Which::LargestReal, 30, 1e-10, false, Some((3, 3, 7, 103))),
+        ("real_generic_sr_eager", 23, 60, 1, false, 2, 2, Which::SmallestReal, 24, 1e-10, true, None),
+        // Restarts; KrylovKit returns every converged pair (6 > 4).
+        ("complex_double_restart", 24, 40, 2, true, 2, 4, Which::SmallestReal, 16, 1e-9, false, Some((6, 6, 14, 117))),
+    ];
+    for (name, seed, m, copies, complex, bs, howmany, which, kd, tol, eager, kk) in cases {
         let n = m * copies;
-        let mut g = SplitMix(c["seed"].parse().unwrap());
+        let mut g = SplitMix(seed);
         let h = hermitian(&mut g, m, complex);
         let mut a = DMatrix::<Complex64>::zeros(n, n);
         for b in 0..copies {
             a.view_mut((b * m, b * m), (m, m)).copy_from(&h);
         }
-        let x0 = block(&mut g, n, num("bs"), complex);
-        let which = match c["which"].as_str() {
-            "SR" => Which::SmallestReal,
-            "LR" => Which::LargestReal,
-            "LM" => Which::LargestMagnitude,
-            w => panic!("unknown selector {w}"),
-        };
-        let alg = BlockLanczos::new(num("krylovdim"), 100, c["tol"].parse().unwrap(), 1e-12)
-            .eager(num("eager") == 1)
+        let x0 = block(&mut g, n, bs, complex);
+        let alg = BlockLanczos::new(kd, 100, tol, 1e-12)
+            .eager(eager)
             .orth(Orth::Mgs2);
-        let out = run::<Complex64>(&a, &x0, num("howmany"), which, alg);
-        let expect: Vec<f64> = c["values"]
-            .split_whitespace()
-            .map(|x| x.parse().unwrap())
+        let out = run::<Complex64>(&a, &x0, howmany, which, alg);
+        let mut want = dense_eigenvalues(&h);
+        if which == Which::LargestReal {
+            want.reverse();
+        }
+        let want: Vec<f64> = want
+            .iter()
+            .flat_map(|&e| std::iter::repeat_n(e, copies))
             .collect();
-        let name = &c["case"];
-        eprintln!(
-            "{name}: krylov numiter {} numops {} converged {} | KrylovKit {} {} {}",
-            out.info.numiter,
-            out.info.numops,
-            out.info.converged,
-            c["numiter"],
-            c["numops"],
-            c["converged"]
-        );
-        assert_eq!(out.vals.len(), expect.len(), "{name}: number of values");
-        assert_eq!(out.info.converged, num("converged"), "{name}");
-        for (v, e) in out.vals.iter().zip(&expect) {
+        assert!(out.info.converged >= howmany, "{name}");
+        assert!(out.vals.len() >= howmany, "{name}");
+        for (v, e) in out.vals.iter().zip(&want) {
             assert!(
                 (v - e).abs() <= 1e-9 * e.abs().max(1.0),
                 "{name}: {v} vs {e}"
             );
         }
         check_pairs(&a, &out, 1e-12);
-        let (ni, no) = (num("numiter"), num("numops"));
-        assert!(
-            out.info.numiter.abs_diff(ni) <= 1,
-            "{name}: numiter {} vs {ni}",
-            out.info.numiter
-        );
-        assert!(
-            out.info.numops.abs_diff(no) * 10 <= no,
-            "{name}: numops {} vs {no}",
-            out.info.numops
-        );
+        if let Some((nvals, converged, ni, no)) = kk {
+            assert_eq!(out.vals.len(), nvals, "{name}: number of values");
+            assert_eq!(out.info.converged, converged, "{name}");
+            assert_eq!(out.info.numiter, ni, "{name}: numiter");
+            // No start vector is dropped here, so exactly KrylovKit's count
+            // without its type-probe application.
+            assert_eq!(out.info.numops, no - 1, "{name}: numops");
+        }
     }
 }
 

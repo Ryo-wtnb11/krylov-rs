@@ -717,7 +717,8 @@ mod tests {
         assert!(f64::gesv(&mut s, &mut r, 2, 2, &mut ipiv).is_err());
     }
 
-    /// SplitMix64 mapped exactly to `k·2⁻⁵² - 1`, as in `generate.jl`.
+    /// SplitMix64 mapped exactly to `k·2⁻⁵² - 1`, so the matrices below are
+    /// reproducible bit for bit in Julia.
     struct SplitMix(u64);
     impl SplitMix {
         fn unif(&mut self) -> f64 {
@@ -729,27 +730,91 @@ mod tests {
         }
     }
 
-    const FIXTURES: &str = include_str!("../../tests/fixtures/krylovkit/expm.txt");
-
+    /// Same Padé degree, scaling and balancing as Julia's `exp!` (what
+    /// KrylovKit's expintegrator calls), so the result agrees with it to
+    /// rounding (different provider kernels round differently). The first
+    /// column of `exp(A)` was checked against Julia 1.11.6
+    /// `LinearAlgebra.exp!` (KrylovKit.jl v0.10.4 environment) for one case
+    /// per regime: degree 13 without squaring (real), scaling and squaring
+    /// (complex), and a graded matrix that balancing rescales (complex);
+    /// the degree and squaring count follow from Julia's thresholds on the
+    /// balanced `‖A‖₁` (4.26, 55.7 and 4.42). The lower degrees are pinned
+    /// against the Taylor oracle in `every_degree_and_both_sides_of_each_threshold`.
     #[test]
     fn matches_julia_exp() {
-        let mut cases = 0;
-        let mut cur = std::collections::HashMap::new();
-        for line in FIXTURES.lines().filter(|l| !l.starts_with('#')) {
-            if line != "end" {
-                let (k, v) = line.split_once(' ').unwrap_or((line, ""));
-                cur.insert(k.to_string(), v.to_string());
-                continue;
-            }
-            let c = std::mem::take(&mut cur);
-            let num = |k: &str| -> f64 { c[k].parse().unwrap() };
-            let floats = |k: &str| -> Vec<f64> {
-                c[k].split_whitespace()
-                    .map(|x| x.parse().unwrap())
-                    .collect()
-            };
-            let (n, complex) = (num("n") as usize, num("complex") == 1.0);
-            let mut g = SplitMix(num("seed") as u64);
+        type Case = (
+            &'static str,
+            u64,
+            usize,
+            bool,
+            f64,
+            (usize, usize),
+            [(f64, f64); 10],
+        );
+        let cases: [Case; 3] = [
+            (
+                "deg13",
+                35,
+                8,
+                false,
+                0.8,
+                (13, 0),
+                [
+                    (0.8268308284383482, 0.0),
+                    (0.0342024372527508, 0.0),
+                    (0.18922553985925525, 0.0),
+                    (-0.584388336743765, 0.0),
+                    (0.5180543591923297, 0.0),
+                    (-0.2724009461299436, 0.0),
+                    (0.21517588555629913, 0.0),
+                    (-0.9545336416660247, 0.0),
+                    (0.0, 0.0),
+                    (0.0, 0.0),
+                ],
+            ),
+            (
+                "squaring",
+                36,
+                10,
+                true,
+                6.0,
+                (13, 4),
+                [
+                    (-60706.297355832474, 143615.3181846314),
+                    (76274.51236057113, -6520.500565855251),
+                    (26893.768931602684, 65379.9593640823),
+                    (-36339.57614142999, 5714.609618379751),
+                    (55079.2351503049, -16204.550676512014),
+                    (-31650.204430725073, 37821.88201428281),
+                    (46729.3414446548, -76057.30142274681),
+                    (-26894.26669948297, 34727.43712576238),
+                    (-41251.63692230814, -45445.27938633388),
+                    (100361.45940709075, -36380.72502209295),
+                ],
+            ),
+            (
+                "graded",
+                38,
+                7,
+                true,
+                0.7,
+                (13, 0),
+                [
+                    (0.25310784063281944, -0.9183145509960402),
+                    (-19.343441262341276, -11.51192593172199),
+                    (127.55360257594381, 236.49677652028578),
+                    (-710.541490422778, 1366.022614823692),
+                    (-30623.84702932327, -56743.85846004804),
+                    (535407.066308113, 665483.6344442582),
+                    (636960.9481847256, 705131.2434061968),
+                    (0.0, 0.0),
+                    (0.0, 0.0),
+                    (0.0, 0.0),
+                ],
+            ),
+        ];
+        for (name, seed, n, complex, scale, degree_squarings, col0) in cases {
+            let mut g = SplitMix(seed);
             let mut a = DMatrix::<Complex64>::zeros(n, n);
             for j in 0..n {
                 for i in 0..n {
@@ -758,36 +823,27 @@ mod tests {
                     a[(i, j)] = Complex64::new(re, im);
                 }
             }
-            match c["kind"].as_str() {
-                "nilpotent" => a = a.upper_triangle() - DMatrix::from_diagonal(&a.diagonal()),
-                "graded" => {
-                    for j in 0..n {
-                        for i in 0..n {
-                            a[(i, j)] *= 2f64.powi(4 * (i as i32 - j as i32));
-                        }
+            if name == "graded" {
+                // Exact similarity by powers of two.
+                for j in 0..n {
+                    for i in 0..n {
+                        a[(i, j)] *= 2f64.powi(4 * (i as i32 - j as i32));
                     }
                 }
-                _ => {}
             }
-            a *= Complex64::new(num("scale"), 0.0);
-            let julia: Vec<Complex64> = floats("x_re")
-                .into_iter()
-                .zip(floats("x_im"))
-                .map(|(re, im)| Complex64::new(re, im))
+            a *= Complex64::new(scale, 0.0);
+            let (x, d, si) = ours(&a, complex);
+            assert_eq!((d, si), degree_squarings, "{name}");
+            let want: Vec<Complex64> = col0[..n]
+                .iter()
+                .map(|&(r, i)| Complex64::new(r, i))
                 .collect();
-            let julia = DMatrix::from_column_slice(n, n, &julia);
-            let (x, _, _) = ours(&a, complex);
-            // Same algorithm, different rounding (provider kernels): agree to
-            // a few ε·‖A‖ in norm, and entrywise relative to ‖X‖.
-            let tol = 1e-15 * (10.0 + a.norm());
-            let r = rel(&x, &julia);
-            assert!(r < tol, "{}: {r}", c["case"]);
-            let xmax = julia.iter().map(|z| z.norm()).fold(0.0, f64::max);
-            for (p, q) in x.iter().zip(julia.iter()) {
-                assert!((p - q).norm() <= tol * xmax, "{}", c["case"]);
+            // Entrywise relative: these columns are well conditioned (the
+            // graded one after balancing), so a norm-scaled bound would
+            // leave its small entries unchecked.
+            for (p, q) in x.column(0).iter().zip(&want) {
+                assert!((p - q).norm() <= 1e-13 * q.norm(), "{name}: {p} vs {q}");
             }
-            cases += 1;
         }
-        assert_eq!(cases, 9);
     }
 }

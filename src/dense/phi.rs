@@ -14,7 +14,8 @@ use crate::scalar::sealed::RealOps as _;
 /// as `x → -(p+1)` and stays below about 12 for `p ≤ 12`. Otherwise the
 /// recurrence runs up from `exp(x)`; with `|x| ≥ p + 1 > j` each step
 /// `φ_j - 1/j!` keeps most of `φ_j`. The error is a few ulps times the
-/// conditioning of `φ_j` at `x` (`tests/fixtures/phi`). A fixed radius 1
+/// conditioning of `φ_j` at `x` (graded against a double-double oracle in
+/// `dense::tests`). A fixed radius 1
 /// instead lost about `j!` ulps of `φ_j` just above it (#4), and a wider
 /// series radius loses digits to cancellation of terms near `e^{|x|}`.
 ///
