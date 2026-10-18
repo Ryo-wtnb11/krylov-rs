@@ -16,9 +16,10 @@ on Vec<f64>, symmetric tensors, or device and distributed storage.
 
 Unlike KrylovKit, which builds on Julia's generic vector interface, krylov
 separates the procedure from the storage: the iteration runs in a
-caller-owned workspace and never allocates vectors itself. Allocation and
-data placement (host, device, distributed) stay with the caller. Differences
-in detail are listed in [docs/](docs/krylovkit.md).
+caller-owned workspace and allocates no vectors inside the iteration;
+per-call scratch and results are documented on each entry point. Allocation
+and data placement (host, device, distributed) stay with the caller.
+Differences in detail are listed in [docs/](docs/krylovkit.md).
 
 ## Status and installation
 
