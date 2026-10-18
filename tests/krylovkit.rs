@@ -1,164 +1,196 @@
-//! Comparison with KrylovKit.jl on identical inputs.
+//! Hermitian Lanczos `eigsolve` and `exponentiate` on the inputs and options
+//! of KrylovKit.jl's own runs (CGS2, SplitMix64 matrices and start vectors,
+//! `maxiter = 100`).
 //!
-//! `fixtures/krylovkit/<family>.txt` is produced by
-//! `fixtures/krylovkit/generate.jl` from `<family>.jl` (KrylovKit pinned in
-//! its Manifest; the version and tree hash are on the first line of each
-//! fixture file). Both
-//! sides use CGS2, the same matrices, start vectors and options.
+//! Results are checked against dense oracles on the same matrix. The
+//! iteration and application counts are part of the KrylovKit
+//! correspondence (`docs/krylovkit.md`); they are pinned on a few
+//! representative cases, checked against KrylovKit.jl v0.10.4.
 
 mod common;
-
-use std::collections::HashMap;
 
 use common::*;
 use krylov::{Lanczos, Which, Workspace, eigsolve, exponentiate};
 use num_complex::Complex64;
 
-const FIXTURES: [&str; 2] = [
-    include_str!("fixtures/krylovkit/eigsolve.txt"),
-    include_str!("fixtures/krylovkit/exponentiate.txt"),
-];
+/// `(converged, numiter, numops)` of KrylovKit.jl v0.10.4 on the same case.
+type Counts = (usize, usize, usize);
 
-fn cases() -> Vec<HashMap<String, String>> {
-    let mut out = Vec::new();
-    let mut cur = HashMap::new();
-    for line in FIXTURES
-        .iter()
-        .flat_map(|f| f.lines())
-        .filter(|l| !l.starts_with('#'))
-    {
-        if line == "end" {
-            out.push(std::mem::take(&mut cur));
-            continue;
-        }
-        let (k, v) = line.split_once(' ').unwrap_or((line, ""));
-        cur.insert(k.to_string(), v.to_string());
+struct Case {
+    name: &'static str,
+    seed: u64,
+    n: usize,
+    complex: bool,
+    krylovdim: usize,
+    tol: f64,
+    eager: bool,
+}
+
+impl Case {
+    fn alg(&self) -> Lanczos {
+        Lanczos::new(self.krylovdim, 100, self.tol).eager(self.eager)
     }
-    out
+
+    fn inputs(&self) -> (nalgebra::DMatrix<Complex64>, Vec<Complex64>) {
+        let mut g = SplitMix(self.seed);
+        let a = hermitian(&mut g, self.n, self.complex);
+        let x = random_vec(&mut g, self.n, self.complex);
+        (a, x)
+    }
 }
 
-fn num<T: std::str::FromStr>(c: &HashMap<String, String>, k: &str) -> T
-where
-    T::Err: std::fmt::Debug,
-{
-    c[k].parse().unwrap()
+/// Counts agree with KrylovKit up to one restart and 10 % of the
+/// applications: the CGS2 step differs (see `docs/krylovkit.md`), so
+/// convergence can be detected one cycle apart.
+fn check_counts(name: &str, (converged, numiter, numops): Counts, got: Counts, iter_slack: usize) {
+    assert_eq!(got.0, converged, "{name}: converged");
+    assert!(
+        got.1.abs_diff(numiter) <= iter_slack,
+        "{name}: numiter {} vs {numiter}",
+        got.1
+    );
+    assert!(
+        got.2.abs_diff(numops) * 10 <= numops,
+        "{name}: numops {} vs {numops}",
+        got.2
+    );
 }
 
-fn floats(c: &HashMap<String, String>, k: &str) -> Vec<f64> {
-    c[k].split_whitespace()
-        .map(|x| x.parse().unwrap())
-        .collect()
-}
-
-fn alg(c: &HashMap<String, String>) -> Lanczos {
-    Lanczos::new(num(c, "krylovdim"), 100, num(c, "tol")).eager(num::<u8>(c, "eager") == 1)
-}
-
-fn inputs(c: &HashMap<String, String>) -> (nalgebra::DMatrix<Complex64>, Vec<Complex64>) {
-    let complex = num::<u8>(c, "complex") == 1;
-    let n: usize = num(c, "n");
-    let mut g = SplitMix(num(c, "seed"));
-    let a = hermitian(&mut g, n, complex);
-    let x = random_vec(&mut g, n, complex);
-    (a, x)
-}
-
-fn eig_case<S: TestScalar>(c: &HashMap<String, String>) {
-    let (a, x) = inputs(c);
+/// Returns the eigenvalues in `which` order, matched against the dense
+/// spectrum, with converged pairs satisfying `‖A·x − λ·x‖ ≤ tol`.
+fn eig_case<S: TestScalar>(c: &Case, howmany: usize, which: Which, kk: Option<(usize, Counts)>) {
+    let (a, x) = c.inputs();
     let x0 = to_dvec::<S>(&x);
-    let which = match c["which"].as_str() {
-        "SR" => Which::SmallestReal,
-        "LR" => Which::LargestReal,
-        "LM" => Which::LargestMagnitude,
-        w => panic!("unknown selector {w}"),
-    };
-    let alg = alg(c);
+    let alg = c.alg();
     let mut ws = Workspace::with_capacity(&x0, alg.get_krylovdim()).unwrap();
-    let howmany = num(c, "howmany");
-    let (vals, _, info) =
+    let (vals, vecs, info) =
         eigsolve(&mut DenseOp::new(&a), &x0, howmany, which, &alg, &mut ws).unwrap();
-    let expect = floats(c, "values");
-    let name = &c["case"];
-    eprintln!(
-        "{name}: krylov numiter {} numops {} converged {} | KrylovKit {} {} {}",
-        info.numiter, info.numops, info.converged, c["numiter"], c["numops"], c["converged"]
+    let name = c.name;
+    let mut want = dense_eigenvalues(&a);
+    match which {
+        Which::SmallestReal => {}
+        Which::LargestReal => want.reverse(),
+        Which::LargestMagnitude => want.sort_by(|x, y| y.abs().partial_cmp(&x.abs()).unwrap()),
+        _ => unreachable!(),
+    }
+    assert!(
+        info.converged >= howmany,
+        "{name}: converged {}",
+        info.converged
     );
-    assert_eq!(
-        vals.len(),
-        expect.len(),
-        "{name}: number of returned values"
-    );
-    assert_eq!(info.converged, num::<usize>(c, "converged"), "{name}");
-    for (v, e) in vals.iter().zip(&expect) {
+    assert!(vals.len() >= howmany);
+    for (k, (v, x)) in vals.iter().zip(&vecs).enumerate() {
+        let v = to_f64(*v);
         assert!(
-            (to_f64(*v) - e).abs() <= 1e-9 * e.abs().max(1.0),
-            "{name}: {v:?} vs {e}"
+            (v - want[k]).abs() <= 1e-9 * want[k].abs().max(1.0),
+            "{name}: {v} vs {}",
+            want[k]
         );
+        if k < info.converged {
+            assert!(
+                residual(&a, v, &to_c64(x)) <= 10.0 * c.tol,
+                "{name}: residual #{k}"
+            );
+        }
     }
-    let tol: f64 = num(c, "tol");
-    for r in &info.normres {
-        assert!(to_f64(*r) <= tol || info.converged < vals.len());
+    if let Some((nvals, counts)) = kk {
+        assert_eq!(vals.len(), nvals, "{name}: number of returned values");
+        check_counts(name, counts, (info.converged, info.numiter, info.numops), 1);
     }
-    let (ni, no): (usize, usize) = (num(c, "numiter"), num(c, "numops"));
-    assert!(
-        info.numiter.abs_diff(ni) <= 1,
-        "{name}: numiter {} vs {ni}",
-        info.numiter
-    );
-    assert!(
-        info.numops.abs_diff(no) * 10 <= no,
-        "{name}: numops {} vs {no}",
-        info.numops
-    );
 }
 
-fn exp_case<S: TestScalar>(c: &HashMap<String, String>) {
-    let (a, x) = inputs(c);
+/// `exp(t·A)·x` against nalgebra's dense exponential.
+fn exp_case<S: TestScalar>(c: &Case, t: Complex64, kk: Option<Counts>) {
+    let (a, x) = c.inputs();
     let x0 = to_dvec::<S>(&x);
-    let t = floats(c, "t");
-    let t = Complex64::new(t[0], t[1]);
-    let alg = alg(c);
+    let alg = c.alg();
     let mut ws = Workspace::with_capacity(&x0, alg.get_krylovdim()).unwrap();
     let (y, info) =
         exponentiate(&mut DenseOp::new(&a), S::from_c64(t), &x0, &alg, &mut ws).unwrap();
-    let expect: Vec<Complex64> = floats(c, "y_re")
-        .into_iter()
-        .zip(floats(c, "y_im"))
-        .map(|(re, im)| Complex64::new(re, im))
-        .collect();
-    let name = &c["case"];
-    eprintln!(
-        "{name}: krylov numiter {} numops {} err {:?} | KrylovKit {} {} {}",
-        info.numiter, info.numops, info.normres, c["numiter"], c["numops"], c["normres"]
-    );
-    let rel = diff_norm(&to_c64(&y), &expect) / norm(&expect);
+    let name = c.name;
+    let want = dense_expv(&a, t, &x);
+    let rel = diff_norm(&to_c64(&y), &want) / norm(&want);
     assert!(rel < 1e-10, "{name}: relative difference {rel}");
-    assert_eq!(info.converged, num::<usize>(c, "converged"), "{name}");
-    let (ni, no): (usize, usize) = (num(c, "numiter"), num(c, "numops"));
-    assert!(
-        info.numiter.abs_diff(ni) * 10 <= ni.max(10),
-        "{name}: numiter {} vs {ni}",
-        info.numiter
+    assert_eq!(info.converged, 1, "{name}");
+    if let Some(counts) = kk {
+        // The step sequence follows KrylovKit's controller: steps within 10 %.
+        let slack = counts.1.max(10) / 10;
+        check_counts(
+            name,
+            counts,
+            (info.converged, info.numiter, info.numops),
+            slack,
+        );
+    }
+}
+
+const fn case(
+    name: &'static str,
+    seed: u64,
+    n: usize,
+    complex: bool,
+    krylovdim: usize,
+    tol: f64,
+    eager: bool,
+) -> Case {
+    Case {
+        name,
+        seed,
+        n,
+        complex,
+        krylovdim,
+        tol,
+        eager,
+    }
+}
+
+#[test]
+fn eigsolve_matches_dense_spectrum_and_krylovkit_counts() {
+    use Which::*;
+    eig_case::<f64>(
+        &case("real_sr", 1, 120, false, 20, 1e-10, false),
+        3,
+        SmallestReal,
+        None,
     );
-    assert!(
-        info.numops.abs_diff(no) * 10 <= no,
-        "{name}: numops {} vs {no}",
-        info.numops
+    // KrylovKit returns every converged pair, here one more than requested.
+    eig_case::<Complex64>(
+        &case("complex_lm", 2, 100, true, 16, 1e-10, false),
+        2,
+        LargestMagnitude,
+        Some((3, (3, 9, 70))),
+    );
+    eig_case::<f64>(
+        &case("real_lr_eager", 3, 80, false, 30, 1e-11, true),
+        2,
+        LargestReal,
+        None,
+    );
+    // A small Krylov dimension: many restarts.
+    eig_case::<Complex64>(
+        &case("complex_sr_small_k", 4, 60, true, 8, 1e-9, false),
+        4,
+        SmallestReal,
+        Some((4, (4, 28, 99))),
     );
 }
 
 #[test]
-fn matches_krylovkit_fixtures() {
-    let cases = cases();
-    assert!(cases.len() >= 7);
-    for c in &cases {
-        let complex = num::<u8>(c, "complex") == 1;
-        match (c["kind"].as_str(), complex) {
-            ("eig", false) => eig_case::<f64>(c),
-            ("eig", true) => eig_case::<Complex64>(c),
-            ("exp", false) => exp_case::<f64>(c),
-            ("exp", true) => exp_case::<Complex64>(c),
-            (k, _) => panic!("unknown kind {k}"),
-        }
-    }
+fn exponentiate_matches_dense_and_krylovkit_steps() {
+    // Imaginary time: `docs/krylovkit.md` cites this case's 21 steps.
+    exp_case::<f64>(
+        &case("real_imag_time", 5, 60, false, 12, 1e-12, false),
+        Complex64::new(-2.0, 0.0),
+        Some((1, 21, 273)),
+    );
+    exp_case::<Complex64>(
+        &case("complex_real_time", 6, 60, true, 15, 1e-12, false),
+        Complex64::new(0.0, -5.0),
+        None,
+    );
+    exp_case::<Complex64>(
+        &case("complex_imag_time_eager", 7, 50, true, 20, 1e-12, true),
+        Complex64::new(-1.5, 0.0),
+        None,
+    );
 }

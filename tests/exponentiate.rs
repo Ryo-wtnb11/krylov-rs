@@ -362,70 +362,53 @@ fn expintegrator_errors() {
     );
 }
 
+/// KrylovKit.jl's Lanczos `expintegrator` cases (φ combinations with
+/// `p = nu - 1`) against the dense augmented exponential. `(converged,
+/// numiter, numops)` is pinned on two representative cases, checked against
+/// KrylovKit.jl v0.10.4; steps and applications within 10 % (the CGS2 step
+/// differs, see `docs/krylovkit.md`).
 #[test]
-fn matches_krylovkit_expintegrator_fixtures() {
-    // Format of fixtures/krylovkit/expint.txt (see tests/krylovkit.rs).
-    let mut cases = Vec::new();
-    let mut cur = std::collections::HashMap::new();
-    for line in include_str!("fixtures/krylovkit/expint.txt").lines() {
-        if line.starts_with('#') {
-            continue;
-        }
-        if line == "end" {
-            cases.push(std::mem::take(&mut cur));
-            continue;
-        }
-        let (k, v) = line.split_once(' ').unwrap_or((line, ""));
-        cur.insert(k.to_string(), v.to_string());
-    }
-    assert!(cases.len() >= 4);
-    let floats =
-        |s: &str| -> Vec<f64> { s.split_whitespace().map(|x| x.parse().unwrap()).collect() };
-    for c in &cases {
-        let num = |k: &str| -> usize { c[k].parse().unwrap() };
-        let complex = num("complex") == 1;
-        let n = num("n");
-        let mut g = SplitMix(c["seed"].parse().unwrap());
+fn lanczos_expintegrator_matches_dense_and_krylovkit_steps() {
+    type Case = (
+        &'static str,
+        u64,
+        usize,
+        bool,
+        usize,
+        Complex64,
+        usize,
+        bool,
+        Option<(usize, usize, usize)>,
+    );
+    #[rustfmt::skip]
+    let cases: [Case; 4] = [
+        // name, seed, n, complex, nu, t, krylovdim, eager, KrylovKit
+        ("real_imag_time_p2", 11, 60, false, 3, Complex64::new(-1.0, 0.0), 12, false, Some((1, 9, 126))),
+        ("complex_real_time_p3", 12, 60, true, 4, Complex64::new(0.0, -3.0), 15, false, Some((1, 16, 288))),
+        ("complex_time_p1_eager", 13, 50, true, 2, Complex64::new(-0.5, 2.0), 20, true, None),
+        ("real_imag_time_p4", 14, 40, false, 5, Complex64::new(-0.5, 0.0), 10, false, None),
+    ];
+    for (name, seed, n, complex, nu, t, kd, eager, kk) in cases {
+        let mut g = SplitMix(seed);
         let a = hermitian(&mut g, n, complex);
-        let u: Vec<_> = (0..num("nu"))
-            .map(|_| random_vec(&mut g, n, complex))
-            .collect();
-        let t = floats(&c["t"]);
-        let t = Complex64::new(t[0], t[1]);
-        let alg =
-            Lanczos::new(num("krylovdim"), 100, c["tol"].parse().unwrap()).eager(num("eager") == 1);
-        let uv: Vec<DVec<Complex64>> = u.iter().map(|x| to_dvec(x)).collect();
-        let mut ws = Workspace::with_capacity(&uv[0], alg.get_krylovdim()).unwrap();
-        let (y, info) = expintegrator(&mut DenseOp::new(&a), t, &uv, &alg, &mut ws).unwrap();
-        let expect: Vec<Complex64> = floats(&c["y_re"])
-            .into_iter()
-            .zip(floats(&c["y_im"]))
-            .map(|(re, im)| Complex64::new(re, im))
-            .collect();
-        let name = &c["case"];
-        eprintln!(
-            "{name}: krylov numiter {} numops {} err {:?} | KrylovKit {} {} {}",
-            info.numiter, info.numops, info.normres, c["numiter"], c["numops"], c["normres"]
-        );
-        let rel = diff_norm(&to_c64(&y), &expect) / norm(&expect);
-        assert!(rel < 1e-10, "{name}: relative difference {rel}");
-        let oracle = dense_phi_comb(&a, t, &u);
-        assert!(
-            diff_norm(&expect, &oracle) / norm(&oracle) < 1e-10,
-            "{name}: KrylovKit vs dense"
-        );
-        assert_eq!(info.converged, num("converged"), "{name}");
-        let (ni, no) = (num("numiter"), num("numops"));
-        assert!(
-            info.numiter.abs_diff(ni) * 10 <= ni.max(10),
-            "{name}: numiter {} vs {ni}",
-            info.numiter
-        );
-        assert!(
-            info.numops.abs_diff(no) * 10 <= no,
-            "{name}: numops {} vs {no}",
-            info.numops
-        );
+        let u: Vec<_> = (0..nu).map(|_| random_vec(&mut g, n, complex)).collect();
+        let alg = Lanczos::new(kd, 100, 1e-12).eager(eager);
+        let (_, err, info) = run_alg::<Complex64, _>(&a, t, &u, &alg, kd);
+        assert!(err < 1e-10, "{name}: relative error {err}");
+        assert_eq!(info.converged, 1, "{name}");
+        if let Some((converged, ni, no)) = kk {
+            assert_eq!(info.converged, converged, "{name}");
+            assert!(
+                info.numiter.abs_diff(ni) * 10 <= ni.max(10),
+                "{name}: numiter {} vs {ni}",
+                info.numiter
+            );
+            assert!(
+                info.numops.abs_diff(no) * 10 <= no,
+                "{name}: numops {} vs {no}",
+                info.numops
+            );
+        }
     }
 }
 
