@@ -33,6 +33,12 @@ impl Arnoldi {
     /// Settings with the given problem-dependent parameters; the variant
     /// options start at their documented defaults. The values are validated
     /// when a solver is called.
+    ///
+    /// Differs from KrylovKit: there these parameters have keyword defaults
+    /// (`krylovdim = 30`, `maxiter = 100`, `tol = 1e-12`); here they are
+    /// required because suitable values depend on the problem and the
+    /// floating-point precision (see
+    /// [docs/krylovkit.md](https://github.com/Ryo-wtnb11/krylov-rs/blob/main/docs/krylovkit.md)).
     pub fn new(krylovdim: usize, maxiter: usize, tol: f64) -> Self {
         Self {
             krylovdim,
