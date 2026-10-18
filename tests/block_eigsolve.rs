@@ -429,7 +429,7 @@ fn matches_krylovkit_block_lanczos_fixtures() {
 
 /// Single precision at a tolerance below its reach restarts until the
 /// projected matrices carry entries near 1e-24 (#20). The Householder
-/// reflectors of the restart used to turn them into NaN.
+/// reflectors of the restart must keep them finite.
 #[test]
 fn tight_tolerance_restarts_stay_finite_in_single_precision() {
     for (seed, kd, tol, maxiter, which) in [
