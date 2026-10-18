@@ -386,7 +386,7 @@ where
 }
 
 /// Lanczos: `φ` functions of the tridiagonal `T` through its
-/// eigendecomposition `T = Z·Λ·Zᵀ` (stage 1).
+/// eigendecomposition `T = Z·Λ·Zᵀ`.
 struct LanczosProc<S: Scalar> {
     fact: Fact<S>,
     lam: Vec<S::Real>,

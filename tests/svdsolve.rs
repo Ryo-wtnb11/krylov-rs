@@ -232,7 +232,7 @@ fn tall_map_smallest_values_keep_an_unconverged_zero() {
     // (‖A·r‖ >= σ_min for every unit r), so it stays first and is honestly
     // reported unconverged. (On this input with maxiter 100, KrylovKit 0.10.4
     // marks it converged although ‖A·r - σ·l‖ ≈ 2.7; at this test's maxiter 5
-    // it has not yet done so.)
+    // it does not.)
     let mut g = SplitMix(23);
     let a = rectangular(&mut g, 60, 30, false);
     let x0 = random_vec(&mut g, 60, false);

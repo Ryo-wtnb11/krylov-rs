@@ -174,7 +174,7 @@ mod tests {
             vec![c(2.0, 0.0), c(0.0, 0.0)],
         ];
         // Largest component just above √(min positive), so the smaller
-        // ones' squares are subnormal unless x is scaled (review of #20).
+        // ones' squares are subnormal unless x is scaled (#20).
         for &(a, b) in band {
             v.push(vec![c(a, 0.0), c(b, 0.0)]);
             v.push(vec![c(a, 0.0), c(b, -b), c(-b, 0.0)]);

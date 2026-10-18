@@ -13,9 +13,9 @@
   where KrylovKit has its own Julia code (Givens, φ functions, Householder
   restart restoration). Dev-dependencies may include one dense reference
   library for test oracles. Anything else needs explicit approval.
-- **Design authority.** The fixed design document (krylov design v2,
-  2026-10-17) defines the traits, error type, result semantics and the staged
-  scope. Changing a trait or a result semantic is a design decision, not an
+- **Design authority.** The fixed design document (krylov design,
+  2026-10-17) defines the traits, error type, result semantics and the
+  supported scope. Changing a trait or a result semantic is a design decision, not an
   implementation detail; extend traits only through defaulted methods, new
   traits or defaulted type parameters.
 - **Reference.** KrylovKit.jl (pinned revision recorded in the fixtures) is

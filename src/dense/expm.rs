@@ -8,7 +8,7 @@
 //! tiny entry of the result, so this module follows that sequence instead of
 //! another (equally valid) `exp` algorithm. Balancing and the solve are the
 //! LAPACK routines Julia calls (see `dense/lapack.rs`); the driver around
-//! them is ported here.
+//! them is implemented here.
 
 use num_traits::{Float, One, Zero};
 

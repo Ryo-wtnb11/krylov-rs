@@ -114,7 +114,7 @@ mod tests {
     }
 
     /// Projected entries near the f32 range limits (#20): the reflector norms
-    /// written into the tridiagonal form used to be `√Σxᵢ²`, which is ∞ or 0
+    /// written into the tridiagonal form must not be `√Σxᵢ²`, which is ∞ or 0
     /// there. The restoration commutes with scaling, so the f32 result over
     /// `scale` must match the f64 result of the unscaled input.
     #[test]
