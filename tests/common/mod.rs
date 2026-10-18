@@ -110,8 +110,8 @@ impl<S: TestScalar> Vector for DVec<S> {
     }
 }
 
-/// SplitMix64 mapped exactly to `k·2⁻⁵² - 1 ∈ [-1, 1)`; identical to the
-/// generator in `fixtures/krylovkit/generate.jl`.
+/// SplitMix64 mapped exactly to `k·2⁻⁵² - 1 ∈ [-1, 1)`, so the inputs of
+/// the KrylovKit comparisons can be rebuilt bit for bit in Julia.
 pub struct SplitMix(pub u64);
 impl SplitMix {
     pub fn next_u64(&mut self) -> u64 {
@@ -132,7 +132,7 @@ impl SplitMix {
 }
 
 /// Random Hermitian matrix (real symmetric when `!complex`), filled in the
-/// same order as `generate.jl`.
+/// upper triangle column by column.
 pub fn hermitian(g: &mut SplitMix, n: usize, complex: bool) -> DMatrix<Complex64> {
     let mut a = DMatrix::zeros(n, n);
     for j in 0..n {
@@ -151,7 +151,9 @@ pub fn hermitian(g: &mut SplitMix, n: usize, complex: bool) -> DMatrix<Complex64
     a
 }
 
-/// KrylovKit's `outliers` (see `fixtures/krylovkit/arnoldi.jl`).
+/// `G/√n` (spectrum roughly in the unit disk) plus diagonal outliers: real
+/// 3, -2.5, 2 and a 2×2 rotation block 1.5 ± 1.2i; complex 3i, -2.5, 2 + i
+/// and -1.5 - 1.5i.
 pub fn outliers(g: &mut SplitMix, n: usize, complex: bool) -> DMatrix<Complex64> {
     let mut a = DMatrix::zeros(n, n);
     let s = (n as f64).sqrt();

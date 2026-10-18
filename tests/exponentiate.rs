@@ -1,5 +1,5 @@
 //! `exponentiate` and `expintegrator` (Lanczos and Arnoldi) against
-//! nalgebra's dense matrix exponential and KrylovKit fixtures.
+//! nalgebra's dense matrix exponential and KrylovKit counts.
 
 mod common;
 
