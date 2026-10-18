@@ -12,8 +12,8 @@ use crate::traits::{Basis, LinearMap, Vector, Workspace};
 
 /// Conjugate gradients for Hermitian positive definite `a₀ + a₁·A`.
 ///
-/// Mirrors KrylovKit's `CG`: `maxiter` (default 100) bounds the number of
-/// iterations, and `tol` (default `1e-12`) is an absolute bound on the
+/// Mirrors KrylovKit's `CG`: `maxiter` bounds the number of
+/// iterations, and `tol` is an absolute bound on the
 /// residual norm `‖b - a₀x - a₁A·x‖`, met when strictly smaller.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Cg {
@@ -21,29 +21,11 @@ pub struct Cg {
     tol: f64,
 }
 
-impl Default for Cg {
-    fn default() -> Self {
-        Self {
-            maxiter: 100,
-            tol: 1e-12,
-        }
-    }
-}
-
 impl Cg {
-    /// Default settings.
-    pub fn new() -> Self {
-        Self::default()
-    }
-    /// Sets the maximal number of iterations.
-    pub fn maxiter(mut self, maxiter: usize) -> Self {
-        self.maxiter = maxiter;
-        self
-    }
-    /// Sets the absolute residual tolerance.
-    pub fn tol(mut self, tol: f64) -> Self {
-        self.tol = tol;
-        self
+    /// Settings with the given parameters, validated when [`linsolve`] is
+    /// called.
+    pub fn new(maxiter: usize, tol: f64) -> Self {
+        Self { maxiter, tol }
     }
     /// Maximal number of iterations.
     pub fn get_maxiter(&self) -> usize {
@@ -57,9 +39,9 @@ impl Cg {
 
 /// Restarted GMRES for general `a₀ + a₁·A`.
 ///
-/// Mirrors KrylovKit's `GMRES`: `krylovdim` (default 30) is the restart
-/// length, `maxiter` (default 100) the number of restart cycles, `tol`
-/// (default `1e-12`) an absolute bound on the residual norm, met when
+/// Mirrors KrylovKit's `GMRES`: `krylovdim` is the restart
+/// length, `maxiter` the number of restart cycles, `tol`
+/// an absolute bound on the residual norm, met when
 /// strictly smaller, and `orth` (default [`Orth::Cgs2`]) the Arnoldi
 /// orthogonalizer.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -70,36 +52,17 @@ pub struct Gmres {
     orth: Orth,
 }
 
-impl Default for Gmres {
-    fn default() -> Self {
+impl Gmres {
+    /// Settings with the given problem-dependent parameters; the variant
+    /// options start at their documented defaults. The values are validated
+    /// when a solver is called.
+    pub fn new(krylovdim: usize, maxiter: usize, tol: f64) -> Self {
         Self {
-            krylovdim: 30,
-            maxiter: 100,
-            tol: 1e-12,
+            krylovdim,
+            maxiter,
+            tol,
             orth: Orth::Cgs2,
         }
-    }
-}
-
-impl Gmres {
-    /// Default settings.
-    pub fn new() -> Self {
-        Self::default()
-    }
-    /// Sets the restart length (maximal Krylov dimension).
-    pub fn krylovdim(mut self, krylovdim: usize) -> Self {
-        self.krylovdim = krylovdim;
-        self
-    }
-    /// Sets the maximal number of restart cycles.
-    pub fn maxiter(mut self, maxiter: usize) -> Self {
-        self.maxiter = maxiter;
-        self
-    }
-    /// Sets the absolute residual tolerance.
-    pub fn tol(mut self, tol: f64) -> Self {
-        self.tol = tol;
-        self
     }
     /// Sets the orthogonalizer.
     pub fn orth(mut self, orth: Orth) -> Self {

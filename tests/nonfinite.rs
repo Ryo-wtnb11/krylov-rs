@@ -68,30 +68,30 @@ fn every_solver_reports_non_finite_map_output_at_once() {
     let ws = || Workspace::with_capacity(&x, 12).unwrap();
     let sr = Which::SmallestReal;
     check("eigsolve", |op| {
-        eigsolve(op, &x, 2, sr, &Lanczos::new().krylovdim(10), &mut ws()).err()
+        eigsolve(op, &x, 2, sr, &Lanczos::new(10, 100, 1e-12), &mut ws()).err()
     });
     check("block_eigsolve", |op| {
         let x0 = [DVec(x.0.clone()), DVec(x2.0.clone())];
-        let alg = BlockLanczos::new().krylovdim(10);
+        let alg = BlockLanczos::new(10, 100, 1e-12, 1e-12);
         block_eigsolve(op, &x0, 2, sr, &alg, &mut ws()).err()
     });
     check("schursolve", |op| {
-        schursolve(op, &x, 2, sr, &Arnoldi::new().krylovdim(10), &mut ws())
+        schursolve(op, &x, 2, sr, &Arnoldi::new(10, 100, 1e-12), &mut ws())
             .map(|_| ())
             .err()
     });
     check("cg", |op| {
-        linsolve(op, &x, &x2, &Cg::new(), 0.0, 1.0, &mut ws()).err()
+        linsolve(op, &x, &x2, &Cg::new(100, 1e-12), 0.0, 1.0, &mut ws()).err()
     });
     check("gmres", |op| {
-        let alg = Gmres::new().krylovdim(10);
+        let alg = Gmres::new(10, 100, 1e-12);
         linsolve(op, &x, &x2, &alg, 0.0, 1.0, &mut ws()).err()
     });
     check("exponentiate lanczos", |op| {
-        exponentiate(op, -1.0, &x, &Lanczos::new().krylovdim(10), &mut ws()).err()
+        exponentiate(op, -1.0, &x, &Lanczos::new(10, 100, 1e-12), &mut ws()).err()
     });
     check("exponentiate arnoldi", |op| {
-        exponentiate(op, -1.0, &x, &Arnoldi::new().krylovdim(10), &mut ws()).err()
+        exponentiate(op, -1.0, &x, &Arnoldi::new(10, 100, 1e-12), &mut ws()).err()
     });
 }
 
@@ -102,7 +102,16 @@ fn non_finite_linsolve_inputs_stay_start_vector_errors() {
     let bad = DVec(vec![1.0, f64::NAN, 1.0, 1.0, 1.0]);
     let mut ws = Workspace::with_capacity(&ok, 5).unwrap();
     for (b, x0) in [(&bad, &ok), (&ok, &bad)] {
-        let e = linsolve(&mut DenseOp::new(&a), b, x0, &Cg::new(), 0.0, 1.0, &mut ws).err();
+        let e = linsolve(
+            &mut DenseOp::new(&a),
+            b,
+            x0,
+            &Cg::new(100, 1e-12),
+            0.0,
+            1.0,
+            &mut ws,
+        )
+        .err();
         assert_eq!(e, Some(Error::NonFiniteStartVector));
     }
 }
@@ -118,7 +127,7 @@ fn overflowing_invariant_subspace_step_is_a_typed_error() {
         &mut DenseOp::<f64>::new(&a),
         1.0,
         &x,
-        &Lanczos::new(),
+        &Lanczos::new(30, 100, 1e-12),
         &mut ws,
     )
     .err();
@@ -154,7 +163,7 @@ fn large_finite_values_with_a_naive_norm_are_accepted() {
             &x,
             1,
             Which::LargestReal,
-            &Lanczos::new().krylovdim(6).tol(scale * 1e-5),
+            &Lanczos::new(6, 100, scale * 1e-5),
             &mut ws,
         )
         .unwrap();
@@ -165,7 +174,7 @@ fn large_finite_values_with_a_naive_norm_are_accepted() {
             &mut op,
             &x,
             &Naive(vec![S::zero(); n]),
-            &Cg::new().tol(0.0).maxiter(6),
+            &Cg::new(6, 0.0),
             S::zero(),
             S::one(),
             &mut ws,

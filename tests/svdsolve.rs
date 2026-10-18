@@ -152,7 +152,7 @@ fn largest_singular_values_match_dense() {
         let mut g = SplitMix(301 + m as u64);
         let a = rectangular(&mut g, m, n, complex);
         let x0 = random_vec(&mut g, m, complex);
-        let alg = Gkl::new().krylovdim(20).tol(1e-10);
+        let alg = Gkl::new(20, 100, 1e-10);
         let out = if complex {
             run::<Complex64>(&a, &x0, 3, Which::LargestReal, &alg)
         } else {
@@ -186,7 +186,7 @@ fn smallest_singular_values_including_zero() {
         ));
         let a = &u * d * v.adjoint();
         let x0 = random_vec(&mut g, n, complex);
-        let alg = Gkl::new().krylovdim(30).tol(1e-10).maxiter(300);
+        let alg = Gkl::new(30, 300, 1e-10);
         let out = if complex {
             run::<Complex64>(&a, &x0, 3, Which::SmallestReal, &alg)
         } else {
@@ -209,7 +209,7 @@ fn tall_and_wide_smallest_values() {
         let a = rectangular(&mut g, m, n, complex);
         let a = if m > n { a.adjoint() } else { a };
         let x0 = random_vec(&mut g, a.nrows(), complex);
-        let alg = Gkl::new().krylovdim(24).tol(1e-9).maxiter(300);
+        let alg = Gkl::new(24, 300, 1e-9);
         let out = if complex {
             run::<Complex64>(&a, &x0, 2, Which::SmallestReal, &alg)
         } else {
@@ -236,7 +236,7 @@ fn tall_map_smallest_values_keep_an_unconverged_zero() {
     let mut g = SplitMix(23);
     let a = rectangular(&mut g, 60, 30, false);
     let x0 = random_vec(&mut g, 60, false);
-    let alg = Gkl::new().krylovdim(20).tol(1e-9).maxiter(5);
+    let alg = Gkl::new(20, 5, 1e-9);
     let out = run::<f64>(&a, &x0, 2, Which::SmallestReal, &alg);
     assert_eq!(out.converged, 0);
     assert!(out.values[0] < 1e-12);
@@ -249,7 +249,7 @@ fn single_precision() {
     let mut g = SplitMix(331);
     let a = rectangular(&mut g, 40, 30, true);
     let x0 = random_vec(&mut g, 40, true);
-    let alg = Gkl::new().krylovdim(16).tol(1e-4).orth(Orth::Mgs2);
+    let alg = Gkl::new(16, 100, 1e-4).orth(Orth::Mgs2);
     let out = run::<Complex32>(&a, &x0, 2, Which::LargestReal, &alg);
     let exact = dense_singular_values(&a);
     assert!(out.converged >= 2);
@@ -275,7 +275,7 @@ fn exhausted_spaces_return_what_they_have() {
     a[(0, 0)] = Complex64::new(3.0, 0.0);
     a[(1, 1)] = Complex64::new(2.0, 0.0);
     let x0 = vec![Complex64::new(1.0, 0.0); n];
-    let alg = Gkl::new().krylovdim(6).tol(1e-12);
+    let alg = Gkl::new(6, 100, 1e-12);
     let out = run::<f64>(&a, &x0, 5, Which::LargestReal, &alg);
     assert!(out.values.len() < 5);
     assert!(out.converged >= 2);
@@ -294,7 +294,7 @@ fn warm_call_allocates_only_the_returned_triplets() {
     let a = rectangular(&mut g, 30, 20, false);
     let x0 = to_dvec::<f64>(&random_vec(&mut g, 30, false));
     let domain = to_dvec::<f64>(&vec![Complex64::default(); 20]);
-    let alg = Gkl::new().krylovdim(8).tol(1e-10);
+    let alg = Gkl::new(8, 100, 1e-10);
     let mut ws_u = Workspace::with_capacity(&x0, 8).unwrap();
     let mut ws_v = Workspace::with_capacity(&domain, 8).unwrap();
     let mut op = RectOp::<f64>::new(&a);
@@ -321,7 +321,7 @@ fn typed_errors() {
     let domain = to_dvec::<Complex64>(&[Complex64::default(); 9]);
     let mut ws_u = Workspace::with_capacity(&x0, 6).unwrap();
     let mut ws_v = Workspace::with_capacity(&domain, 6).unwrap();
-    let alg = Gkl::new().krylovdim(6);
+    let alg = Gkl::new(6, 100, 1e-12);
     let mut op = RectOp::<Complex64>::new(&a);
     let mut call = |op: &mut RectOp<Complex64>, x: &DVec<Complex64>, h, w, alg: &Gkl| {
         svdsolve(op, x, h, w, alg, &mut ws_u, &mut ws_v).map(|_| ())
@@ -348,7 +348,7 @@ fn typed_errors() {
             &x0,
             1,
             Which::LargestReal,
-            &Gkl::new().krylovdim(7)
+            &Gkl::new(7, 100, 1e-12)
         ),
         Err(Error::InsufficientCapacity {
             needed: 7,
@@ -366,7 +366,7 @@ fn typed_errors() {
         call(&mut op, &nan, 1, Which::LargestReal, &alg),
         Err(Error::NonFiniteStartVector)
     );
-    let neg = call(&mut op, &x0, 1, Which::LargestReal, &alg.tol(-1.0));
+    let neg = call(&mut op, &x0, 1, Which::LargestReal, &Gkl::new(6, 100, -1.0));
     assert!(matches!(neg, Err(Error::InvalidArgument(_))));
     // krylovdim 1 cannot restart.
     let one = call(
@@ -374,7 +374,7 @@ fn typed_errors() {
         &x0,
         1,
         Which::LargestReal,
-        &Gkl::new().krylovdim(1),
+        &Gkl::new(1, 100, 1e-12),
     );
     assert!(matches!(one, Err(Error::InvalidArgument(_))));
     // A map that turns NaN after a few applications.
@@ -436,11 +436,7 @@ fn fixture_case<S: TestScalar>(c: &HashMap<String, String>) {
         "SR" => Which::SmallestReal,
         w => panic!("unknown selector {w}"),
     };
-    let alg = Gkl::new()
-        .krylovdim(num(c, "krylovdim"))
-        .tol(num(c, "tol"))
-        .eager(num::<u8>(c, "eager") == 1)
-        .maxiter(100);
+    let alg = Gkl::new(num(c, "krylovdim"), 100, num(c, "tol")).eager(num::<u8>(c, "eager") == 1);
     let out = run::<S>(&a, &x0, num(c, "howmany"), which, &alg);
     let name = &c["case"];
     eprintln!(

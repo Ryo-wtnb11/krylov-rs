@@ -241,8 +241,8 @@ fn run_exp<S: TestScalar, P: KrylovProcess>(
 /// and complex `t` (complex vectors, Arnoldi).
 fn both(g: &mut SplitMix, l: &DMatrix<Complex64>, terms: usize, tau: f64) -> [Run; 2] {
     let hermitian = l == &l.adjoint();
-    let lanczos = Lanczos::new().krylovdim(KD).tol(TOL);
-    let arnoldi = Arnoldi::new().krylovdim(KD).tol(TOL);
+    let lanczos = Lanczos::new(KD, 100, TOL);
+    let arnoldi = Arnoldi::new(KD, 100, TOL);
     let x0 = start(g, N, false, terms, 0.1);
     let one = Complex64::new(1.0, 0.0);
     let real = if hermitian {
@@ -326,8 +326,8 @@ fn phi_combination_with_truncated_vectors() {
     // augmented exponential.
     let n = 8;
     let id = DMatrix::<Complex64>::identity(n, n);
-    let lanczos = Lanczos::new().krylovdim(KD).tol(TOL);
-    let arnoldi = Arnoldi::new().krylovdim(KD).tol(TOL);
+    let lanczos = Lanczos::new(KD, 100, TOL);
+    let arnoldi = Arnoldi::new(KD, 100, TOL);
     for tau in [TOL / 10.0, TOL] {
         let mut g = SplitMix(84);
         for (adv, complex) in [(0.0, false), (0.05, false), (0.0, true), (0.05, true)] {

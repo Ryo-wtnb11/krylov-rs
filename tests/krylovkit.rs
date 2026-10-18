@@ -51,11 +51,7 @@ fn floats(c: &HashMap<String, String>, k: &str) -> Vec<f64> {
 }
 
 fn alg(c: &HashMap<String, String>) -> Lanczos {
-    Lanczos::new()
-        .krylovdim(num(c, "krylovdim"))
-        .tol(num(c, "tol"))
-        .eager(num::<u8>(c, "eager") == 1)
-        .maxiter(100)
+    Lanczos::new(num(c, "krylovdim"), 100, num(c, "tol")).eager(num::<u8>(c, "eager") == 1)
 }
 
 fn inputs(c: &HashMap<String, String>) -> (nalgebra::DMatrix<Complex64>, Vec<Complex64>) {

@@ -13,9 +13,9 @@ use crate::traits::{AdjointMap, Basis, Vector, Workspace};
 
 /// Golub–Kahan–Lanczos settings for [`svdsolve`].
 ///
-/// Mirrors KrylovKit's `GKL`: `krylovdim` (default 30, at least 2) is the
-/// maximal Krylov dimension, `maxiter` (default 100) the number of Krylov subspaces built
-/// (restarts + 1), `tol` (default `1e-12`) an absolute bound on the residual
+/// Mirrors KrylovKit's `GKL`: `krylovdim` (at least 2) is the
+/// maximal Krylov dimension, `maxiter` the number of Krylov subspaces built
+/// (restarts + 1), `tol` an absolute bound on the residual
 /// norms (met when strictly smaller), `eager` (default `false`) evaluates the
 /// projected problem after every expansion, and `orth` (default
 /// [`Orth::Cgs2`]) orthogonalizes each new vector twice against the full
@@ -29,37 +29,18 @@ pub struct Gkl {
     eager: bool,
 }
 
-impl Default for Gkl {
-    fn default() -> Self {
+impl Gkl {
+    /// Settings with the given problem-dependent parameters; the variant
+    /// options start at their documented defaults. The values are validated
+    /// when a solver is called.
+    pub fn new(krylovdim: usize, maxiter: usize, tol: f64) -> Self {
         Self {
-            krylovdim: 30,
-            maxiter: 100,
-            tol: 1e-12,
+            krylovdim,
+            maxiter,
+            tol,
             orth: Orth::Cgs2,
             eager: false,
         }
-    }
-}
-
-impl Gkl {
-    /// Default settings.
-    pub fn new() -> Self {
-        Self::default()
-    }
-    /// Sets the maximal Krylov dimension.
-    pub fn krylovdim(mut self, krylovdim: usize) -> Self {
-        self.krylovdim = krylovdim;
-        self
-    }
-    /// Sets the maximal number of Krylov subspaces built.
-    pub fn maxiter(mut self, maxiter: usize) -> Self {
-        self.maxiter = maxiter;
-        self
-    }
-    /// Sets the absolute residual tolerance.
-    pub fn tol(mut self, tol: f64) -> Self {
-        self.tol = tol;
-        self
     }
     /// Sets the orthogonalizer.
     pub fn orth(mut self, orth: Orth) -> Self {

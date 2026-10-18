@@ -74,7 +74,7 @@ fn degenerate_spectrum_finds_every_copy() {
         let a = with_spectrum(&mut g, &eigs, complex);
         let x0 = block(&mut g, 60, 3, complex);
         for orth in [Orth::Cgs2, Orth::Mgs2] {
-            let alg = BlockLanczos::new().krylovdim(30).tol(1e-10).orth(orth);
+            let alg = BlockLanczos::new(30, 100, 1e-10, 1e-12).orth(orth);
             let out = run::<Complex64>(&a, &x0, 5, Which::SmallestReal, alg);
             check_pairs(&a, &out, 1e-12);
             assert!(
@@ -107,7 +107,7 @@ fn matches_dense_spectrum_with_restarts() {
             m[..3].to_vec()
         }),
     ] {
-        let alg = BlockLanczos::new().krylovdim(14).tol(1e-10);
+        let alg = BlockLanczos::new(14, 100, 1e-10, 1e-12);
         let out = run::<Complex64>(&a, &x0, 3, which, alg);
         assert!(out.info.numiter > 1, "{which:?}: restarts expected");
         assert!(out.info.converged >= 3, "{which:?}");
@@ -119,7 +119,7 @@ fn matches_dense_spectrum_with_restarts() {
     let a = hermitian(&mut g, 80, false);
     let exact = dense_eigenvalues(&a);
     let x0 = block(&mut g, 80, 3, false);
-    let alg = BlockLanczos::new().krylovdim(18).tol(1e-10).eager(true);
+    let alg = BlockLanczos::new(18, 100, 1e-10, 1e-12).eager(true);
     let out = run::<f64>(&a, &x0, 2, Which::SmallestReal, alg);
     check_pairs(&a, &out, 1e-12);
     for (v, e) in out.vals.iter().zip(&exact) {
@@ -137,10 +137,10 @@ fn block_size_one_agrees_with_lanczos() {
         std::slice::from_ref(&x),
         3,
         Which::SmallestReal,
-        BlockLanczos::new().krylovdim(20).tol(1e-10),
+        BlockLanczos::new(20, 100, 1e-10, 1e-12),
     );
     let xv = to_dvec::<f64>(&x);
-    let alg = Lanczos::new().krylovdim(20).tol(1e-10);
+    let alg = Lanczos::new(20, 100, 1e-10);
     let mut ws = Workspace::with_capacity(&xv, 20).unwrap();
     let (vals, _, _) = eigsolve(
         &mut DenseOp::new(&a),
@@ -169,7 +169,7 @@ fn invariant_subspace_and_dropped_blocks() {
         &x0,
         4,
         Which::SmallestReal,
-        BlockLanczos::new().krylovdim(20),
+        BlockLanczos::new(20, 100, 1e-12, 1e-12),
     );
     check_pairs(&a, &out, 1e-12);
     assert_eq!(out.info.numiter, 1);
@@ -183,7 +183,7 @@ fn invariant_subspace_and_dropped_blocks() {
         &[x0[0].clone(), x1],
         2,
         Which::SmallestReal,
-        BlockLanczos::new().krylovdim(20),
+        BlockLanczos::new(20, 100, 1e-12, 1e-12),
     );
     check_pairs(&a, &out, 1e-12);
     assert_eq!(out.info.numops, 4); // block of one, Krylov space of four
@@ -192,7 +192,7 @@ fn invariant_subspace_and_dropped_blocks() {
     let exact = dense_eigenvalues(&b);
     let y = block(&mut g, 60, 2, true);
     let dup = y[0].iter().map(|z| z * Complex64::new(0.0, 3.0)).collect();
-    let alg = BlockLanczos::new().krylovdim(12).tol(1e-10);
+    let alg = BlockLanczos::new(12, 100, 1e-10, 1e-12);
     let out = run::<Complex64>(
         &b,
         &[y[0].clone(), dup, y[1].clone()],
@@ -213,7 +213,7 @@ fn invariant_subspace_and_dropped_blocks() {
         &x0,
         2,
         Which::SmallestReal,
-        BlockLanczos::new().krylovdim(30).qr_tol(0.5),
+        BlockLanczos::new(30, 100, 1e-12, 0.5),
     );
     check_pairs(&a, &out, 1e-12);
 }
@@ -223,7 +223,7 @@ fn single_precision() {
     let mut g = SplitMix(55);
     let mut eigs = vec![-2.0, -2.0];
     eigs.extend((0..38).map(|i| -1.0 + 2.0 * i as f64 / 38.0));
-    let alg = BlockLanczos::new().krylovdim(20).tol(1e-4).qr_tol(1e-5);
+    let alg = BlockLanczos::new(20, 100, 1e-4, 1e-5);
     let a = with_spectrum(&mut g, &eigs, true);
     let out = run::<Complex32>(&a, &block(&mut g, 40, 2, true), 2, Which::SmallestReal, alg);
     assert!(out.info.converged >= 2);
@@ -244,10 +244,7 @@ fn single_precision() {
     // A Complex32 operator of norm ~1e13 (where squares fit but cubes do not).
     let scale = 1e13;
     let a = with_spectrum(&mut g, &eigs, true) * Complex64::new(scale, 0.0);
-    let alg = BlockLanczos::new()
-        .krylovdim(20)
-        .tol(1e-4 * scale)
-        .qr_tol(1e-5);
+    let alg = BlockLanczos::new(20, 100, 1e-4 * scale, 1e-5);
     let out = run::<Complex32>(&a, &block(&mut g, 40, 2, true), 2, Which::SmallestReal, alg);
     assert!(out.info.converged >= 2);
     for v in &out.vals[..2] {
@@ -262,7 +259,7 @@ fn zero_qr_tol_drops_exactly_zero_vectors() {
     let exact = dense_eigenvalues(&a);
     let x = random_vec(&mut g, 30, false);
     let zero = vec![Complex64::new(0.0, 0.0); 30];
-    let alg = BlockLanczos::new().krylovdim(20).tol(1e-10).qr_tol(0.0);
+    let alg = BlockLanczos::new(20, 100, 1e-10, 0.0);
     let out = run::<f64>(&a, &[x, zero], 1, Which::SmallestReal, alg);
     check_pairs(&a, &out, 1e-12);
     assert!((out.vals[0] - exact[0]).abs() < 1e-9);
@@ -276,7 +273,7 @@ fn warm_call_allocates_two_blocks_and_the_results() {
         .iter()
         .map(|x| to_dvec(x))
         .collect();
-    let alg = BlockLanczos::new().krylovdim(15).tol(1e-10);
+    let alg = BlockLanczos::new(15, 100, 1e-10, 1e-12);
     let mut op = DenseOp::new(&a);
     let mut ws = Workspace::with_capacity(&x0[0], 17).unwrap();
     for _ in 0..2 {
@@ -294,7 +291,7 @@ fn errors() {
     let x = DVec(vec![1.0f64, 2.0, 3.0, 4.0]);
     let mut op = DenseOp::<f64>::new(&a);
     let mut ws = Workspace::with_capacity(&x, 4).unwrap();
-    let alg = BlockLanczos::new().krylovdim(3);
+    let alg = BlockLanczos::new(3, 100, 1e-12, 1e-12);
     let sr = Which::SmallestReal;
     let e = |r: Result<_, Error<_>>| r.map(|_| ()).unwrap_err();
     assert!(matches!(
@@ -308,7 +305,7 @@ fn errors() {
             &two,
             1,
             sr,
-            &BlockLanczos::new().krylovdim(4),
+            &BlockLanczos::new(4, 100, 1e-12, 1e-12),
             &mut ws
         )),
         Error::InsufficientCapacity {
@@ -322,7 +319,7 @@ fn errors() {
             &two,
             1,
             sr,
-            &BlockLanczos::new().krylovdim(2),
+            &BlockLanczos::new(2, 100, 1e-12, 1e-12),
             &mut ws
         )),
         Error::InvalidArgument(_)
@@ -347,7 +344,7 @@ fn errors() {
             &two,
             1,
             sr,
-            &alg.qr_tol(-1.0),
+            &BlockLanczos::new(3, 100, 1e-12, -1.0),
             &mut ws
         )),
         Error::InvalidArgument(_)
@@ -389,12 +386,9 @@ fn matches_krylovkit_block_lanczos_fixtures() {
             "LM" => Which::LargestMagnitude,
             w => panic!("unknown selector {w}"),
         };
-        let alg = BlockLanczos::new()
-            .krylovdim(num("krylovdim"))
-            .tol(c["tol"].parse().unwrap())
+        let alg = BlockLanczos::new(num("krylovdim"), 100, c["tol"].parse().unwrap(), 1e-12)
             .eager(num("eager") == 1)
-            .orth(Orth::Mgs2)
-            .maxiter(100);
+            .orth(Orth::Mgs2);
         let out = run::<Complex64>(&a, &x0, num("howmany"), which, alg);
         let expect: Vec<f64> = c["values"]
             .split_whitespace()
@@ -459,7 +453,7 @@ fn tight_tolerance_restarts_stay_finite_in_single_precision() {
         let x0: Vec<DVec<Complex32>> = (0..2)
             .map(|_| to_dvec(&random_vec(&mut g, n, true)))
             .collect();
-        let alg = BlockLanczos::new().krylovdim(kd).tol(tol).maxiter(maxiter);
+        let alg = BlockLanczos::new(kd, maxiter, tol, 1e-12);
         let mut ws = Workspace::with_capacity(&x0[0], kd + 2).unwrap();
         let (vals, _, _) = block_eigsolve(
             &mut DenseOp::<Complex32>::new(&a),

@@ -186,7 +186,7 @@ fn distinct_codomain_type_matches_dense_and_the_one_type_run() {
         let mut g = SplitMix(401 + m as u64 + complex as u64);
         let a = rectangular(&mut g, m, n, complex);
         let x0 = random_vec(&mut g, m, complex);
-        let alg = Gkl::new().krylovdim(24).tol(1e-9).maxiter(300);
+        let alg = Gkl::new(24, 300, 1e-9);
         let (vw, vv) = if complex {
             (
                 run_vw::<Complex64>(&a, &x0, which, &alg),
@@ -225,7 +225,7 @@ fn warm_call_with_distinct_types_allocates_only_the_returned_triplets() {
     let a = rectangular(&mut g, 30, 20, false);
     let x0 = CoVec(to_dvec::<f64>(&random_vec(&mut g, 30, false)));
     let domain = to_dvec::<f64>(&vec![Complex64::default(); 20]);
-    let alg = Gkl::new().krylovdim(8).tol(1e-10);
+    let alg = Gkl::new(8, 100, 1e-10);
     let mut ws_u = Workspace::with_capacity(&x0, 8).unwrap();
     let mut ws_v = Workspace::with_capacity(&domain, 8).unwrap();
     let mut op = Rect::<f64>::new(&a);

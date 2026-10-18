@@ -60,7 +60,7 @@
 //!     Ok(())
 //! };
 //! let x0 = V((0..n).map(|i| 1.0 + (i as f64).sin()).collect());
-//! let alg = Lanczos::new().krylovdim(20).tol(1e-10);
+//! let alg = Lanczos::new(20, 100, 1e-10);
 //! let mut ws = Workspace::with_capacity(&x0, alg.get_krylovdim())?;
 //! let (vals, _vecs, info) = eigsolve(&mut op, &x0, 1, Which::SmallestReal, &alg, &mut ws)?;
 //! let exact = 2.0 - 2.0 * (std::f64::consts::PI / (n as f64 + 1.0)).cos();
