@@ -42,14 +42,16 @@ impl Cg {
 pub enum RestartResidual {
     /// `b - a₀x - a₁A·x`, computed explicitly: one extra map application
     /// per restart, at most `1/krylovdim` of the applications. The default:
-    /// valid for vectors whose arithmetic truncates (README, "Low-rank and
-    /// tensor-network vectors") and free of the recurrence's rounding drift.
+    /// every cycle minimizes the true residual, also for vectors whose
+    /// arithmetic truncates (README, "Low-rank and tensor-network vectors").
     #[default]
     Recomputed,
     /// The GMRES recurrence over the Krylov basis, as KrylovKit does: no
     /// extra application, but it assumes exact vector arithmetic and the
-    /// Arnoldi relation. Invalid for truncating vectors, where the
-    /// recurrence drifts from the true residual and restarts stagnate.
+    /// Arnoldi relation. Not recommended for truncating vectors: there the
+    /// restart residual differs from `b - A·x` by about `τ·‖b‖`, so each
+    /// cycle minimizes a perturbed residual and only the final explicit
+    /// check sees the true one.
     Recurrence,
 }
 

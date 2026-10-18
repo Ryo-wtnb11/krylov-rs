@@ -446,8 +446,9 @@ fn gmres_with_truncated_vectors() {
     // The default `RestartResidual::Recomputed` restarts from `b − A·x`, so
     // each cycle sees the true residual of the truncated iterate, and the
     // error stays within a small multiple of `tol + τ`. (`Recurrence` also
-    // converges on this problem, at most one cycle later at τ ≈ tol; its
-    // drift is not asserted because it does not stagnate reproducibly here.)
+    // converges here, at most one cycle later at τ ≈ tol: its restart
+    // residual is off by about τ·‖b‖, but the final explicit check restarts
+    // from the true residual, so the offset is not asserted.)
     for tau in [TOL / 10.0, TOL] {
         for r in both_gmres(tau) {
             assert_eq!(r.converged, 1, "τ = {tau}");

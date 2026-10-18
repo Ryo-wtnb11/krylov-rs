@@ -334,12 +334,14 @@ relation, not an orthonormal basis (KIOPS, Gaudreault–Rainwater–Tokman
 `X ↦ L·X + X·Lᵀ` against the exact flow.
 
 `linsolve` with `Gmres` works under the same contract with the default
-`RestartResidual::Recomputed`: every restart cycle starts from `b − A·x`,
-so truncation error does not accumulate across restarts. The attainable
-residual is bounded below by the truncation floor, about `τ·‖b‖`; with
-`tol` (absolute) below that floor the run reports non-convergence rather
-than a false success. `RestartResidual::Recurrence` assumes exact arithmetic
-and is not valid for truncating vectors. `tests/truncated.rs` solves
+`RestartResidual::Recomputed`: every restart cycle starts from `b − A·x`
+and so minimizes the true residual, instead of relying only on the final
+explicit check. The attainable residual is bounded below by the truncation
+floor, about `τ·‖b‖`; with `tol` (absolute) below that floor the run reports
+non-convergence rather than a false success. `RestartResidual::Recurrence`
+is not recommended for truncating vectors: its restart residual differs from
+`b − A·x` by about `τ·‖b‖`, so each cycle minimizes a perturbed residual.
+`tests/truncated.rs` solves
 `(a₀ + A)·X = B` for the same map against a dense solve.
 
 Not supported under truncation: `Cg`, whose short recurrence relies on exact
