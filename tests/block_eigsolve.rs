@@ -353,10 +353,9 @@ fn errors() {
 /// supports here): `A = kron(I_copies, H)`, so every eigenvalue of `H` is
 /// `copies`-fold and the expected values are the dense spectrum of `H`
 /// repeated. `(nvals, converged, numiter, numops)` is pinned on two
-/// representative cases, checked against KrylovKit.jl v0.10.4; numiter
-/// within one restart and numops within 10 % (krylov orthogonalizes
-/// against the full basis and skips the type-probe application, see
-/// `docs/krylovkit.md`).
+/// representative cases, checked against KrylovKit.jl v0.10.4: numiter
+/// equal, numops one lower (krylov skips KrylovKit's type-probe
+/// application, `docs/krylovkit.md`).
 #[test]
 fn block_lanczos_matches_dense_spectrum_and_krylovkit_counts() {
     type Counts = (usize, usize, usize, usize);
@@ -416,16 +415,10 @@ fn block_lanczos_matches_dense_spectrum_and_krylovkit_counts() {
         if let Some((nvals, converged, ni, no)) = kk {
             assert_eq!(out.vals.len(), nvals, "{name}: number of values");
             assert_eq!(out.info.converged, converged, "{name}");
-            assert!(
-                out.info.numiter.abs_diff(ni) <= 1,
-                "{name}: numiter {} vs {ni}",
-                out.info.numiter
-            );
-            assert!(
-                out.info.numops.abs_diff(no) * 10 <= no,
-                "{name}: numops {} vs {no}",
-                out.info.numops
-            );
+            assert_eq!(out.info.numiter, ni, "{name}: numiter");
+            // No start vector is dropped here, so exactly KrylovKit's count
+            // without its type-probe application.
+            assert_eq!(out.info.numops, no - 1, "{name}: numops");
         }
     }
 }
