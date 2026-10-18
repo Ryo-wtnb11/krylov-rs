@@ -52,7 +52,8 @@ pub enum Error<E> {
     /// overflows).
     NonFiniteIterate,
     /// Reordering the small Schur form was rejected by LAPACK `xTREXC`
-    /// (a swap of nearly equal or ill-conditioned 2×2 blocks).
+    /// (a swap of nearly equal or ill-conditioned 2×2 blocks); KrylovKit
+    /// throws `LAPACKException` there.
     SchurReorderFailed,
     /// `realeigsolve`: the eigenvalue at `index` (0-based, in `which` order)
     /// of the requested ones is complex, i.e. its 2×2 Schur block couples by

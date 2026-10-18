@@ -49,7 +49,8 @@ through the convergence information rather than as an error.
   types) and `realeigsolve` (real vector types).
 
 Workspace sizes and per-call allocations are stated on each entry point's
-API documentation.
+API documentation (the three Krylov–Schur entry points allocate only the
+`2·n` returned vectors).
 
 ## Differences
 
@@ -94,6 +95,15 @@ API documentation.
   *Reason:* one typed error at the first non-finite output instead of
   NaN results or a later dense failure (#9).
 
+### Dense kernels (all solvers)
+
+- **Complex Householder pivots** (Lanczos, block Lanczos and GKL restarts,
+  `VecBasis::rotate`) are formed scaled by `1/ν`, so complex
+  operators reach the same range limits as real ones (entries whose squares
+  stay finite).
+  *Reason:* the unscaled form underflows or overflows to NaN on valid
+  input (#20).
+
 ### Restricted inputs
 
 Reported as typed errors: `krylovdim >= 1` (`>= 2` for `Gkl`, `>` the start
@@ -111,9 +121,9 @@ restrictions and the `t == 0` shortcut, not recorded.
 - **CGS2 Lanczos step** orthogonalizes against the full basis twice;
   KrylovKit's CGS2 recurrence uses the three-term recurrence for its first
   pass.
-  *Reason:* the same two full passes serve every Lanczos-type process, and
-  the extra vector passes (about `4k` against `2k + 4`) are small next to a
-  map application.
+  *Reason:* two full projections give classical CGS2 orthogonality
+  (`O(ε)`) of the basis across restarts; the extra vector passes (about `4k`
+  against `2k + 4`) are small next to a map application.
 - **`exp`/`φ` of the tridiagonal Lanczos Rayleigh quotient** use its
   eigendecomposition (LAPACK `stegr`, as KrylovKit's `eigsolve`) instead of a
   Padé exponential of the augmented matrix. The step controller's error
@@ -146,7 +156,8 @@ restrictions and the `t == 0` shortcut, not recorded.
   `Error::DenseNoConvergence` (Julia: `SingularException`). `info.max_imag`
   is 0. The dense scratch is allocated once per call, for the largest
   `(k+p+1)²` (KrylovKit allocates it per step-size trial).
-  *Reason:* exact halving, not recorded; typed errors as for the other
+  *Reason:* Julia's `2^si` is an `Int` and overflows for
+  `‖A‖₁ > 2.5e19` (NaN result), while exact halving stays finite (#14); typed errors as for the other
   solvers (#9); scratch allocated once to remove per-trial allocation (#16).
 
 ### linsolve
@@ -166,7 +177,7 @@ restrictions and the `t == 0` shortcut, not recorded.
   *Reason:* not recorded.
 - **CG stopping.** CG checks `maxiter` after every iteration (KrylovKit
   always runs two) and stops on an exactly zero residual.
-  *Reason:* not recorded.
+  *Reason:* krylov honors `maxiter` literally and avoids a `0/0`.
 - **Typed breakdowns.** Non-positive curvature in CG is
   `Error::NotPositiveDefinite` and an exactly singular GMRES pivot is
   `Error::SingularKrylovSpace` (KrylovKit: NaN and `SingularException`).
@@ -182,12 +193,13 @@ restrictions and the `t == 0` shortcut, not recorded.
 - **`numops`** is one lower: krylov skips KrylovKit's type-probe
   application (lower by `1 + dropped` when the QR drops start vectors, since
   KrylovKit counts the input block size).
-  *Reason:* not recorded.
+  *Reason:* krylov's count is the true number of applications.
 - **Diagonal blocks** are symmetrized, `(M + Mᴴ)/2`, where KrylovKit reads
   the upper triangle; the discarded part is reported in `max_imag`. The small
   Hermitian eigenproblem is LAPACK `syevr`/`heevr`, as Julia's
   `eigen(Hermitian)`.
-  *Reason:* not recorded.
+  *Reason:* the difference is of the order of the non-Hermiticity, which is
+  what `max_imag` reports.
 - **Exhausted block.** When every vector of a new block falls below `qr_tol`
   the iteration stops as an invariant subspace (KrylovKit throws
   `ArgumentError("blocklength must be >(0)")` there). After a restart the
@@ -199,17 +211,17 @@ restrictions and the `t == 0` shortcut, not recorded.
   restart would be a no-op) is an `InvalidArgument`, a block entirely below
   `qr_tol` is `ZeroStartVector`.
   *Reason:* with `krylovdim <= block size` every restart would be a no-op.
-- **Complex Householder pivots** are formed scaled by `1/ν`, so complex
-  operators reach the same range limits as real ones (entries whose squares
-  stay finite).
-  *Reason:* the unscaled form underflows or overflows to NaN on valid
-  input (#20).
 
 ### svdsolve
 
 - **Orthogonalization.** Each new vector is orthogonalized twice against the
   full basis on both sides (six reductions per step; KrylovKit's CGS2 GKL
   keeps the right side local and makes one pass on the left).
+  *Reason:* gives `O(ε)` orthogonality of both bases across restarts; the
+  three extra reductions and about `4k` extra vector passes per step are
+  small next to two map applications.
+- **Incompatible adjoint.** The start check `⟨u, A·v⟩ = ‖Aᴴu‖` failing is
+  the typed `Error::IncompatibleAdjoint` (KrylovKit: `ArgumentError`).
   *Reason:* not recorded.
 - **Invariant subspace.** When `(I - VVᴴ)Aᴴu` drops to `tol` the iteration
   stops with the exact triplets of the invariant pair (`(k+1) × k`

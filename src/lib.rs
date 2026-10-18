@@ -16,7 +16,9 @@
 //! [`AdjointMap`] by [`Gkl`]. Non-Hermitian maps use the Krylov–Schur method
 //! with [`Arnoldi`]: [`schursolve`], [`arnoldi_eigsolve`] (complex vectors)
 //! and [`realeigsolve`] (real vectors); [`exponentiate`] and
-//! [`expintegrator`] take either process ([`KrylovProcess`]).
+//! [`expintegrator`] take either process ([`KrylovProcess`]). KrylovKit's
+//! `RealVec` (real-linear maps on complex vectors) is not supported; the
+//! vector type's scalar decides which entry points apply.
 //!
 //! The small projected problems call LAPACK through the [`lapack`] crate
 //! declarations, as KrylovKit does. krylov does not pick a LAPACK

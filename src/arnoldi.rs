@@ -427,6 +427,21 @@ fn info<V: Vector>(
 /// `LargestImag`/`SmallestImag` need a complex vector type. The workspace
 /// basis needs capacity `>= alg.get_krylovdim()`; only the `2·n` returned
 /// vectors are allocated.
+///
+/// Differs from KrylovKit (see [docs/krylovkit.md](https://github.com/Ryo-wtnb11/krylov-rs/blob/main/docs/krylovkit.md)); the same holds for
+/// [`arnoldi_eigsolve`] and [`realeigsolve`]:
+/// - Before LAPACK `hseqr` the Rayleigh quotient is scaled by a power of four
+///   into `[sqrt(SAFMIN)/ULP, its inverse]`, as LAPACK's `xGEEV`/`xGEES`
+///   drivers do; KrylovKit calls `hseqr` unscaled, which deflates a quotient
+///   with entries near `1e-300` to its diagonal. In-range quotients are
+///   passed to LAPACK unchanged.
+/// - A reordering swap rejected by LAPACK `trexc` is
+///   [`Error::SchurReorderFailed`] (KrylovKit throws `LAPACKException`).
+/// - With `krylovdim == 1` the first subspace is final (KrylovKit indexes out
+///   of bounds).
+/// - `LargestImag`/`SmallestImag` with real vectors are an
+///   [`Error::InvalidArgument`]; KrylovKit's `schursolve` fails later trying
+///   to split a 2×2 block.
 #[allow(clippy::type_complexity)]
 pub fn schursolve<V, B, A>(
     op: &mut A,
@@ -471,6 +486,10 @@ where
 /// Schur factor come from LAPACK `xTREVC`. Real maps whose eigenvectors are
 /// complex need a complex vector type; for real eigenvalues of a real map
 /// see [`realeigsolve`].
+///
+/// The workspace basis needs capacity `>= alg.get_krylovdim()`; only the
+/// `2·n` returned vectors are allocated. The differences from KrylovKit
+/// listed on [`schursolve`] apply.
 #[allow(clippy::type_complexity)]
 pub fn arnoldi_eigsolve<V, B, A, R>(
     op: &mut A,
@@ -537,7 +556,16 @@ fn eigvec_coefficients<S: Scalar, E>(
 /// [`Error::ComplexEigenvalue`] (KrylovKit warns and drops the imaginary
 /// part). Couplings `≤ tol` are dropped as in KrylovKit; the largest
 /// imaginary part discarded that way is reported as `info.max_imag`.
-/// `LargestImag`/`SmallestImag` are rejected.
+/// `LargestImag`/`SmallestImag` are rejected (KrylovKit fails later trying
+/// to split a 2×2 block).
+///
+/// The vector type must be real: KrylovKit's `RealVec` (real-linear maps on
+/// complex vectors) is not supported (see [docs/krylovkit.md](https://github.com/Ryo-wtnb11/krylov-rs/blob/main/docs/krylovkit.md)).
+///
+/// The workspace basis needs capacity `>= alg.get_krylovdim()`; only the
+/// `2·n` returned vectors are allocated. The differences from KrylovKit
+/// listed on [`schursolve`] apply; on an invariant subspace smaller than
+/// `howmany` it returns what it has.
 #[allow(clippy::type_complexity)]
 pub fn realeigsolve<V, B, A>(
     op: &mut A,

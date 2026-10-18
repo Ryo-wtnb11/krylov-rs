@@ -67,7 +67,7 @@ where
 /// bounds the number of Krylov subspaces (time steps), and the last one is
 /// forced to reach `t`. `t` may be complex (use a complex vector type for
 /// real-time evolution `t = -iτ`). `u` must be non-empty, `tol` positive and
-/// `t` finite. When `w_{p+1} = 0` with `p ≥ 2`, `y` is the exact polynomial
+/// `t` finite (KrylovKit allows `t = ±∞` for `p = 1`). When `w_{p+1} = 0` with `p ≥ 2`, `y` is the exact polynomial
 /// in `t` and is returned without a Krylov space (KrylovKit divides by zero
 /// there). A non-finite (overflowed or NaN) step error estimate rejects the
 /// step, which KrylovKit accepts when the estimate is NaN; if it stays
