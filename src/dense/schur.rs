@@ -715,7 +715,7 @@ mod tests {
 
     #[test]
     fn unscaled_underflow_keeps_eigenvalues_consistent_with_t() {
-        // Reviewer reproduction: the 2×2 block's lower entry underflows to
+        // Subnormal-scale input: the 2×2 block's lower entry underflows to
         // zero after unscaling, so T is triangular and w must be real.
         let a0 = [
             -2.7797856262260443e-308,
