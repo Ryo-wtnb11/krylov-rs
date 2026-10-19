@@ -13,11 +13,17 @@ use num_complex::{Complex32, Complex64};
 
 thread_local! {
     static SIMILAR_CALLS: Cell<usize> = const { Cell::new(0) };
+    static INNER_CALLS: Cell<usize> = const { Cell::new(0) };
 }
 
 /// Number of `similar` calls on this thread so far.
 pub fn similar_calls() -> usize {
     SIMILAR_CALLS.with(Cell::get)
+}
+
+/// Number of `DVec::inner` calls on this thread so far.
+pub fn inner_calls() -> usize {
+    INNER_CALLS.with(Cell::get)
 }
 
 /// Test scalar: a krylov scalar convertible to and from `Complex64`.
@@ -86,6 +92,7 @@ impl<S: TestScalar> Vector for DVec<S> {
         Ok(())
     }
     fn inner(&self, y: &Self) -> Result<S, Self::Error> {
+        INNER_CALLS.with(|c| c.set(c.get() + 1));
         let mut s = S::zero();
         for (a, b) in self.0.iter().zip(&y.0) {
             s += a.cj() * *b;

@@ -97,7 +97,8 @@ pub trait Basis<V: Vector> {
         self.project(x, scratch)?;
         Ok(scratch[i])
     }
-    /// `y ← a·v_i + y`, used by modified Gram–Schmidt.
+    /// `y ← a·v_i + y`, used by modified Gram–Schmidt and by the Lanczos
+    /// three-term recurrence (`β·v_{k-1}`) under both orthogonalisers.
     ///
     /// The default performs a full [`combine_into`](Basis::combine_into)
     /// with a unit coefficient vector built in `scratch`
