@@ -3,6 +3,8 @@
 [![CI](https://github.com/Ryo-wtnb11/krylov-rs/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Ryo-wtnb11/krylov-rs/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/krylov.svg)](https://crates.io/crates/krylov)
 [![docs.rs](https://docs.rs/krylov/badge.svg)](https://docs.rs/krylov)
+[![coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Ryo-wtnb11/krylov-rs/badges/badge.json)](https://github.com/Ryo-wtnb11/krylov-rs/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/Ryo-wtnb11/krylov-rs/graph/badge.svg)](https://codecov.io/gh/Ryo-wtnb11/krylov-rs)
 [![license](https://img.shields.io/crates/l/krylov.svg)](#license)
 
 Krylov subspace algorithms in Rust for user-defined vector types, inspired by
