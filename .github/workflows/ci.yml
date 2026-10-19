@@ -33,3 +33,42 @@ jobs:
       # No LAPACK provider installed: the library must build without one.
       - uses: dtolnay/rust-toolchain@1.85
       - run: cargo build --locked
+
+  # Reporting only: main-push, never gates a PR.
+  coverage:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the system OpenBLAS (LAPACK provider for the tests)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libopenblas-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      # One instrumented test run; both report formats are re-emitted from it.
+      - run: cargo llvm-cov --locked --no-report
+      - run: cargo llvm-cov report --summary-only --json --output-path coverage.json
+      - run: cargo llvm-cov report --codecov --output-path codecov.json
+      - uses: codecov/codecov-action@v5
+        with:
+          files: codecov.json
+          fail_ci_if_error: false
+      - name: Publish badge JSON to badges branch
+        run: |
+          set -euo pipefail
+          pct=$(jq -r '.data[0].totals.lines.percent' coverage.json)
+          msg=$(printf '%.1f%%' "$pct")
+          color=$(awk -v p="$pct" 'BEGIN{print (p<60)?"red":(p<80)?"yellow":"brightgreen"}')
+          jq -n --arg m "$msg" --arg c "$color" \
+            '{schemaVersion:1,label:"coverage",message:$m,color:$c}' > badge.json
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Single-file branch built from plumbing; history is disposable, force-push.
+          blob=$(git hash-object -w badge.json)
+          tree=$(printf '100644 blob %s\tbadge.json\n' "$blob" | git mktree)
+          commit=$(git commit-tree "$tree" -m "coverage badge: $msg ($GITHUB_SHA)")
+          git push -f origin "$commit:refs/heads/badges"
