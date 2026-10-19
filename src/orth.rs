@@ -8,7 +8,9 @@ use crate::traits::{Basis, Vector};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Orth {
     /// Classical Gram–Schmidt with one full reorthogonalization: two
-    /// [`Basis::project`] calls and one norm per iteration.
+    /// [`Basis::project`] calls and one norm per iteration (in
+    /// [`Lanczos`](crate::Lanczos), the three-term recurrence replaces the
+    /// first one).
     #[default]
     Cgs2,
     /// Modified Gram–Schmidt with one full reorthogonalization (KrylovKit's

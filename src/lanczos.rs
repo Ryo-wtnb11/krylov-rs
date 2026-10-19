@@ -3,8 +3,8 @@
 use num_traits::{One, Zero};
 
 use crate::error::Error;
-use crate::orth::{Orth, orthogonalize};
-use crate::scalar::sealed::RealOps as _;
+use crate::orth::Orth;
+use crate::scalar::sealed::{Ops as _, RealOps as _};
 use crate::scalar::{Real, Scalar};
 use crate::traits::{Basis, LinearMap, Vector, Workspace};
 
@@ -17,10 +17,12 @@ use crate::traits::{Basis, LinearMap, Vector, Workspace};
 /// for `exponentiate`, and `eager` (default `false`) evaluates the projected
 /// problem after every expansion.
 ///
+/// Each step follows KrylovKit's `lanczosrecurrence`: the three-term
+/// recurrence, then one full pass of `orth` against the basis (`k + 1` inner
+/// products and about as many axpys at basis size `k`).
+///
 /// Differs from KrylovKit: `orth` defaults to [`Orth::Cgs2`] (KrylovKit:
-/// MGS2), and each Lanczos step orthogonalizes against the full basis twice,
-/// where KrylovKit's CGS2 recurrence uses the three-term recurrence for its
-/// first pass. See [docs/krylovkit.md](https://github.com/Ryo-wtnb11/krylov-rs/blob/main/docs/krylovkit.md).
+/// MGS2). See [docs/krylovkit.md](https://github.com/Ryo-wtnb11/krylov-rs/blob/main/docs/krylovkit.md).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Lanczos {
     krylovdim: usize,
@@ -207,12 +209,13 @@ impl<S: Scalar> Fact<S> {
         self.h.resize(k, S::zero());
         self.scratch.clear();
         self.scratch.resize(k, S::zero());
-        let (basis, w, h, s) = (&ws.basis, &mut ws.w, &mut self.h[..], &mut self.scratch[..]);
-        orthogonalize(basis, w, h, s, self.orth).map_err(Error::Vector)?;
-        if !h.iter().all(|c| c.all_finite()) {
+        let prev = k.checked_sub(2).map(|i| (i, self.beta[i]));
+        let (basis, v, w) = (&ws.basis, &ws.v, &mut ws.w);
+        let (h, s) = (&mut self.h[..], &mut self.scratch[..]);
+        let alpha = recurrence(basis, v, w, prev, h, s, self.orth).map_err(Error::Vector)?;
+        if !alpha.all_finite() {
             return Err(Error::NonFiniteIterate);
         }
-        let alpha = h[k - 1];
         let im = num_traits::Float::abs(alpha.im());
         if im > self.max_imag {
             self.max_imag = im;
@@ -224,5 +227,53 @@ impl<S: Scalar> Fact<S> {
         }
         self.beta.push(beta);
         Ok(())
+    }
+}
+
+/// One step of KrylovKit's `lanczosrecurrence` for `w = A·v`, `v = v_{k-1}`:
+/// the three-term recurrence removes `β·v_{k-2}` (`prev = (k-2, β)`) and
+/// `α·v`, then one full pass of `orth` against the basis removes the rounding
+/// that the recurrence leaves along older vectors. Returns `α` including the
+/// second pass's `v` component.
+///
+/// A second full pass in place of the recurrence would double the inner
+/// products and axpys per step without improving orthogonality: the
+/// recurrence already removes the `O(‖A‖)` components exactly as a first
+/// Gram–Schmidt pass would, and the remaining ones are at rounding level.
+fn recurrence<V: Vector, B: Basis<V>>(
+    basis: &B,
+    v: &V,
+    w: &mut V,
+    prev: Option<(usize, Real<V>)>,
+    h: &mut [V::Scalar],
+    s: &mut [V::Scalar],
+    orth: Orth,
+) -> Result<V::Scalar, V::Error> {
+    let one = V::Scalar::one();
+    let k = basis.len();
+    let subtract_prev = |w: &mut V, s: &mut [V::Scalar]| match prev {
+        Some((i, beta)) => basis.axpy_at(i, -V::Scalar::from_real(beta), w, s),
+        None => Ok(()),
+    };
+    match orth {
+        Orth::Cgs2 => {
+            let alpha = v.inner(w)?;
+            subtract_prev(w, s)?;
+            w.axpby(-alpha, v, one)?;
+            basis.project(w, h)?;
+            basis.combine_into(h, w, -one, one)?;
+            Ok(alpha + h[k - 1])
+        }
+        Orth::Mgs2 => {
+            subtract_prev(w, s)?;
+            let alpha = v.inner(w)?;
+            w.axpby(-alpha, v, one)?;
+            let mut last = V::Scalar::zero();
+            for i in 0..k {
+                last = basis.inner_at(i, w, s)?;
+                basis.axpy_at(i, -last, w, s)?;
+            }
+            Ok(alpha + last)
+        }
     }
 }

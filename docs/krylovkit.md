@@ -118,12 +118,6 @@ restrictions and the `t == 0` shortcut, not recorded.
 
 ### Lanczos and the exponential integrator
 
-- **CGS2 Lanczos step** orthogonalizes against the full basis twice;
-  KrylovKit's CGS2 recurrence uses the three-term recurrence for its first
-  pass.
-  *Reason:* two full projections give classical CGS2 orthogonality
-  (`O(ε)`) of the basis across restarts; the extra vector passes (about `4k`
-  against `2k + 4`) are small next to a map application.
 - **`exp`/`φ` of the tridiagonal Lanczos Rayleigh quotient** use its
   eigendecomposition (LAPACK `stegr`, as KrylovKit's `eigsolve`) instead of a
   Padé exponential of the augmented matrix. The step controller's error
@@ -188,7 +182,7 @@ restrictions and the `t == 0` shortcut, not recorded.
 - **Orthogonalization.** Every new vector is orthogonalized against the full
   basis (CGS2 by default, or MGS2) instead of KrylovKit's three-term block
   step plus one MGS pass (KrylovKit accepts only MGS2).
-  *Reason:* keeps one orthogonalization path, shared with Lanczos, and needs
+  *Reason:* keeps one orthogonalization path, shared with Arnoldi, and needs
   no access to the previous block.
 - **`numops`** is one lower: krylov skips KrylovKit's type-probe
   application (lower by `1 + dropped` when the QR drops start vectors, since

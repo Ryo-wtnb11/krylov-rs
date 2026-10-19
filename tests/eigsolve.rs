@@ -474,6 +474,31 @@ fn basis_stays_orthonormal_across_restarts() {
     }
 }
 
+#[test]
+fn lanczos_step_uses_one_full_pass_after_the_recurrence() {
+    // KrylovKit's `lanczosrecurrence` (CGS2 and MGS2): at basis size k, one
+    // inner product for α (three-term recurrence) plus one full pass of k,
+    // i.e. Σ_{k=1}^{K} (k + 1) = K(K + 3)/2 over one Krylov space of size K.
+    // Orthogonalizing twice against the full basis would take K(K + 1).
+    let mut g = SplitMix(21);
+    let a = hermitian(&mut g, 60, true);
+    let x0 = to_dvec::<Complex64>(&random_vec(&mut g, 60, true));
+    let kd = 20;
+    for orth in [Orth::Cgs2, Orth::Mgs2] {
+        let alg = Lanczos::new(kd, 1, 0.0).orth(orth);
+        let mut ws = Workspace::with_capacity(&x0, kd).unwrap();
+        let mut op = DenseOp::new(&a);
+        let before = inner_calls();
+        let (_, _, info) = eigsolve(&mut op, &x0, 1, Which::SmallestReal, &alg, &mut ws).unwrap();
+        assert_eq!(info.numops, kd);
+        assert_eq!(inner_calls() - before, kd * (kd + 3) / 2, "{orth:?}");
+        assert!(
+            orthogonality_error(ws.basis().vectors()) < 1e-13,
+            "{orth:?}"
+        );
+    }
+}
+
 /// A basis that implements only the required methods, so modified
 /// Gram–Schmidt goes through the defaulted `inner_at`/`axpy_at`.
 struct Minimal(VecBasis<DVec<f64>>);
