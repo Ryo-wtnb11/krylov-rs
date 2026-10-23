@@ -1,116 +1,124 @@
 # krylov user guide
 
-This guide collects the usage contracts that do not fit on a single item's
-API documentation. The entry points and their result semantics are
-documented on [docs.rs](https://docs.rs/krylov); the correspondence with
-KrylovKit.jl is in [krylovkit.md](krylovkit.md).
+The [API documentation](https://docs.rs/krylov) gives signatures and examples;
+[krylovkit.md](krylovkit.md) records intentional differences from KrylovKit.
+For algorithm theory, see [KrylovKit](https://github.com/Jutho/KrylovKit.jl/tree/v0.10.4).
 
-## Parameters
+## Ownership and conventions
 
-The problem-dependent numbers are required constructor arguments, with no
-defaults: `Lanczos::new(krylovdim, maxiter, tol)`, likewise `Arnoldi`, `Gkl`
-and `Gmres`, `BlockLanczos::new(krylovdim, maxiter, tol, qr_tol)` and
-`Cg::new(maxiter, tol)`.
+krylov owns the algorithms and small dense problems. The caller implements
+the [storage boundary](../src/traits.rs):
 
-- `krylovdim` fixes the memory (for tensor-network vectors, whole MPS): a
-  `Workspace` of capacity `krylovdim` holds `krylovdim + 3` vectors, namely
-  the basis, one restart scratch vector, and the operator input and output
-  (the residual lives in the operator output). `BlockLanczos` with a start
-  block of size `b` needs capacity `krylovdim + b - 1`, and `svdsolve` uses
-  two workspaces of capacity `krylovdim` (codomain and domain).
-- `tol` is the accuracy contract and depends on the scalar type (a tolerance
-  reachable in `f64` is not in `f32`).
-- `maxiter` bounds the work.
+- `Vector` owns arithmetic; `similar` creates independent writable storage,
+  even if cloning the type would share storage. Scalars are `f32`, `f64`,
+  `Complex32` or `Complex64`; `inner(x, y)` is conjugate-linear in `x`.
+- `Basis` owns block operations on ordered columns `V = [v₀, …, vₖ₋₁]`:
+  projection is `Vᴴx`, combination is `a·V·c + b·y`, and rotation keeps the
+  first `keep` columns of `V·Q`. `MatRef` stores columns consecutively.
+- `LinearMap<V, W = V>` writes `A·x` into caller-supplied storage;
+  `AdjointMap<V, W>` also writes `Aᴴ·y`. Domain and codomain share scalar and
+  error types. `FnMut(&V, &mut W) -> Result<(), V::Error>` closures also implement `LinearMap`.
 
-Algorithm-variant options keep builder defaults: `.orth(Orth)` (default
-`Orth::Cgs2`) and `.eager(bool)` (default `false`). The arguments are
-validated when a solver is called and violations are returned as
-`Error::InvalidArgument` (see the restricted inputs in
-[krylovkit.md](krylovkit.md#restricted-inputs)).
+There are no backend adapters, internal threads, caches or global state.
+Vector/map implementations own placement and parallelism.
+
+## Solver selection
+
+| Entry point | Settings and map requirement |
+| --- | --- |
+| `eigsolve` | `Lanczos`; Hermitian map |
+| `block_eigsolve` | `BlockLanczos`; Hermitian map, start block bounds resolvable multiplicity |
+| `schursolve` | `Arnoldi`; general map, partial Schur form |
+| `arnoldi_eigsolve` / `realeigsolve` | `Arnoldi`; complex / real vector scalar respectively |
+| `svdsolve` | `Gkl`; adjoint map, start vector in the codomain |
+| `linsolve` | `Cg` for Hermitian positive definite `a₀ + a₁A` with real coefficients; `Gmres` otherwise |
+| `exponentiate` / `expintegrator` | `Lanczos` for Hermitian maps, `Arnoldi` otherwise |
+
+`KrylovProcess` (`Lanczos`/`Arnoldi`) and `LinearSolver` (`Cg`/`Gmres`) are
+sealed: callers cannot add implementations.
+
+`exponentiate` returns `exp(tA)x`; `expintegrator` returns `Σⱼ tʲφⱼ(tA)uⱼ`
+(see its [input convention](https://docs.rs/krylov/latest/krylov/fn.expintegrator.html)).
+Complex time requires a complex vector scalar (e.g. `t = -iτ` for real-time evolution).
+
+## Parameters and workspace
+
+Cost and accuracy parameters are required: `new(krylovdim, maxiter, tol)` for
+`Lanczos`, `Arnoldi`, `Gkl` and `Gmres`; `BlockLanczos` also takes `qr_tol`,
+and `Cg::new(maxiter, tol)` needs no Krylov dimension. Where available,
+`.orth(Orth)` defaults to `Cgs2` (classical Gram–Schmidt with reorthogonalization)
+and `.eager(bool)` to `false`. Parameters are checked at the solver call;
+see [restricted inputs](krylovkit.md#restricted-inputs).
+
+`maxiter` limits Krylov subspaces (GMRES restart cycles, exponential time
+steps), except for CG where it limits iterations. Tolerances must suit the
+scalar precision.
+
+`Workspace::with_capacity(x, k)` preallocates `k + 3` vectors: `k` basis
+slots, one rotation scratch, and operator input/output. Reuse it for the same
+vector space. A custom `Basis` can be supplied through `Workspace::new`.
+
+| Solver | Required basis capacity |
+| --- | --- |
+| `Cg` | 0 (basis unused) |
+| `BlockLanczos`, start block size `b` | `krylovdim + b - 1` |
+| `Gkl` | `krylovdim` in each of two workspaces (codomain and domain) |
+| Others | `krylovdim` |
+
+Iterations and restarts construct no new vectors in crate code; results and
+some per-call scratch do allocate. Each entry point documents these counts.
+This does not constrain allocation inside caller-provided trait methods.
+
+## Results and errors
+
+`tol` is absolute: residual norms for eigen/SVD/linear solves, an error
+estimate per unit time for exponential integration. Eigen/Schur convergence
+uses `<= tol`; SVD and linear solves use `< tol`. The exponential controller
+compares its accumulated error estimate with `tol·|t|`; its fixed-point
+shortcut instead accepts a forcing norm `‖Ay + u₁‖ < tol` (`u₁ = 0` if absent).
+Non-convergence is returned in `info.converged`, not as an error.
+
+Eigen/SVD values follow `Which` order; `converged` counts the leading entries.
+Results can exceed `howmany` when more entries converge, or contain fewer
+when the subspace is exhausted. Real Schur results do not split conjugate
+pairs. `numops` counts map applications; `numiter` follows `maxiter`'s units.
+Lanczos `max_imag` records the largest discarded `|Im α|`.
+Typed failures, including propagated vector errors, are defined by
+[`Error`](../src/error.rs); they are separate from non-convergence.
 
 ## LAPACK provider
 
-The small projected problems call LAPACK exactly where KrylovKit does
-(`xSTEGR`, `xBDSQR`, `xSYEVR`/`xHEEVR`, `xHSEQR`, `xTREXC`, `xTREVC`). krylov
-depends only on the [`lapack`](https://crates.io/crates/lapack) declarations
-and never selects an implementation; the final binary must link one, for
-example:
-
-```toml
-[dependencies]
-lapack-src = { version = "0.13", features = ["openblas"] } # or "accelerate", "intel-mkl-dynamic-parallel", "netlib"
-```
-
-```rust
-extern crate lapack_src as _; // once, in the binary (or a crate it links)
-```
-
-Any other provider of the Fortran LAPACK symbols works the same way (a
-system library passed to the linker, or `lapack-inject`). On Linux the system
-OpenBLAS (`apt install libopenblas-dev`) is picked up with
+The final binary links a provider as shown in the [README](../README.md#installation).
+System linking is also possible. The crate's tests use `lapack-src` with
+Accelerate on macOS; elsewhere they use its OpenBLAS feature together with
 `openblas-src = { version = "0.10", default-features = false, features = ["system"] }`.
-krylov's own tests use Accelerate on macOS and the system OpenBLAS elsewhere.
+See [lapack-src](https://github.com/blas-lapack-rs/lapack-src) for providers.
 
 ## Vector contract and distributed use
 
-- `Vector::axpby(a, x, b)` with `b == 0` must overwrite `self` without reading
-  it (BLAS `beta = 0`); krylov reuses workspace vectors with stale contents.
-- A `Workspace::with_capacity(x, k)` holds `k + 3` vectors: `k` basis vectors,
-  one scratch vector for the in-place restart rotation, and the operator input
-  and output.
-- Distributed vectors: the results of `inner`, `norm` and `Basis::project` must
-  be bitwise identical on every rank, all ranks must run the same binary with
-  the same libm and the same LAPACK build (provider, version and thread
-  count), and errors must be returned on every rank. Under this contract
-  every branch is deterministic. Outside LAPACK, `eigsolve` branches only on
-  arithmetic and `sqrt`; `exponentiate`'s step acceptance also branches on
-  libm `exp`, `ln` and `pow`.
+`Vector::axpby(a, x, b)` with `b == 0` must overwrite `self` without reading
+it: workspace contents can be stale or non-finite. Map destinations likewise
+hold arbitrary previous contents.
+
+For distributed vectors, `inner`, `norm` and `Basis::project` results must be
+bitwise identical on every rank. All ranks must use the same binary, libm and
+LAPACK build (provider, version and thread count), and return errors on every
+rank. These are caller obligations for identical scalar decisions and to
+avoid blocking other ranks in reductions; krylov supplies no MPI adapter.
 
 ## Low-rank and tensor-network vectors
 
-Vectors whose representation grows under linear combination (MPS/TT, low-rank
-matrices) work with `exponentiate`, `expintegrator` and GMRES `linsolve`
-without any krylov hook. Every combination krylov performs is a trait method
-that the user implements, so truncation (e.g. SVD rounding to a relative
-accuracy `τ`) goes inside those methods:
+For `exponentiate`, `expintegrator` and GMRES, truncation can live in
+`apply_into`, rank-growing `axpby` and `Basis::combine_into`; these solvers
+never call `Basis::rotate`. Preserve pure copies/rescalings. A custom basis
+can truncate a sum once; `VecBasis` combines terms through repeated `axpby`.
+See [KIOPS-TT](https://arxiv.org/abs/2607.11293) for the method and
+[tests/truncated.rs](../tests/truncated.rs) for small SVD-truncated matrix examples.
 
-- `LinearMap::apply_into`: truncate the product, as with any tensor-network
-  map.
-- `Vector::axpby(a, x, b)` with `a ≠ 0` and `b ≠ 0`, and
-  `Basis::combine_into`: truncate the combination. (`exponentiate`,
-  `expintegrator` and GMRES never call `Basis::rotate`; only the
-  thick-restart solvers below do, and those are unsupported under
-  truncation.) A real tensor-network `Basis` should implement `combine_into`
-  as one truncated sum (for an MPS, bond `kχ` before truncation); the default
-  `VecBasis` loops over `axpby` and so truncates once per term.
-- Do not truncate pure rescalings (`Basis::push`, `axpby` with `b == 0` or
-  `a == 0`). Repeatedly truncating an already truncated vector drifts by `τ`
-  each time.
-
-This places the rounding where KIOPS-TT does it (Weigel–Riemer–Stoll,
-arXiv:2607.11293, and its `kiops_tt.m`): after the operator product, after
-orthogonalization and before the norm, and in the solution update. Choose
-`τ` about `tol/10` (KIOPS-TT's default); the paper's experiments use
-`τ = tol` and degrade for larger `τ`. The step error estimate and
-`info.converged` do not see truncation error, so a coarse `τ` reports
-convergence while missing `tol`. The exponential needs only the Arnoldi
-relation, not an orthonormal basis (KIOPS, Gaudreault–Rainwater–Tokman
-2018), so the `O(τ)` loss of orthogonality is harmless there.
-`tests/truncated.rs` checks this with SVD-truncated matrix vectors on
-`X ↦ L·X + X·Lᵀ` against the exact flow.
-
-`linsolve` with `Gmres` works under the same contract with the default
-`RestartResidual::Recomputed`: every restart cycle starts from `b − A·x`
-and so minimizes the true residual, instead of relying only on the final
-explicit check. The attainable residual is bounded below by the truncation
-floor, about `τ·‖b‖`; with `tol` (absolute) below that floor the run reports
-non-convergence rather than a false success. `RestartResidual::Recurrence`
-is not recommended for truncating vectors: its restart residual differs from
-`b − A·x` by about `τ·‖b‖`, so each cycle minimizes a perturbed residual.
-`tests/truncated.rs` solves `(a₀ + A)·X = B` for the same map against a dense
-solve.
-
-Not supported under truncation: `Cg`, whose short recurrence relies on exact
-orthogonality, and the thick-restart solvers (`eigsolve`, `block_eigsolve`,
-`svdsolve`, `schursolve` and its eigen variants), whose restart relation the
-truncated `rotate` breaks.
+Exponential convergence estimates exclude truncation error: `converged == 1`
+does not certify total error below `tol`. GMRES defaults to
+`RestartResidual::Recomputed`, starting each cycle from `b − a₀x − a₁A·x`;
+the recurrence option can accumulate truncation error in that residual.
+The attainable accuracy depends on the vector implementation and problem.
+Truncating arithmetic is unsupported for CG and thick-restart eigen/SVD/Schur
+solvers, whose orthogonality or rotated recurrence relations it can break.
