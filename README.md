@@ -7,74 +7,39 @@
 [![codecov](https://codecov.io/gh/Ryo-wtnb11/krylov-rs/graph/badge.svg)](https://codecov.io/gh/Ryo-wtnb11/krylov-rs)
 [![license](https://img.shields.io/crates/l/krylov.svg)](#license)
 
-Krylov subspace algorithms in Rust for user-defined vector types, inspired by
-KrylovKit.jl.
+Matrix-free Krylov algorithms in Rust for user-defined vector types, inspired
+by [KrylovKit.jl](https://github.com/Jutho/KrylovKit.jl/tree/v0.10.4).
+krylov owns iteration, orthogonalization, small projected problems,
+convergence tests and restarts. Callers own vector storage and map operations
+through `Vector`, `Basis` and `LinearMap`.
 
-krylov provides only the procedure: iteration, orthogonalization, the small
-projected problem, convergence tests and restarts (eigsolve, svdsolve,
-linsolve, exponentiate, …). Vector arithmetic and the linear map stay with the
-caller behind three traits (Vector, Basis, LinearMap), so the same solvers run
-on Vec<f64>, symmetric tensors, or device and distributed storage.
+Intentional differences include caller-owned workspaces, explicit cost and
+accuracy parameters, CGS2 orthogonalization by default, and typed failures.
+See the [KrylovKit correspondence](docs/krylovkit.md) for details and reasons.
 
-Unlike KrylovKit, which builds on Julia's generic vector interface, krylov
-separates the procedure from the storage: the iteration runs in a
-caller-owned workspace and allocates no vectors inside the iteration;
-per-call scratch and results are documented on each entry point. Allocation
-and data placement (host, device, distributed) stay with the caller.
-Differences in detail are listed in [docs/](docs/krylovkit.md).
-
-## Status and installation
-
-Pre-1.0: the API may change between minor versions.
+## Installation
 
 ```toml
 [dependencies]
 krylov = "0.2"
-lapack-src = { version = "0.13", features = ["openblas"] } # or "accelerate", "intel-mkl-dynamic-parallel", "netlib"
+lapack-src = { version = "0.13", features = ["openblas"] } # "accelerate" on macOS
 ```
 
-The small projected problems call LAPACK. krylov depends only on the
-[`lapack`](https://crates.io/crates/lapack) declarations and never selects an
-implementation; the final binary links one, for example by naming
-`lapack-src` once:
+The final binary must link a LAPACK provider; krylov depends only on the
+[`lapack`](https://crates.io/crates/lapack) declarations. For the provider above:
 
 ```rust
 extern crate lapack_src as _; // once, in the binary (or a crate it links)
 ```
 
-Other providers are described in the [user guide](docs/guide.md#lapack-provider).
-
-## Example
-
-```rust
-use krylov::{eigsolve, exponentiate, Error, Lanczos, LinearMap, Vector, Which, Workspace};
-
-fn evolve_ground_state<V: Vector<Scalar = f64>>(
-    h: &mut impl LinearMap<V>,
-    x0: &V,
-) -> Result<V, Error<V::Error>> {
-    let alg = Lanczos::new(30, 100, 1e-12); // krylovdim, maxiter, tol
-    // The only basis allocations: done once, reused while the space is fixed.
-    let mut ws = Workspace::with_capacity(x0, alg.get_krylovdim()).map_err(Error::Vector)?;
-    let (_energies, mut states, info) = eigsolve(h, x0, 1, Which::SmallestReal, &alg, &mut ws)?;
-    assert!(info.converged >= 1);
-    // exp(-0.1·H)·ψ with the same workspace.
-    let (y, _) = exponentiate(h, -0.1, &states.swap_remove(0), &alg, &mut ws)?;
-    Ok(y)
-}
-```
-
-A runnable version with a `Vec<f64>` vector type is in the
-[crate documentation](https://docs.rs/krylov).
+See the [provider notes](docs/guide.md#lapack-provider) for system linking.
 
 ## Documentation
 
-- [API documentation](https://docs.rs/krylov)
-- [User guide](docs/guide.md): parameters, workspace sizes, LAPACK
-  providers, the vector contract and distributed use, low-rank and
-  tensor-network vectors.
-- [KrylovKit correspondence](docs/krylovkit.md): what is implemented and
-  every difference from KrylovKit.jl with its reason.
+- [API documentation and runnable example](https://docs.rs/krylov)
+- [User guide](docs/guide.md): solver selection, ownership, workspace sizes,
+  convergence and vector contracts.
+- [KrylovKit correspondence](docs/krylovkit.md): intentional differences and reasons.
 
 ## Acknowledgments
 
