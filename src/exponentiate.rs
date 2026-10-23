@@ -7,7 +7,7 @@ use core::ops::Mul;
 use num_traits::{Float, One, Zero};
 
 use crate::arnoldi::{Arnoldi, Fact as ArnoldiFact};
-use crate::dense::{ExpmWork, Work, expm_into, phi_last, phi_pair};
+use crate::dense::{ExpmWork, Work, expm_into, phi_last, phi_pair, unit};
 use crate::error::Error;
 use crate::lanczos::{Fact, Lanczos, validate};
 use crate::orth::Orth;
@@ -37,7 +37,8 @@ pub struct ExpInfo<R> {
 /// `exponentiate`): the Krylov space is built from `A·x` and
 /// `y = x + t·φ₁(t·A)·A·x` is advanced in time steps. `alg` is [`Lanczos`]
 /// for a Hermitian `op` or [`Arnoldi`] for a general one. Only the returned
-/// vector is allocated.
+/// vector is allocated. Output validation costs one extra norm of the result
+/// (except at `t = 0`); a non-finite norm returns [`Error::NonFiniteIterate`].
 #[allow(clippy::type_complexity)]
 pub fn exponentiate<V, B, A, L>(
     op: &mut A,
@@ -71,9 +72,16 @@ where
 /// in `t` and is returned without a Krylov space (KrylovKit divides by zero
 /// there). A non-finite (overflowed or NaN) step error estimate rejects the
 /// step, which KrylovKit accepts when the estimate is NaN; if it stays
-/// non-finite at the smallest allowed step, or a step's update
-/// coefficients or the Krylov start norm are not finite, the call fails with [`Error::NonFiniteIterate`] instead of returning a
-/// non-finite `y`.
+/// non-finite at the smallest allowed step, or a Krylov step's update
+/// coefficients or start norm are not finite, the call fails with
+/// [`Error::NonFiniteIterate`]. The zero-start polynomial shortcut preflights its
+/// coefficients and uses Horner evaluation only on overflow, reusing the last
+/// scratch vector with the same `p - 1` vector updates. Ordinary evaluation is
+/// unchanged. Output validation costs one extra norm of the result (except at
+/// `t = 0`); a non-finite norm returns [`Error::NonFiniteIterate`]. Backends
+/// should use overflow-safe norms to avoid rejecting finite vectors.
+/// Non-finite complex `t / |t|` uses reciprocal scaling; finite normalization
+/// keeps its arithmetic unchanged.
 ///
 /// `alg` selects the process: [`Lanczos`] (Hermitian `op`) evaluates the
 /// `φ` functions of the tridiagonal Rayleigh quotient through its
@@ -293,7 +301,11 @@ where
         .map(|_| u0.similar())
         .collect::<Result<Vec<_>, _>>()
         .map_err(Error::Vector)?;
-    let sgn = t / V::Scalar::from_real(tau);
+    let mut sgn = t / V::Scalar::from_real(tau);
+    if !sgn.all_finite() {
+        // Complex division squares tau, which can overflow or underflow.
+        sgn = unit(t, tau);
+    }
     let mut dtau = tau;
     let mut dtau_min = tau / Real::<V>::from_usize(maxiter);
     let maxerr = tau * eta;
@@ -320,7 +332,25 @@ where
         }
         if beta == zero {
             // The φ_p term vanishes identically, so the polynomial part is exact.
-            poly(&mut y, &w, sgn * V::Scalar::from_real(tau - tau0)).map_err(Error::Vector)?;
+            let x = sgn * V::Scalar::from_real(tau - tau0);
+            let mut coef = V::Scalar::one();
+            if (1..p).all(|j| {
+                coef = coef * x / V::Scalar::from_real(Real::<V>::from_usize(j));
+                coef.all_finite()
+            }) {
+                poly(&mut y, &w, x)?;
+            } else if let Some((last, rest)) = w.split_last_mut() {
+                // Horner avoids forming powers that overflow even for a finite polynomial.
+                for (j, wj) in rest.iter().enumerate().rev() {
+                    last.axpby(
+                        V::Scalar::one(),
+                        wj,
+                        x / V::Scalar::from_real(Real::<V>::from_usize(j + 2)),
+                    )
+                    .map_err(Error::Vector)?;
+                }
+                y.axpby(x, last, V::Scalar::one()).map_err(Error::Vector)?;
+            }
             info.converged = usize::from(totalerr <= maxerr);
             info.normres = totalerr;
             break;
@@ -382,6 +412,9 @@ where
     info.numiter = numiter;
     info.numops = numops + proc.numops();
     info.max_imag = proc.max_imag();
+    if !y.norm().map_err(Error::Vector)?.is_finite() {
+        return Err(Error::NonFiniteIterate);
+    }
     Ok((y, info))
 }
 
@@ -610,7 +643,7 @@ impl<S: Scalar> Process<S> for ArnoldiProc<S> {
         let corr = self.exph.result()[(k - 1) + (k + p) * n];
         let a = S::from_real(beta) * powu(x, p);
         check_step(a, c, corr)?;
-        poly(y, w, x).map_err(Error::Vector)?;
+        poly(y, w, x)?;
         ws.basis
             .combine_into(c, y, a, S::one())
             .map_err(Error::Vector)?;
@@ -647,11 +680,14 @@ fn rebuild<V: Vector, A: LinearMap<V>>(
 }
 
 /// `y ← y + Σ_{j=1}^{p-1} xʲ/j!·w_{j+1}`.
-fn poly<V: Vector>(y: &mut V, w: &[V], x: V::Scalar) -> Result<(), V::Error> {
+fn poly<V: Vector>(y: &mut V, w: &[V], x: V::Scalar) -> Result<(), Error<V::Error>> {
     let mut coef = V::Scalar::one();
     for (j, wj) in w.iter().enumerate() {
         coef = coef * x / V::Scalar::from_real(Real::<V>::from_usize(j + 1));
-        y.axpby(coef, wj, V::Scalar::one())?;
+        if !coef.all_finite() {
+            return Err(Error::NonFiniteIterate);
+        }
+        y.axpby(coef, wj, V::Scalar::one()).map_err(Error::Vector)?;
     }
     Ok(())
 }
@@ -738,7 +774,7 @@ fn advance<V: Vector, B: Basis<V>>(
     }
     let a = V::Scalar::from_real(beta) * powu(x, p);
     check_step(a, c, corr)?;
-    poly(y, w, x).map_err(Error::Vector)?;
+    poly(y, w, x)?;
     ws.basis
         .combine_into(c, y, a, V::Scalar::one())
         .map_err(Error::Vector)?;
@@ -747,8 +783,7 @@ fn advance<V: Vector, B: Basis<V>>(
 }
 
 /// Rejects a step whose `k + 1` update coefficients `a·c_j`, `a·corr` are
-/// not finite. Checked here, not through `y.norm()`: a user norm may
-/// overflow (`√⟨y, y⟩`) for a finite `y`.
+/// not finite, before applying them to the vectors.
 fn check_step<S: Scalar, E>(a: S, c: &[S], corr: S) -> Result<(), Error<E>> {
     if c.iter().chain([&corr]).all(|&v| (a * v).all_finite()) {
         Ok(())

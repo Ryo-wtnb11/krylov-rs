@@ -4,7 +4,9 @@
 mod common;
 
 use common::*;
-use krylov::{Arnoldi, Error, KrylovProcess, Lanczos, Workspace, expintegrator, exponentiate};
+use krylov::{
+    Arnoldi, Error, KrylovProcess, Lanczos, Vector, Workspace, expintegrator, exponentiate,
+};
 use nalgebra::DMatrix;
 use num_complex::{Complex32, Complex64};
 
@@ -337,6 +339,179 @@ fn warm_expintegrator_allocates_p_vectors() {
         assert!(info.numiter > 1);
         assert_eq!(similar_calls() - before, 3);
     }
+}
+
+thread_local! {
+    static VECTOR_UPDATES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Stable norms let these tests reach vector overflow instead of failing on the input norm.
+#[derive(Debug)]
+struct Stable<S>(DVec<S>);
+
+impl<S: TestScalar> Vector for Stable<S> {
+    type Scalar = S;
+    type Error = std::convert::Infallible;
+    fn similar(&self) -> Result<Self, Self::Error> {
+        self.0.similar().map(Self)
+    }
+    fn copy_from(&mut self, x: &Self) -> Result<(), Self::Error> {
+        self.0.copy_from(&x.0)
+    }
+    fn inner(&self, y: &Self) -> Result<S, Self::Error> {
+        self.0.inner(&y.0)
+    }
+    fn norm(&self) -> Result<S::Real, Self::Error> {
+        let norm = self.0.0.iter().fold(0.0_f64, |r, z| {
+            let z = z.to_c64();
+            r.hypot(z.re).hypot(z.im)
+        });
+        Ok(<S::Real as num_traits::NumCast>::from(norm).unwrap())
+    }
+    fn axpby(&mut self, a: S, x: &Self, b: S) -> Result<(), Self::Error> {
+        VECTOR_UPDATES.with(|n| n.set(n.get() + 1));
+        self.0.axpby(a, &x.0, b)
+    }
+}
+
+fn check_polynomial_coefficients<S: TestScalar>(t: S, u: &[S], want: Option<S>) {
+    let u: Vec<_> = u.iter().map(|&s| Stable(DVec(vec![s]))).collect();
+    let mut op = |_: &Stable<S>, y: &mut Stable<S>| {
+        y.0.0.fill(S::zero());
+        Ok(())
+    };
+    let mut ws = Workspace::with_capacity(&u[0], 4).unwrap();
+    for arnoldi in [false, true] {
+        let before = similar_calls();
+        VECTOR_UPDATES.with(|n| n.set(0));
+        let result = if arnoldi {
+            expintegrator(&mut op, t, &u, &Arnoldi::new(4, 100, 1e-12), &mut ws)
+        } else {
+            expintegrator(&mut op, t, &u, &Lanczos::new(4, 100, 1e-12), &mut ws)
+        };
+        let p = u.len() - 1;
+        assert_eq!(similar_calls() - before, p);
+        // Rebuild adds p(p+1)/2 inputs; either evaluation uses p-1 updates.
+        assert_eq!(VECTOR_UPDATES.with(|n| n.get()), p * (p + 1) / 2 + p - 1);
+        if let Some(want) = want {
+            let (y, info) = result.unwrap();
+            assert_eq!(y.0.0, [want]);
+            assert_eq!(
+                (info.converged, info.numiter, info.numops),
+                (1, 0, u.len() - 1)
+            );
+            assert_eq!(to_f64(info.normres), 0.0);
+        } else {
+            assert_eq!(result.unwrap_err(), Error::NonFiniteIterate);
+        }
+    }
+}
+
+#[test]
+fn polynomial_real_coefficient_overflow() {
+    // A = 0: the exact result is t, but the unused t²/2 coefficient overflows.
+    check_polynomial_coefficients(1e200, &[0.0, 1.0, 0.0, 0.0], Some(1e200));
+}
+
+#[test]
+fn polynomial_complex_coefficient_overflow() {
+    // A = 0: the exact result is t·(1 + i), finite for both real and imaginary t.
+    let u = [0.0, 1.0, 0.0, 0.0, 0.0].map(|v| Complex64::new(v, v));
+    // Keep |t|² finite so complex division reaches the overflowing t³/6 update.
+    for t in [Complex64::new(1e150, 0.0), Complex64::new(0.0, 1e150)] {
+        check_polynomial_coefficients(t, &u, Some(t * Complex64::new(1.0, 1.0)));
+    }
+}
+
+#[test]
+fn polynomial_horner_factorial_divisor() {
+    // A = 0: t²/2 overflows, but t²/2·u₂ = 2^599 exactly.
+    let t = 2.0_f64.powi(600);
+    let u = [0.0, 0.0, 2.0_f64.powi(-600), 0.0];
+    let want = 2.0_f64.powi(599);
+    check_polynomial_coefficients(t, &u, Some(want));
+    check_polynomial_coefficients(
+        Complex64::new(t, 0.0),
+        &u.map(|v| Complex64::new(v, 0.0)),
+        Some(Complex64::new(want, 0.0)),
+    );
+}
+
+#[test]
+fn polynomial_exact_result_overflow() {
+    // A = 0: y = t²/2 = 5e399 itself exceeds f64's range.
+    check_polynomial_coefficients(1e200, &[0.0, 0.0, 1.0, 0.0], None);
+}
+
+#[test]
+fn polynomial_complex_exact_result_overflow() {
+    // Horner avoids coefficient overflow, but y = t²/2·u₂ is still non-finite.
+    check_polynomial_coefficients(
+        Complex64::new(1e150, 0.0),
+        &[0.0, 0.0, 1e50, 0.0, 0.0].map(|v| Complex64::new(v, v)),
+        None,
+    );
+}
+
+#[test]
+fn polynomial_normal_coefficients() {
+    // A = 0: y = 1 + 2t + 3t²/2.
+    check_polynomial_coefficients(2.0, &[1.0, 2.0, 3.0, 0.0], Some(11.0));
+    check_polynomial_coefficients(-2.0, &[1.0, 2.0, 3.0, 0.0], Some(3.0));
+    check_polynomial_coefficients(
+        Complex64::new(0.0, -2.0),
+        &[1.0, 2.0, 3.0, 0.0].map(|v| Complex64::new(v, 0.0)),
+        Some(Complex64::new(-5.0, -4.0)),
+    );
+    // Forward evaluation differs from Horner by one ulp on these inputs.
+    check_polynomial_coefficients(2.1, &[0.1, 0.2, 0.3, 0.0], Some(1.1815));
+    check_polynomial_coefficients(
+        Complex64::new(2.1, 0.0),
+        &[0.1, 0.2, 0.3, 0.0].map(|v| Complex64::new(v, v)),
+        Some(Complex64::new(1.1815, 1.1815)),
+    );
+}
+
+#[test]
+fn polynomial_real_vector_overflow_with_finite_coefficients() {
+    // A = 0: the only coefficient t is finite, but y = t·u₁ overflows.
+    check_polynomial_coefficients(1e200, &[0.0, 1e150, 0.0], None);
+}
+
+#[test]
+fn polynomial_complex_vector_overflow_with_finite_coefficients() {
+    check_polynomial_coefficients(
+        Complex64::new(1e150, 0.0),
+        &[0.0, 1e200, 0.0].map(|v| Complex64::new(v, v)),
+        None,
+    );
+}
+
+fn check_exponential_vector_overflow<S: TestScalar>() {
+    // A = I: x and the update coefficient (e-1)·x are finite, but e·x is not.
+    let x = Stable(DVec(vec![S::from_c64(Complex64::new(
+        2.0_f64.powi(1023),
+        0.0,
+    ))]));
+    assert!(to_f64(x.norm().unwrap()).is_finite());
+    let mut op = |x: &Stable<S>, y: &mut Stable<S>| y.copy_from(x);
+    let mut ws = Workspace::with_capacity(&x, 4).unwrap();
+    for result in [
+        exponentiate(&mut op, S::one(), &x, &Lanczos::new(4, 100, 1e-12), &mut ws),
+        exponentiate(&mut op, S::one(), &x, &Arnoldi::new(4, 100, 1e-12), &mut ws),
+    ] {
+        assert_eq!(result.unwrap_err(), Error::NonFiniteIterate);
+    }
+}
+
+#[test]
+fn exponential_real_vector_overflow_with_finite_coefficients() {
+    check_exponential_vector_overflow::<f64>();
+}
+
+#[test]
+fn exponential_complex_vector_overflow_with_finite_coefficients() {
+    check_exponential_vector_overflow::<Complex64>();
 }
 
 #[test]
@@ -817,9 +992,9 @@ fn overflowing_result_is_a_typed_error() {
 }
 
 #[test]
-fn large_finite_result_with_a_naive_norm_is_returned() {
+fn large_finite_result_with_a_naive_norm_is_rejected() {
     // y = e^{λt}·x is finite, but ‖y‖² overflows the vector's own norm.
-    fn go<S: TestScalar>(lambda: f64, alg: &impl KrylovProcess, rtol: f64) {
+    fn go<S: TestScalar>(lambda: f64, alg: &impl KrylovProcess) {
         let x = Naive(vec![S::from_c64(Complex64::new(1e-10, 0.0)); 4]);
         let mut op = |v: &Naive<S>, y: &mut Naive<S>| {
             for (yi, vi) in y.0.iter_mut().zip(&v.0) {
@@ -828,21 +1003,16 @@ fn large_finite_result_with_a_naive_norm_is_returned() {
             Ok::<(), std::convert::Infallible>(())
         };
         let mut ws = Workspace::with_capacity(&x, 8).unwrap();
-        let (y, _) = exponentiate(&mut op, S::one(), &x, alg, &mut ws).unwrap();
-        let want = 1e-10 * lambda.exp();
-        for yi in &y.0 {
-            let got = yi.to_c64();
-            assert!(
-                (got - want).norm() <= rtol * want,
-                "λ = {lambda}: {got} vs {want}"
-            );
-        }
+        assert_eq!(
+            exponentiate(&mut op, S::one(), &x, alg, &mut ws).unwrap_err(),
+            Error::NonFiniteIterate
+        );
     }
     let (lanczos, arnoldi) = (Lanczos::new(8, 100, 1e-12), Arnoldi::new(8, 100, 1e-12));
-    go::<f64>(400.0, &lanczos, 1e-12);
-    go::<f64>(400.0, &arnoldi, 1e-12);
-    go::<Complex64>(400.0, &lanczos, 1e-12);
-    go::<f32>(80.0, &lanczos, 1e-3);
-    go::<f32>(80.0, &arnoldi, 1e-3);
-    go::<Complex32>(80.0, &lanczos, 1e-3);
+    go::<f64>(400.0, &lanczos);
+    go::<f64>(400.0, &arnoldi);
+    go::<Complex64>(400.0, &lanczos);
+    go::<f32>(80.0, &lanczos);
+    go::<f32>(80.0, &arnoldi);
+    go::<Complex32>(80.0, &lanczos);
 }

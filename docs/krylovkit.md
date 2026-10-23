@@ -68,14 +68,24 @@ sign/phase convention differs. See [householder.rs](../src/dense/householder.rs)
   case (counts are checked with slack).
 - **Vanishing Krylov start:** for `p >= 2`, a zero `wₚ₊₁` takes the remaining
   polynomial step without a Krylov space, avoiding division by zero; the
-  φ term vanishes. Here `p = max(u.len() - 1, 1)`.
+  φ term vanishes. Here `p = max(u.len() - 1, 1)`. Coefficients are preflighted
+  in scalar arithmetic; only on overflow, Horner evaluation reuses the last
+  `w` buffer with exactly `p - 1` vector updates and no new allocation.
+  Ordinary evaluation keeps its arithmetic order. KrylovKit v0.10.4 has no
+  `p >= 2` zero-start shortcut.
 - **Non-finite steps:** NaN estimates are rejected like overflowed ones. An
   estimate still non-finite at the minimum or forced final step, a non-finite
-  Krylov start norm, or a non-finite checked Krylov update coefficient returns
-  `NonFiniteIterate`. Polynomial-path coefficients are unchecked, so overflow
-  can return `Ok` with NaN output and `converged = 1`.
+  Krylov start norm, or a non-finite update coefficient returns
+  `NonFiniteIterate`. Krylov polynomial coefficients are checked before their
+  vector updates. A final non-finite result norm also returns `NonFiniteIterate`,
+  catching vector overflow even with finite coefficients. This costs one extra
+  norm of the result, except at `t = 0` where the input check suffices. Backends
+  should use overflow-safe norms; a naive norm can reject finite vectors.
+  KrylovKit v0.10.4 checks neither polynomial coefficients nor the result norm.
   Real arguments use real φ arithmetic even for complex vectors, preserving
   `∞ + 0i` so overflow rejection works.
+  Non-finite complex `t / |t|` falls back to reciprocal scaling to avoid
+  squaring `|t|` at extreme scales; finite normalization is unchanged.
 - **Arnoldi projected exponential:** follows Julia 1.11's `exp!` sequence,
   but finds the scaling exponent by exact halving to avoid integer overflow
   in `2^si` (only libm rounding at an integer boundary can change the exponent).
