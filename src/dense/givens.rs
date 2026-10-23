@@ -76,7 +76,7 @@ pub(crate) fn givens<S: Scalar>(f: S, g: S, i1: usize, i2: usize) -> (Givens<S>,
 /// near the range limits. A subnormal `x` has no finite reciprocal and an
 /// imprecise modulus, so it is first rescaled by the exact power of two
 /// `1/ε`.
-fn unit<S: Scalar>(x: S, ax: S::Real) -> S {
+pub(crate) fn unit<S: Scalar>(x: S, ax: S::Real) -> S {
     if ax < S::Real::min_positive_value() {
         let xs = x * S::from_real(S::Real::one() / S::Real::epsilon());
         xs * S::from_real(S::Real::one() / xs.modulus())
