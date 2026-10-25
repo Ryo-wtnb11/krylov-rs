@@ -1,5 +1,5 @@
 //! Block thick-restart restoration (the dense Hermitian eigenproblem itself
-//! is LAPACK `xSYEVR`/`xHEEVR` through `Ops::heig`).
+//! uses faer through `Ops::heig`).
 
 use super::householder;
 use crate::scalar::Scalar;

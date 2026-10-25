@@ -440,7 +440,7 @@ impl<S: Scalar> Process<S> for LanczosProc<S> {
             lam: vec![zero; kd],
             e: vec![zero; kd],
             z: vec![zero; kd * kd],
-            lw: Work::default(),
+            lw: Work::new(kd, crate::dense::Problem::Tridiag),
             c: Vec::with_capacity(kd),
             s1: vec![S::zero(); kd],
             s2: vec![S::zero(); kd],

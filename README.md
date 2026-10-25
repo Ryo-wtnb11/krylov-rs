@@ -22,17 +22,12 @@ See the [KrylovKit correspondence](docs/krylovkit.md) for details and reasons.
 ```toml
 [dependencies]
 krylov = "0.2"
-lapack-src = { version = "0.13", features = ["openblas"] } # "accelerate" on macOS
 ```
 
-The final binary must link a LAPACK provider; krylov depends only on the
-[`lapack`](https://crates.io/crates/lapack) declarations. For the provider above:
-
-```rust
-extern crate lapack_src as _; // once, in the binary (or a crate it links)
-```
-
-See the [provider notes](docs/guide.md#lapack-provider) for system linking.
+Small projected problems use sequential `t4a-faer` 0.24.9, with default
+features disabled (`std`, `linalg` only). No external BLAS/LAPACK provider or
+system library installation is required. Scratch is allocated per solver call
+and reused across iterations; large-vector arithmetic remains caller-owned.
 
 ## Documentation
 

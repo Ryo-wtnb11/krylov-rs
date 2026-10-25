@@ -34,6 +34,40 @@ struct LowRank<S> {
     _s: std::marker::PhantomData<S>,
 }
 
+/// Independent dense reference for the truncating vector, not a krylov adapter.
+fn thin_svd(x: &DMatrix<Complex64>) -> (Vec<f64>, DMatrix<Complex64>, DMatrix<Complex64>) {
+    use faer::{
+        MatMut, MatRef, Par,
+        diag::DiagMut,
+        dyn_stack::{MemBuffer, MemStack},
+        linalg::svd::{self, ComputeSvdVectors::Thin},
+    };
+    let (m, n) = x.shape();
+    let k = m.min(n);
+    let mut values = vec![Complex64::default(); k];
+    let mut u = DMatrix::zeros(m, k);
+    let mut v = DMatrix::zeros(n, k);
+    let mut mem = MemBuffer::new(svd::svd_scratch::<Complex64>(
+        m,
+        n,
+        Thin,
+        Thin,
+        Par::Seq,
+        Default::default(),
+    ));
+    svd::svd(
+        MatRef::from_column_major_slice(x.as_slice(), m, n),
+        DiagMut::from_slice_mut(&mut values),
+        Some(MatMut::from_column_major_slice_mut(u.as_mut_slice(), m, k)),
+        Some(MatMut::from_column_major_slice_mut(v.as_mut_slice(), n, k)),
+        Par::Seq,
+        MemStack::new(&mut mem),
+        Default::default(),
+    )
+    .unwrap();
+    (values.into_iter().map(|s| s.re).collect(), u, v)
+}
+
 impl<S: TestScalar> LowRank<S> {
     fn new(x: DMatrix<Complex64>, tau: f64) -> Self {
         let mut v = Self {
@@ -46,56 +80,15 @@ impl<S: TestScalar> LowRank<S> {
     }
 
     /// Keeps the fewest singular triplets whose discarded weight is
-    /// `<= τ·‖X‖_F`. Uses LAPACK `zgesvd`: nalgebra 0.35's `svd` returned
-    /// singular vectors that do not reconstruct an exactly rank-2 16 × 16
-    /// matrix (`‖U·Σ·Vᵀ − X‖ ≈ ‖X‖`).
+    /// `<= τ·‖X‖_F`. faer's thin SVD returns V (reconstruction uses Vᴴ).
     fn truncate(&mut self) {
         let (m, n) = (self.x.nrows(), self.x.ncols());
-        let k = m.min(n);
-        let mut a = self.x.as_slice().to_vec();
-        let mut s = vec![0.0; k];
-        let mut u = vec![Complex64::default(); m * k];
-        let mut vt = vec![Complex64::default(); k * n];
-        let mut rwork = vec![0.0; 5 * k];
-        let mut info = 0;
-        let (mi, ni, ki) = (m as i32, n as i32, k as i32);
-        let mut query = [Complex64::default()];
-        // SAFETY: every buffer has the length zgesvd requires for jobu =
-        // jobvt = 'S' with the leading dimensions passed.
-        unsafe {
-            lapack::zgesvd(
-                b'S', b'S', mi, ni, &mut a, mi, &mut s, &mut u, mi, &mut vt, ki, &mut query, -1,
-                &mut rwork, &mut info,
-            );
-        }
-        let lwork = query[0].re as usize;
-        let mut work = vec![Complex64::default(); lwork];
-        // SAFETY: as above, with `work` of the queried length.
-        unsafe {
-            lapack::zgesvd(
-                b'S',
-                b'S',
-                mi,
-                ni,
-                &mut a,
-                mi,
-                &mut s,
-                &mut u,
-                mi,
-                &mut vt,
-                ki,
-                &mut work,
-                lwork as i32,
-                &mut rwork,
-                &mut info,
-            );
-        }
-        assert_eq!(info, 0, "zgesvd failed");
+        let (s, u, v) = thin_svd(&self.x);
         // s is descending.
         let total: f64 = s.iter().map(|x| x * x).sum();
         let budget = self.tau * self.tau * total;
         let mut tail = 0.0;
-        let mut r = k;
+        let mut r = s.len();
         while r > 0 && tail + s[r - 1] * s[r - 1] <= budget {
             tail += s[r - 1] * s[r - 1];
             r -= 1;
@@ -104,11 +97,9 @@ impl<S: TestScalar> LowRank<S> {
             DROPS.with(|c| c.set(c.get() + 1));
         }
         MAX_RANK.with(|c| c.set(c.get().max(r)));
-        let u = DMatrix::from_column_slice(m, k, &u);
-        let vt = DMatrix::from_column_slice(k, n, &vt);
         let mut y = DMatrix::<Complex64>::zeros(m, n);
         for (i, &si) in s.iter().enumerate().take(r) {
-            y += u.column(i) * Complex64::new(si, 0.0) * vt.row(i);
+            y += u.column(i) * Complex64::new(si, 0.0) * v.column(i).adjoint();
         }
         if !<S as TestScalar>::COMPLEX {
             y.apply(|z| *z = Complex64::new(z.re, 0.0));
@@ -467,5 +458,38 @@ fn gmres_coarse_truncation_sets_the_accuracy_floor() {
     for r in both_gmres(1e3 * TOL) {
         assert_eq!(r.converged, 0);
         assert!(r.err > 10.0 * TOL, "error {} should exceed tol", r.err);
+    }
+}
+
+#[test]
+fn dense_svd_reconstructs_rectangular_and_exact_rank_two_with_adjoint() {
+    let c =
+        |i: usize, j: usize| Complex64::new((1 + i + 2 * j) as f64, (i as f64) - (j as f64) * 0.7);
+    let full = DMatrix::from_fn(5, 3, |i, j| {
+        c(i, j)
+            + if i == j {
+                Complex64::new(1., 2.)
+            } else {
+                Complex64::default()
+            }
+    });
+    let rank_two = DMatrix::from_fn(5, 2, c) * DMatrix::from_fn(2, 4, |i, j| c(j + 1, i));
+    for (x, rank_two) in [(full, false), (rank_two, true)] {
+        let (s, u, v) = thin_svd(&x);
+        let d = DMatrix::from_diagonal(&nalgebra::DVector::from_iterator(
+            s.len(),
+            s.iter().map(|&s| Complex64::new(s, 0.)),
+        ));
+        assert!((&u * &d * v.adjoint() - &x).norm() < 1e-12 * x.norm());
+        assert!((&u * &d * v.transpose() - &x).norm() > 0.1 * x.norm()); // Vᵀ misses conjugation
+        if rank_two {
+            assert!(s[2..].iter().all(|&s| s < 1e-12 * x.norm()));
+        }
+        let tau = 1e-4;
+        let truncated = LowRank::<Complex64>::new(x.clone(), tau);
+        assert!((&truncated.x - &x).norm() <= tau * x.norm() + 1e-12 * x.norm());
+        let r = 1; // negative control: overtruncating violates this budget
+        let overtruncated = u.columns(0, r) * d.view((0, 0), (r, r)) * v.columns(0, r).adjoint();
+        assert!((overtruncated - &x).norm() > tau * x.norm());
     }
 }

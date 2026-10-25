@@ -1,5 +1,5 @@
 //! Lanczos thick-restart restoration (the tridiagonal eigenproblem itself is
-//! LAPACK `xSTEGR` through `RealOps::stegr`).
+//! faer tridiagonal EVD through `RealOps::stegr`).
 
 use super::householder;
 use crate::scalar::RealScalar;

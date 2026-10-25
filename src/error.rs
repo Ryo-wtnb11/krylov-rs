@@ -32,7 +32,7 @@ pub enum Error<E> {
     },
     /// An algorithm parameter is outside its domain.
     InvalidArgument(&'static str),
-    /// The small dense eigenvalue or singular value computation (LAPACK)
+    /// The small dense eigenvalue or singular value computation (faer)
     /// failed: no convergence, or non-finite entries in the projected matrix.
     DenseNoConvergence,
     /// Conjugate gradients met a search direction `p` with `Re⟨p, A·p⟩ <= 0`:
@@ -51,7 +51,7 @@ pub enum Error<E> {
     /// step's update coefficients are not finite (typically `exp(t·A)`
     /// overflows).
     NonFiniteIterate,
-    /// Reordering the small Schur form was rejected by LAPACK `xTREXC`
+    /// Reordering the small Schur form was rejected by faer's real Schur block move
     /// (a swap of nearly equal or ill-conditioned 2×2 blocks); KrylovKit
     /// throws `LAPACKException` there.
     SchurReorderFailed,

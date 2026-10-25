@@ -86,13 +86,17 @@ Lanczos `max_imag` records the largest discarded `|Im α|`.
 Typed failures, including propagated vector errors, are defined by
 [`Error`](../src/error.rs); they are separate from non-convergence.
 
-## LAPACK provider
+## Dense backend
 
-The final binary links a provider as shown in the [README](../README.md#installation).
-System linking is also possible. The crate's tests use `lapack-src` with
-Accelerate on macOS; elsewhere they use its OpenBLAS feature together with
-`openblas-src = { version = "0.10", default-features = false, features = ["system"] }`.
-See [lapack-src](https://github.com/blas-lapack-rs/lapack-src) for providers.
+Small projected problems use `t4a-faer` 0.24.9 with `Par::Seq`, without a
+BLAS/LAPACK provider. Its default features are disabled (`std`, `linalg` only).
+Private aligned scratch is pre-sized per solver invocation and reused through
+iterations, restarts and exponential step-size trials. Public `Workspace`
+continues to own only vectors and basis storage. Peak dense scratch can exceed
+the previous LAPACK workspace. The adapter arena does not grow during trials;
+backend-internal allocation is checked separately (see the current migration
+limitations in the correspondence).
+See [the correspondence](krylovkit.md#dense-kernels) for numerical differences.
 
 ## Vector contract and distributed use
 
@@ -102,7 +106,7 @@ hold arbitrary previous contents.
 
 For distributed vectors, `inner`, `norm` and `Basis::project` results must be
 bitwise identical on every rank. All ranks must use the same binary, libm and
-LAPACK build (provider, version and thread count), and return errors on every
+dense-backend build and version, and return errors on every
 rank. These are caller obligations for identical scalar decisions and to
 avoid blocking other ranks in reductions; krylov supplies no MPI adapter.
 

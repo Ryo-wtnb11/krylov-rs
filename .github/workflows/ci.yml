@@ -14,8 +14,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install the system OpenBLAS (LAPACK provider for the tests)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libopenblas-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -30,9 +28,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # No LAPACK provider installed: the library must build without one.
+      # The library and its dense backend must build on the declared MSRV.
       - uses: dtolnay/rust-toolchain@1.85
-      - run: cargo build --locked
+      - run: cargo +1.85 build --locked
 
   # Reporting only: main-push, never gates a PR.
   coverage:
@@ -43,8 +41,6 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      - name: Install the system OpenBLAS (LAPACK provider for the tests)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libopenblas-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview

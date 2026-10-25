@@ -247,7 +247,7 @@ where
     let mut perm = Vec::with_capacity(kd);
     let mut hb = vec![s0; (kd + 1) * kd];
     let mut refl = vec![s0; kd];
-    let mut lw = Work::default();
+    let mut lw = Work::new(kd, crate::dense::Problem::Schur);
     let mut converged = 0;
     let mut kk = 1;
     let mut beta_k = fact.normres();
@@ -436,12 +436,12 @@ fn info<V: Vector>(
 ///
 /// Differs from KrylovKit (see [docs/krylovkit.md](https://github.com/Ryo-wtnb11/krylov-rs/blob/main/docs/krylovkit.md)); the same holds for
 /// [`arnoldi_eigsolve`] and [`realeigsolve`]:
-/// - Before LAPACK `hseqr` the Rayleigh quotient is scaled by a power of four
+/// - Before faer Hessenberg Schur the Rayleigh quotient is scaled by a power of four
 ///   into `[sqrt(SAFMIN)/ULP, its inverse]`, as LAPACK's `xGEEV`/`xGEES`
 ///   drivers do; KrylovKit calls `hseqr` unscaled, which deflates a quotient
 ///   with entries near `1e-300` to its diagonal. In-range quotients are
-///   passed to LAPACK unchanged.
-/// - A reordering swap rejected by LAPACK `trexc` is
+///   passed to faer unchanged.
+/// - A reordering swap rejected by faer is
 ///   [`Error::SchurReorderFailed`] (KrylovKit throws `LAPACKException`).
 /// - With `krylovdim == 1` the first subspace is final (KrylovKit indexes out
 ///   of bounds).
@@ -489,7 +489,7 @@ where
 ///
 /// Returns `n` eigenvalues and unit-norm eigenvectors (`n` as in
 /// [`schursolve`]) with residuals `A·xᵢ - λᵢ·xᵢ`. The eigenvectors of the
-/// Schur factor come from LAPACK `xTREVC`. Real maps whose eigenvectors are
+/// Schur factor come from faer's right-eigenvector routine. Real maps whose eigenvectors are
 /// complex need a complex vector type; for real eigenvalues of a real map
 /// see [`realeigsolve`].
 ///

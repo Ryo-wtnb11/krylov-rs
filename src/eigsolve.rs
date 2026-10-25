@@ -125,7 +125,7 @@ where
     let mut harrow = vec![zero; (kd + 1) * kd];
     let mut refl = vec![zero; kd];
     let mut q = Vec::with_capacity(kd * kd);
-    let mut lw = Work::default();
+    let mut lw = Work::new(kd, crate::dense::Problem::Tridiag);
     let mut converged = 0;
     let mut kk = 1;
 

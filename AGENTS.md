@@ -5,11 +5,10 @@
   restarts. It never owns large vector arithmetic, linear-map internals,
   backend adapters (symtn, tenferro, CUDA, MPI live with their owners),
   threading, caches or global state.
-- **Dependencies.** Runtime: `num-traits`, `num-complex` and `lapack`
-  (declarations only). The library never selects a LAPACK provider; the final
-  binary links one, and the tests use a target-specific `lapack-src`
-  dev-dependency (Accelerate on macOS, system OpenBLAS elsewhere). The small
-  dense problems call LAPACK where KrylovKit does; crate code is kept only
+- **Dependencies.** Runtime: `num-traits`, `num-complex` and
+  `faer = { package = "t4a-faer", version = "=0.24.9", default-features = false, features = ["std", "linalg"] }`.
+  Small dense problems use sequential borrowed faer views and a private
+  per-invocation arena; no BLAS/LAPACK provider is linked. Crate code is kept
   where KrylovKit has its own Julia code (Givens, φ functions, Householder
   restart restoration). Dev-dependencies may include one dense reference
   library for test oracles. Anything else needs explicit approval.

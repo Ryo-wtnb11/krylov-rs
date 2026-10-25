@@ -20,15 +20,12 @@
 //! `RealVec` (real-linear maps on complex vectors) is not supported; the
 //! vector type's scalar decides which entry points apply.
 //!
-//! The small projected problems call LAPACK through the [`lapack`] crate
-//! declarations, as KrylovKit does. krylov does not pick a LAPACK
-//! implementation: the final binary links one, for example by depending on
-//! `lapack-src` with the `openblas`, `accelerate` or
-//! `intel-mkl-dynamic-parallel` feature and
-//! naming it once with `extern crate lapack_src as _;`.
+//! The small projected problems use sequential pure-Rust `t4a-faer` 0.24.9
+//! routines, with scratch reused within each solver invocation. No external
+//! BLAS/LAPACK provider is needed. The dense algorithms differ from KrylovKit's
+//! LAPACK routines; see `docs/krylovkit.md` for the numerical boundary.
 //!
 //! ```
-//! # extern crate lapack_src as _;
 //! use krylov::{eigsolve, Lanczos, Vector, Which, Workspace};
 //!
 //! // A minimal host vector.
@@ -74,10 +71,6 @@
 //! ```
 
 #![warn(missing_docs)]
-
-// The test binaries link the dev-dependency provider; the library never does.
-#[cfg(test)]
-extern crate lapack_src as _;
 
 mod arnoldi;
 mod basis;

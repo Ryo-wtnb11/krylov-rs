@@ -334,7 +334,7 @@ where
     let mut p = vec![s0; (kd + 1) * kd]; // left singular vectors of B (lp × K)
     let mut y = vec![s0; kd * kd]; // right singular vectors of B
     let mut eb = vec![s0; kd];
-    let mut lw = Work::default();
+    let mut lw = Work::new(kd, crate::dense::Problem::Bidiag);
     let mut f = vec![s0; kd];
     let mut h = vec![s0; (kd + 1) * kd];
     let mut refl = vec![s0; kd];
