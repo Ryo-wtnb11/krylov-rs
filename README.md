@@ -11,7 +11,8 @@ Matrix-free Krylov algorithms in Rust for user-defined vector types, inspired
 by [KrylovKit.jl](https://github.com/Jutho/KrylovKit.jl/tree/v0.10.4).
 krylov owns iteration, orthogonalization, small projected problems,
 convergence tests and restarts. Callers own vector storage and map operations
-through `Vector`, `Basis` and `LinearMap`.
+through `Vector`, `Basis` and `LinearMap`, run on a caller-held execution
+context (`Vector::Context`, `()` for host vectors) passed to every call.
 
 Intentional differences include caller-owned workspaces, explicit cost and
 accuracy parameters, CGS2 orthogonalization by default, and typed failures.

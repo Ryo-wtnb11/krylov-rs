@@ -62,9 +62,17 @@ fn eig_case<S: TestScalar>(c: &Case, howmany: usize, which: Which, kk: Option<(u
     let (a, x) = c.inputs();
     let x0 = to_dvec::<S>(&x);
     let alg = c.alg();
-    let mut ws = Workspace::with_capacity(&x0, alg.get_krylovdim()).unwrap();
-    let (vals, vecs, info) =
-        eigsolve(&mut DenseOp::new(&a), &x0, howmany, which, &alg, &mut ws).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &x0, alg.get_krylovdim()).unwrap();
+    let (vals, vecs, info) = eigsolve(
+        &mut (),
+        &mut DenseOp::new(&a),
+        &x0,
+        howmany,
+        which,
+        &alg,
+        &mut ws,
+    )
+    .unwrap();
     let name = c.name;
     let mut want = dense_eigenvalues(&a);
     match which {
@@ -104,9 +112,16 @@ fn exp_case<S: TestScalar>(c: &Case, t: Complex64, kk: Option<Counts>) {
     let (a, x) = c.inputs();
     let x0 = to_dvec::<S>(&x);
     let alg = c.alg();
-    let mut ws = Workspace::with_capacity(&x0, alg.get_krylovdim()).unwrap();
-    let (y, info) =
-        exponentiate(&mut DenseOp::new(&a), S::from_c64(t), &x0, &alg, &mut ws).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &x0, alg.get_krylovdim()).unwrap();
+    let (y, info) = exponentiate(
+        &mut (),
+        &mut DenseOp::new(&a),
+        S::from_c64(t),
+        &x0,
+        &alg,
+        &mut ws,
+    )
+    .unwrap();
     let name = c.name;
     let want = dense_expv(&a, t, &x);
     let rel = diff_norm(&to_c64(&y), &want) / norm(&want);

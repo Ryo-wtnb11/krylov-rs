@@ -21,9 +21,9 @@ impl<V: Vector> VecBasis<V> {
     /// Allocates `capacity + 1` vectors like `x` (one is scratch for
     /// [`rotate`](Basis::rotate)); inside a [`Workspace`](crate::Workspace)
     /// the total is `capacity + 3`. The basis starts empty.
-    pub fn with_capacity(x: &V, capacity: usize) -> Result<Self, V::Error> {
+    pub fn with_capacity(cx: &mut V::Context, x: &V, capacity: usize) -> Result<Self, V::Error> {
         let vecs = (0..=capacity)
-            .map(|_| x.similar())
+            .map(|_| x.similar(cx))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             vecs,
@@ -47,24 +47,25 @@ impl<V: Vector> Basis<V> for VecBasis<V> {
     /// # Panics
     ///
     /// Panics if the basis is full.
-    fn push(&mut self, v: &V, a: V::Scalar) -> Result<(), V::Error> {
+    fn push(&mut self, cx: &mut V::Context, v: &V, a: V::Scalar) -> Result<(), V::Error> {
         assert!(self.len < self.capacity(), "VecBasis::push: basis is full");
-        self.vecs[self.len].axpby(a, v, V::Scalar::zero())?;
+        self.vecs[self.len].axpby(cx, a, v, V::Scalar::zero())?;
         self.len += 1;
         Ok(())
     }
     fn truncate(&mut self, len: usize) {
         self.len = self.len.min(len);
     }
-    fn project(&self, x: &V, out: &mut [V::Scalar]) -> Result<(), V::Error> {
+    fn project(&self, cx: &mut V::Context, x: &V, out: &mut [V::Scalar]) -> Result<(), V::Error> {
         debug_assert_eq!(out.len(), self.len);
         for (o, v) in out.iter_mut().zip(self.vectors()) {
-            *o = v.inner(x)?;
+            *o = v.inner(cx, x)?;
         }
         Ok(())
     }
     fn combine_into(
         &self,
+        cx: &mut V::Context,
         c: &[V::Scalar],
         y: &mut V,
         a: V::Scalar,
@@ -73,11 +74,11 @@ impl<V: Vector> Basis<V> for VecBasis<V> {
         debug_assert_eq!(c.len(), self.len);
         let Some((&c0, rest)) = c.split_first() else {
             // Empty basis: y ← b·y, with a finite dummy `x` scaled by zero.
-            return y.axpby(V::Scalar::zero(), &self.vecs[0], b);
+            return y.axpby(cx, V::Scalar::zero(), &self.vecs[0], b);
         };
-        y.axpby(a * c0, &self.vecs[0], b)?;
+        y.axpby(cx, a * c0, &self.vecs[0], b)?;
         for (&ci, v) in rest.iter().zip(&self.vecs[1..]) {
-            y.axpby(a * ci, v, V::Scalar::one())?;
+            y.axpby(cx, a * ci, v, V::Scalar::one())?;
         }
         Ok(())
     }
@@ -92,7 +93,12 @@ impl<V: Vector> Basis<V> for VecBasis<V> {
     /// # Panics
     ///
     /// Panics if `q.nrows() != len()` or `keep > min(q.ncols(), len())`.
-    fn rotate(&mut self, q: MatRef<'_, V::Scalar>, keep: usize) -> Result<(), V::Error> {
+    fn rotate(
+        &mut self,
+        cx: &mut V::Context,
+        q: MatRef<'_, V::Scalar>,
+        keep: usize,
+    ) -> Result<(), V::Error> {
         let m = self.len;
         assert!(
             q.nrows() == m && keep <= q.ncols(),
@@ -127,29 +133,29 @@ impl<V: Vector> Basis<V> for VecBasis<V> {
                 }
             }
             // V ← V·hᴴ on columns j..m: y = Σ u_i v_i; v_k -= conj(β)·conj(u_k)·y.
-            y.axpby(u[0], &basis[j], V::Scalar::zero())?;
+            y.axpby(cx, u[0], &basis[j], V::Scalar::zero())?;
             for (ui, v) in u[1..].iter().zip(&basis[j + 1..m]) {
-                y.axpby(*ui, v, V::Scalar::one())?;
+                y.axpby(cx, *ui, v, V::Scalar::one())?;
             }
             for (ui, v) in u.iter().zip(&mut basis[j..m]) {
-                v.axpby(-(beta.conj() * ui.conj()), y, V::Scalar::one())?;
+                v.axpby(cx, -(beta.conj() * ui.conj()), y, V::Scalar::one())?;
             }
         }
         self.len = keep;
         Ok(())
     }
 
-    fn inner_at(&self, i: usize, x: &V, _: &mut [V::Scalar]) -> Result<V::Scalar, V::Error> {
-        self.vectors()[i].inner(x)
+    fn inner_at(&self, cx: &mut V::Context, i: usize, x: &V) -> Result<V::Scalar, V::Error> {
+        self.vectors()[i].inner(cx, x)
     }
     fn axpy_at(
         &self,
+        cx: &mut V::Context,
         i: usize,
         a: V::Scalar,
         y: &mut V,
-        _: &mut [V::Scalar],
     ) -> Result<(), V::Error> {
-        y.axpby(a, &self.vectors()[i], V::Scalar::one())
+        y.axpby(cx, a, &self.vectors()[i], V::Scalar::one())
     }
 }
 

@@ -117,13 +117,12 @@ pub(crate) fn validate<E, V: Vector, B: Basis<V>>(
     Ok(Real::<V>::from_f64(tol))
 }
 
-/// Tridiagonal Rayleigh quotient `T` with `A·V = V·T + w·e_kᵀ`, plus scalar
-/// scratch. `beta[k-1]` is the residual norm `‖w‖`.
+/// Tridiagonal Rayleigh quotient `T` with `A·V = V·T + w·e_kᵀ`, plus the
+/// projection coefficients of the last step. `beta[k-1]` is the residual norm `‖w‖`.
 pub(crate) struct Fact<S: Scalar> {
     pub(crate) alpha: Vec<S::Real>,
     pub(crate) beta: Vec<S::Real>,
     h: Vec<S>,
-    scratch: Vec<S>,
     pub(crate) max_imag: S::Real,
     pub(crate) numops: usize,
     orth: Orth,
@@ -135,7 +134,6 @@ impl<S: Scalar> Fact<S> {
             alpha: Vec::with_capacity(krylovdim),
             beta: Vec::with_capacity(krylovdim),
             h: Vec::with_capacity(krylovdim),
-            scratch: Vec::with_capacity(krylovdim),
             max_imag: S::Real::zero(),
             numops: 0,
             orth,
@@ -154,6 +152,7 @@ impl<S: Scalar> Fact<S> {
     /// is `None`.
     pub(crate) fn start<V, B, A>(
         &mut self,
+        cx: &mut V::Context,
         ws: &mut Workspace<V, B>,
         op: &mut A,
         x: Option<&V>,
@@ -169,16 +168,17 @@ impl<S: Scalar> Fact<S> {
         ws.basis.truncate(0);
         let src = x.unwrap_or(&ws.w);
         ws.basis
-            .push(src, S::from_real(scale))
+            .push(cx, src, S::from_real(scale))
             .map_err(Error::Vector)?;
-        ws.v.axpby(S::from_real(scale), src, S::zero())
+        ws.v.axpby(cx, S::from_real(scale), src, S::zero())
             .map_err(Error::Vector)?;
-        self.step(ws, op)
+        self.step(cx, ws, op)
     }
 
     /// Appends `w/‖w‖` and performs one Lanczos step.
     pub(crate) fn expand<V, B, A>(
         &mut self,
+        cx: &mut V::Context,
         ws: &mut Workspace<V, B>,
         op: &mut A,
     ) -> Result<(), Error<V::Error>>
@@ -188,31 +188,35 @@ impl<S: Scalar> Fact<S> {
         A: LinearMap<V>,
     {
         let inv = S::from_real(S::Real::one() / self.normres());
-        ws.basis.push(&ws.w, inv).map_err(Error::Vector)?;
-        ws.v.axpby(inv, &ws.w, S::zero()).map_err(Error::Vector)?;
-        self.step(ws, op)
+        ws.basis.push(cx, &ws.w, inv).map_err(Error::Vector)?;
+        ws.v.axpby(cx, inv, &ws.w, S::zero())
+            .map_err(Error::Vector)?;
+        self.step(cx, ws, op)
     }
 
     /// `w ← A·v` orthogonalized against the basis; records `α`, `β`. A
     /// non-finite coefficient or `β` (NaN or ∞ from the map) is reported as
     /// soon as it is produced.
-    fn step<V, B, A>(&mut self, ws: &mut Workspace<V, B>, op: &mut A) -> Result<(), Error<V::Error>>
+    fn step<V, B, A>(
+        &mut self,
+        cx: &mut V::Context,
+        ws: &mut Workspace<V, B>,
+        op: &mut A,
+    ) -> Result<(), Error<V::Error>>
     where
         V: Vector<Scalar = S>,
         B: Basis<V>,
         A: LinearMap<V>,
     {
-        op.apply_into(&ws.v, &mut ws.w).map_err(Error::Vector)?;
+        op.apply_into(cx, &ws.v, &mut ws.w).map_err(Error::Vector)?;
         self.numops += 1;
         let k = ws.basis.len();
         self.h.clear();
         self.h.resize(k, S::zero());
-        self.scratch.clear();
-        self.scratch.resize(k, S::zero());
         let prev = k.checked_sub(2).map(|i| (i, self.beta[i]));
         let (basis, v, w) = (&ws.basis, &ws.v, &mut ws.w);
-        let (h, s) = (&mut self.h[..], &mut self.scratch[..]);
-        let alpha = recurrence(basis, v, w, prev, h, s, self.orth).map_err(Error::Vector)?;
+        let alpha =
+            recurrence(cx, basis, v, w, prev, &mut self.h, self.orth).map_err(Error::Vector)?;
         if !alpha.all_finite() {
             return Err(Error::NonFiniteIterate);
         }
@@ -221,7 +225,7 @@ impl<S: Scalar> Fact<S> {
             self.max_imag = im;
         }
         self.alpha.push(alpha.re());
-        let beta = ws.w.norm().map_err(Error::Vector)?;
+        let beta = ws.w.norm(cx).map_err(Error::Vector)?;
         if !num_traits::Float::is_finite(beta) {
             return Err(Error::NonFiniteIterate);
         }
@@ -241,37 +245,37 @@ impl<S: Scalar> Fact<S> {
 /// recurrence already removes the `O(‖A‖)` components exactly as a first
 /// Gram–Schmidt pass would, and the remaining ones are at rounding level.
 fn recurrence<V: Vector, B: Basis<V>>(
+    cx: &mut V::Context,
     basis: &B,
     v: &V,
     w: &mut V,
     prev: Option<(usize, Real<V>)>,
     h: &mut [V::Scalar],
-    s: &mut [V::Scalar],
     orth: Orth,
 ) -> Result<V::Scalar, V::Error> {
     let one = V::Scalar::one();
     let k = basis.len();
-    let subtract_prev = |w: &mut V, s: &mut [V::Scalar]| match prev {
-        Some((i, beta)) => basis.axpy_at(i, -V::Scalar::from_real(beta), w, s),
+    let subtract_prev = |cx: &mut V::Context, w: &mut V| match prev {
+        Some((i, beta)) => basis.axpy_at(cx, i, -V::Scalar::from_real(beta), w),
         None => Ok(()),
     };
     match orth {
         Orth::Cgs2 => {
-            let alpha = v.inner(w)?;
-            subtract_prev(w, s)?;
-            w.axpby(-alpha, v, one)?;
-            basis.project(w, h)?;
-            basis.combine_into(h, w, -one, one)?;
+            let alpha = v.inner(cx, w)?;
+            subtract_prev(cx, w)?;
+            w.axpby(cx, -alpha, v, one)?;
+            basis.project(cx, w, h)?;
+            basis.combine_into(cx, h, w, -one, one)?;
             Ok(alpha + h[k - 1])
         }
         Orth::Mgs2 => {
-            subtract_prev(w, s)?;
-            let alpha = v.inner(w)?;
-            w.axpby(-alpha, v, one)?;
+            subtract_prev(cx, w)?;
+            let alpha = v.inner(cx, w)?;
+            w.axpby(cx, -alpha, v, one)?;
             let mut last = V::Scalar::zero();
             for i in 0..k {
-                last = basis.inner_at(i, w, s)?;
-                basis.axpy_at(i, -last, w, s)?;
+                last = basis.inner_at(cx, i, w)?;
+                basis.axpy_at(cx, i, -last, w)?;
             }
             Ok(alpha + last)
         }

@@ -82,6 +82,7 @@ pub struct ConvergenceInfo<V: Vector> {
 /// quotient is returned (KrylovKit fails there; see [docs/krylovkit.md](https://github.com/Ryo-wtnb11/krylov-rs/blob/main/docs/krylovkit.md)).
 #[allow(clippy::type_complexity)]
 pub fn eigsolve<V, B, A>(
+    cx: &mut V::Context,
     op: &mut A,
     x0: &V,
     howmany: usize,
@@ -103,7 +104,7 @@ where
             krylovdim: kd,
         });
     }
-    let beta0 = x0.norm().map_err(Error::Vector)?;
+    let beta0 = x0.norm(cx).map_err(Error::Vector)?;
     if !beta0.is_finite() {
         return Err(Error::NonFiniteStartVector);
     }
@@ -112,7 +113,7 @@ where
     }
 
     let mut fact = Fact::<V::Scalar>::new(kd, alg.get_orth());
-    fact.start(ws, op, Some(x0), Real::<V>::one() / beta0)?;
+    fact.start(cx, ws, op, Some(x0), Real::<V>::one() / beta0)?;
     let mut numiter = 1;
 
     let zero = Real::<V>::zero();
@@ -121,7 +122,6 @@ where
     let mut f = vec![zero; kd]; // residual couplings β·U[K-1, :]
     let mut e = vec![zero; kd];
     let mut perm = Vec::with_capacity(kd);
-    let mut tmp = vec![zero; kd * kd];
     let mut harrow = vec![zero; (kd + 1) * kd];
     let mut refl = vec![zero; kd];
     let mut q = Vec::with_capacity(kd * kd);
@@ -138,7 +138,7 @@ where
             e[..k - 1].copy_from_slice(&fact.beta[..k - 1]);
             Real::<V>::stegr(&mut d[..k], &mut e[..k], &mut u[..k * k], &mut lw)
                 .map_err(|()| Error::DenseNoConvergence)?;
-            sort_eig(which, &mut d[..k], &mut u[..k * k], &mut perm, &mut tmp);
+            sort_eig(which, &mut d[..k], &mut u[..k * k], &mut perm);
             for i in 0..k {
                 f[i] = u[(k - 1) + i * k] * beta;
             }
@@ -148,7 +148,7 @@ where
             }
         }
         if k < kd {
-            fact.expand(ws, op)?;
+            fact.expand(cx, ws, op)?;
         } else {
             // Thick restart: keep `keep` Ritz vectors (KrylovKit's choice,
             // `converged <= keep < krylovdim`). With `krylovdim == 1` nothing
@@ -172,11 +172,11 @@ where
             q.clear();
             q.extend(u[..k * keep].iter().map(|&x| V::Scalar::from_real(x)));
             ws.basis
-                .rotate(MatRef::new(&q, k, keep), keep)
+                .rotate(cx, MatRef::new(&q, k, keep), keep)
                 .map_err(Error::Vector)?;
             // The residual direction is unchanged; its new norm is β[keep-1].
             let s = V::Scalar::from_real(fact.beta[keep - 1] / beta);
-            ws.w.axpby(V::Scalar::zero(), &ws.v, s)
+            ws.w.axpby(cx, V::Scalar::zero(), &ws.v, s)
                 .map_err(Error::Vector)?;
             numiter += 1;
         }
@@ -196,13 +196,13 @@ where
         for (qj, &uj) in q.iter_mut().zip(&u[i * k..(i + 1) * k]) {
             *qj = V::Scalar::from_real(uj);
         }
-        let mut x = x0.similar().map_err(Error::Vector)?;
+        let mut x = x0.similar(cx).map_err(Error::Vector)?;
         ws.basis
-            .combine_into(&q, &mut x, V::Scalar::one(), V::Scalar::zero())
+            .combine_into(cx, &q, &mut x, V::Scalar::one(), V::Scalar::zero())
             .map_err(Error::Vector)?;
         vectors.push(x);
-        let mut r = x0.similar().map_err(Error::Vector)?;
-        r.axpby(q[k - 1], &ws.w, V::Scalar::zero())
+        let mut r = x0.similar(cx).map_err(Error::Vector)?;
+        r.axpby(cx, q[k - 1], &ws.w, V::Scalar::zero())
             .map_err(Error::Vector)?;
         residual.push(r);
     }
@@ -218,13 +218,13 @@ where
 }
 
 /// Stable reordering of ascending eigenpairs by `which`, like Julia's
-/// `sortperm(D; by, rev)`.
+/// `sortperm(D; by, rev)`; values and the columns of `u` are permuted in
+/// place (KrylovKit `permuteeig!`), with no data movement for the identity.
 pub(crate) fn sort_eig<R: RealScalar, T: Copy>(
     which: Which,
     d: &mut [R],
     u: &mut [T],
     perm: &mut Vec<usize>,
-    tmp: &mut [T],
 ) {
     let k = d.len();
     perm.clear();
@@ -240,26 +240,59 @@ pub(crate) fn sort_eig<R: RealScalar, T: Copy>(
             .partial_cmp(&key(d[b]))
             .unwrap_or(core::cmp::Ordering::Equal)
     });
-    let tmp = &mut tmp[..k * k];
-    tmp.copy_from_slice(u);
-    for (new, &old) in perm.iter().enumerate() {
-        u[new * k..(new + 1) * k].copy_from_slice(&tmp[old * k..(old + 1) * k]);
-    }
-    // d[new] ← d[perm[new]] in place, following cycles; perm is consumed.
+    // new[j] ← old[perm[j]] by swaps along each cycle; perm is consumed.
     for i in 0..k {
-        if perm[i] == usize::MAX {
-            continue;
-        }
-        let first = d[i];
         let mut j = i;
-        loop {
+        while perm[j] != i && perm[j] != usize::MAX {
             let p = core::mem::replace(&mut perm[j], usize::MAX);
-            if p == i {
-                d[j] = first;
-                break;
+            d.swap(j, p);
+            for r in 0..k {
+                u.swap(r + j * k, r + p * k);
             }
-            d[j] = d[p];
             j = p;
         }
+        perm[j] = usize::MAX;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Columns `0..k` of `u` tagged by their original index.
+    fn tagged(k: usize) -> Vec<usize> {
+        (0..k * k).map(|x| x / k).collect()
+    }
+
+    fn check(which: Which, d: &[f64], want: &[usize]) {
+        let k = d.len();
+        let (mut dd, mut u, mut perm) = (d.to_vec(), tagged(k), Vec::new());
+        sort_eig(which, &mut dd, &mut u, &mut perm);
+        for (j, &old) in want.iter().enumerate() {
+            assert_eq!(dd[j], d[old], "{which:?} value {j}");
+            assert!(
+                u[j * k..(j + 1) * k].iter().all(|&x| x == old),
+                "{which:?} column {j}"
+            );
+        }
+    }
+
+    #[test]
+    fn sort_eig_permutes_values_and_columns_together() {
+        // Identity: LAPACK's ascending order is already SmallestReal.
+        check(Which::SmallestReal, &[-1.0, 0.5, 2.0, 3.0], &[0, 1, 2, 3]);
+        // Ties keep their ascending (stable) order.
+        check(
+            Which::LargestMagnitude,
+            &[-2.0, 1.0, 2.0, 2.0],
+            &[0, 2, 3, 1],
+        );
+        // One cycle through all four columns, and a reversal (two 2-cycles).
+        check(
+            Which::LargestMagnitude,
+            &[-3.0, -1.0, 0.5, 2.0],
+            &[0, 3, 1, 2],
+        );
+        check(Which::LargestReal, &[-1.0, 0.5, 2.0, 3.0], &[3, 2, 1, 0]);
     }
 }

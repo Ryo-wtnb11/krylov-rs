@@ -41,6 +41,7 @@ pub struct ExpInfo<R> {
 /// (except at `t = 0`); a non-finite norm returns [`Error::NonFiniteIterate`].
 #[allow(clippy::type_complexity)]
 pub fn exponentiate<V, B, A, L>(
+    cx: &mut V::Context,
     op: &mut A,
     t: V::Scalar,
     x: &V,
@@ -53,7 +54,7 @@ where
     A: LinearMap<V>,
     L: KrylovProcess,
 {
-    expintegrator(op, t, core::slice::from_ref(x), alg, ws)
+    expintegrator(cx, op, t, core::slice::from_ref(x), alg, ws)
 }
 
 /// Computes `y = φ₀(t·A)·u₀ + t·φ₁(t·A)·u₁ + t²·φ₂(t·A)·u₂ + …` with
@@ -97,6 +98,7 @@ where
 /// time steps and step-size trials.
 #[allow(clippy::type_complexity)]
 pub fn expintegrator<V, B, A, L>(
+    cx: &mut V::Context,
     op: &mut A,
     t: V::Scalar,
     u: &[V],
@@ -109,7 +111,7 @@ where
     A: LinearMap<V>,
     L: KrylovProcess,
 {
-    sealed::Sealed::expintegrator(alg, op, t, u, ws)
+    sealed::Sealed::expintegrator(alg, cx, op, t, u, ws)
 }
 
 mod sealed {
@@ -119,6 +121,7 @@ mod sealed {
         #[allow(clippy::type_complexity)]
         fn expintegrator<V, B, A>(
             &self,
+            cx: &mut V::Context,
             op: &mut A,
             t: V::Scalar,
             u: &[V],
@@ -140,6 +143,7 @@ impl KrylovProcess for Arnoldi {}
 impl sealed::Sealed for Lanczos {
     fn expintegrator<V, B, A>(
         &self,
+        cx: &mut V::Context,
         op: &mut A,
         t: V::Scalar,
         u: &[V],
@@ -158,13 +162,14 @@ impl sealed::Sealed for Lanczos {
             eager: self.get_eager(),
             eta,
         };
-        integrate::<_, _, _, LanczosProc<V::Scalar>>(op, t, u, ws, s)
+        integrate::<_, _, _, LanczosProc<V::Scalar>>(cx, op, t, u, ws, s)
     }
 }
 
 impl sealed::Sealed for Arnoldi {
     fn expintegrator<V, B, A>(
         &self,
+        cx: &mut V::Context,
         op: &mut A,
         t: V::Scalar,
         u: &[V],
@@ -183,7 +188,7 @@ impl sealed::Sealed for Arnoldi {
             eager: self.get_eager(),
             eta,
         };
-        integrate::<_, _, _, ArnoldiProc<V::Scalar>>(op, t, u, ws, s)
+        integrate::<_, _, _, ArnoldiProc<V::Scalar>>(cx, op, t, u, ws, s)
     }
 }
 
@@ -203,6 +208,7 @@ trait Process<S: Scalar>: Sized {
     /// Starts a new Krylov space from `scale·ws.w`.
     fn start<V, B, A>(
         &mut self,
+        cx: &mut V::Context,
         ws: &mut Workspace<V, B>,
         op: &mut A,
         scale: S::Real,
@@ -213,6 +219,7 @@ trait Process<S: Scalar>: Sized {
         A: LinearMap<V>;
     fn expand<V, B, A>(
         &mut self,
+        cx: &mut V::Context,
         ws: &mut Workspace<V, B>,
         op: &mut A,
     ) -> Result<(), Error<V::Error>>
@@ -231,8 +238,10 @@ trait Process<S: Scalar>: Sized {
     /// `y ← y + Σ_{j<p} (sΔτ)ʲ/j!·w_{j+1}
     ///        + β(sΔτ)ᵖ·(V·φ_p(sΔτ H)e₁ + (e_kᵀ φ_{p+1}(sΔτ H) e₁)·r)`
     /// for the `dtau` of the last [`Process::err`] call.
+    #[allow(clippy::too_many_arguments)]
     fn advance<V, B>(
         &mut self,
+        cx: &mut V::Context,
         ws: &Workspace<V, B>,
         y: &mut V,
         w: &[V],
@@ -248,6 +257,7 @@ trait Process<S: Scalar>: Sized {
 /// The step controller of KrylovKit `expintegrator`, shared by both processes.
 #[allow(clippy::type_complexity)]
 fn integrate<V, B, A, P>(
+    cx: &mut V::Context,
     op: &mut A,
     t: V::Scalar,
     u: &[V],
@@ -273,7 +283,7 @@ where
         return Err(Error::InvalidArgument("t must be finite"));
     }
     for ui in u {
-        if !ui.norm().map_err(Error::Vector)?.is_finite() {
+        if !ui.norm(cx).map_err(Error::Vector)?.is_finite() {
             return Err(Error::NonFiniteStartVector);
         }
     }
@@ -283,8 +293,8 @@ where
     let zero = Real::<V>::zero();
     let one = Real::<V>::one();
 
-    let mut y = u0.similar().map_err(Error::Vector)?;
-    y.copy_from(u0).map_err(Error::Vector)?;
+    let mut y = u0.similar(cx).map_err(Error::Vector)?;
+    y.copy_from(cx, u0).map_err(Error::Vector)?;
     let tau = t.modulus();
     let mut info = ExpInfo {
         converged: 1,
@@ -298,7 +308,7 @@ where
     }
     // w_2 … w_p; w_{p+1} lives in ws.w and becomes the Krylov start.
     let mut w = (1..p)
-        .map(|_| u0.similar())
+        .map(|_| u0.similar(cx))
         .collect::<Result<Vec<_>, _>>()
         .map_err(Error::Vector)?;
     let mut sgn = t / V::Scalar::from_real(tau);
@@ -319,8 +329,8 @@ where
 
     'rebuild: loop {
         let st0 = sgn * V::Scalar::from_real(tau0);
-        let beta =
-            rebuild(op, &y, u, &mut w, &mut ws.w, st0, &mut numops).map_err(Error::Vector)?;
+        let beta = rebuild(cx, op, &y, u, &mut w, &mut ws.w, st0).map_err(Error::Vector)?;
+        numops += p;
         if !beta.is_finite() {
             // The Krylov start would be scaled by 0 or NaN.
             return Err(Error::NonFiniteIterate);
@@ -338,24 +348,26 @@ where
                 coef = coef * x / V::Scalar::from_real(Real::<V>::from_usize(j));
                 coef.all_finite()
             }) {
-                poly(&mut y, &w, x)?;
+                poly(cx, &mut y, &w, x)?;
             } else if let Some((last, rest)) = w.split_last_mut() {
                 // Horner avoids forming powers that overflow even for a finite polynomial.
                 for (j, wj) in rest.iter().enumerate().rev() {
                     last.axpby(
+                        cx,
                         V::Scalar::one(),
                         wj,
                         x / V::Scalar::from_real(Real::<V>::from_usize(j + 2)),
                     )
                     .map_err(Error::Vector)?;
                 }
-                y.axpby(x, last, V::Scalar::one()).map_err(Error::Vector)?;
+                y.axpby(cx, x, last, V::Scalar::one())
+                    .map_err(Error::Vector)?;
             }
             info.converged = usize::from(totalerr <= maxerr);
             info.normres = totalerr;
             break;
         }
-        proc.start(ws, op, one / beta)?;
+        proc.start(cx, ws, op, one / beta)?;
         numiter += 1;
 
         loop {
@@ -384,7 +396,7 @@ where
                 }
                 tau0 = if numiter < maxiter { tau0 + dtau } else { tau };
                 totalerr += eps;
-                proc.advance(ws, &mut y, &w, sgn, dtau, beta)?;
+                proc.advance(cx, ws, &mut y, &w, sgn, dtau, beta)?;
                 if omega < gamma {
                     dtau *= (gamma / omega).powf(one / (q + one));
                 }
@@ -394,7 +406,7 @@ where
                 let eps = proc.err(sgn, dt, beta)?;
                 if eps / (dt * eta) < one {
                     totalerr += eps;
-                    proc.advance(ws, &mut y, &w, sgn, dt, beta)?;
+                    proc.advance(cx, ws, &mut y, &w, sgn, dt, beta)?;
                     tau0 = tau;
                 }
             }
@@ -406,13 +418,13 @@ where
             if k == kd {
                 continue 'rebuild;
             }
-            proc.expand(ws, op)?;
+            proc.expand(cx, ws, op)?;
         }
     }
     info.numiter = numiter;
     info.numops = numops + proc.numops();
     info.max_imag = proc.max_imag();
-    if !y.norm().map_err(Error::Vector)?.is_finite() {
+    if !y.norm(cx).map_err(Error::Vector)?.is_finite() {
         return Err(Error::NonFiniteIterate);
     }
     Ok((y, info))
@@ -449,6 +461,7 @@ impl<S: Scalar> Process<S> for LanczosProc<S> {
     }
     fn start<V, B, A>(
         &mut self,
+        cx: &mut V::Context,
         ws: &mut Workspace<V, B>,
         op: &mut A,
         scale: S::Real,
@@ -458,10 +471,11 @@ impl<S: Scalar> Process<S> for LanczosProc<S> {
         B: Basis<V>,
         A: LinearMap<V>,
     {
-        self.fact.start(ws, op, None, scale)
+        self.fact.start(cx, ws, op, None, scale)
     }
     fn expand<V, B, A>(
         &mut self,
+        cx: &mut V::Context,
         ws: &mut Workspace<V, B>,
         op: &mut A,
     ) -> Result<(), Error<V::Error>>
@@ -470,7 +484,7 @@ impl<S: Scalar> Process<S> for LanczosProc<S> {
         B: Basis<V>,
         A: LinearMap<V>,
     {
-        self.fact.expand(ws, op)
+        self.fact.expand(cx, ws, op)
     }
     fn len(&self) -> usize {
         self.fact.len()
@@ -485,30 +499,45 @@ impl<S: Scalar> Process<S> for LanczosProc<S> {
         self.fact.max_imag
     }
     fn project<E>(&mut self) -> Result<(), Error<E>> {
-        eig(
-            &self.fact,
-            &mut self.lam,
-            &mut self.e,
-            &mut self.z,
+        let k = self.fact.len();
+        self.lam[..k].copy_from_slice(&self.fact.alpha);
+        self.e[..k - 1].copy_from_slice(&self.fact.beta[..k - 1]);
+        S::Real::stegr(
+            &mut self.lam[..k],
+            &mut self.e[..k],
+            &mut self.z[..k * k],
             &mut self.lw,
         )
+        .map_err(|()| Error::DenseNoConvergence)
     }
+    /// KrylovKit's `ϵ` is read from the augmented matrix exponential; here
+    /// `e_kᵀ φ_{p+1}(sΔτ T) e₁` comes from the tridiagonal Taylor series or,
+    /// when that does not converge, from the eigendecomposition.
     fn err<E>(&mut self, sgn: S, dtau: S::Real, beta: S::Real) -> Result<S::Real, Error<E>> {
         let k = self.fact.len();
-        Ok(err(
-            sgn,
-            dtau,
-            beta,
-            &self.fact,
-            &self.lam[..k],
-            &self.z[..k * k],
+        let (lam, z, p) = (&self.lam[..k], &self.z[..k * k], self.p);
+        let x = sgn * S::from_real(dtau);
+        let e = phi_last(
+            x,
+            p + 1,
+            &self.fact.alpha,
+            &self.fact.beta,
             &mut self.s1,
             &mut self.s2,
-            self.p,
-        ))
+        )
+        .unwrap_or_else(|| {
+            let mut e = S::zero();
+            for (i, &l) in lam.iter().enumerate() {
+                let (_, phi) = phi_pair(x * S::from_real(l), p);
+                e += phi.mul_real(z[(k - 1) + i * k] * z[i * k]);
+            }
+            e
+        });
+        Ok(powu(dtau, p) * beta * self.fact.normres() * e.modulus())
     }
     fn advance<V, B>(
         &mut self,
+        cx: &mut V::Context,
         ws: &Workspace<V, B>,
         y: &mut V,
         w: &[V],
@@ -521,18 +550,28 @@ impl<S: Scalar> Process<S> for LanczosProc<S> {
         B: Basis<V>,
     {
         let k = self.fact.len();
-        advance(
-            ws,
-            y,
-            w,
-            &mut self.c,
-            self.p,
-            sgn,
-            dtau,
-            beta,
-            &self.lam[..k],
-            &self.z[..k * k],
-        )
+        let (lam, z, p) = (&self.lam[..k], &self.z[..k * k], self.p);
+        let x = sgn * S::from_real(dtau);
+        let c = &mut self.c;
+        c.clear();
+        c.resize(k, S::zero());
+        let mut corr = S::zero();
+        for (i, &l) in lam.iter().enumerate() {
+            let (phi_p, phi_q) = phi_pair(x * S::from_real(l), p);
+            let w1 = phi_p.mul_real(z[i * k]);
+            for (cj, &zj) in c.iter_mut().zip(&z[i * k..(i + 1) * k]) {
+                *cj += w1.mul_real(zj);
+            }
+            corr += phi_q.mul_real(z[(k - 1) + i * k] * z[i * k]);
+        }
+        let a = S::from_real(beta) * powu(x, p);
+        check_step(a, c, corr)?;
+        poly(cx, y, w, x)?;
+        ws.basis
+            .combine_into(cx, c, y, a, S::one())
+            .map_err(Error::Vector)?;
+        y.axpby(cx, a * corr, &ws.w, S::one())
+            .map_err(Error::Vector)
     }
 }
 
@@ -565,6 +604,7 @@ impl<S: Scalar> Process<S> for ArnoldiProc<S> {
     }
     fn start<V, B, A>(
         &mut self,
+        cx: &mut V::Context,
         ws: &mut Workspace<V, B>,
         op: &mut A,
         scale: S::Real,
@@ -575,10 +615,11 @@ impl<S: Scalar> Process<S> for ArnoldiProc<S> {
         A: LinearMap<V>,
     {
         ws.basis.truncate(0);
-        self.fact.push(ws, op, None, scale)
+        self.fact.push(cx, ws, op, None, scale)
     }
     fn expand<V, B, A>(
         &mut self,
+        cx: &mut V::Context,
         ws: &mut Workspace<V, B>,
         op: &mut A,
     ) -> Result<(), Error<V::Error>>
@@ -588,7 +629,7 @@ impl<S: Scalar> Process<S> for ArnoldiProc<S> {
         A: LinearMap<V>,
     {
         let scale = S::Real::one() / self.fact.normres();
-        self.fact.push(ws, op, None, scale)
+        self.fact.push(cx, ws, op, None, scale)
     }
     fn len(&self) -> usize {
         self.fact.k
@@ -625,6 +666,7 @@ impl<S: Scalar> Process<S> for ArnoldiProc<S> {
     }
     fn advance<V, B>(
         &mut self,
+        cx: &mut V::Context,
         ws: &Workspace<V, B>,
         y: &mut V,
         w: &[V],
@@ -643,51 +685,58 @@ impl<S: Scalar> Process<S> for ArnoldiProc<S> {
         let corr = self.exph.result()[(k - 1) + (k + p) * n];
         let a = S::from_real(beta) * powu(x, p);
         check_step(a, c, corr)?;
-        poly(y, w, x)?;
+        poly(cx, y, w, x)?;
         ws.basis
-            .combine_into(c, y, a, S::one())
+            .combine_into(cx, c, y, a, S::one())
             .map_err(Error::Vector)?;
-        y.axpby(a * corr, &ws.w, S::one()).map_err(Error::Vector)
+        y.axpby(cx, a * corr, &ws.w, S::one())
+            .map_err(Error::Vector)
     }
 }
 
 /// Forms `w_{j+1} = A·w_j + Σ_{l=0}^{p-j} (sτ₀)ˡ/l!·u_{j+l}` for `j = 1..=p`
 /// with `w₁ = y`, `w_2 … w_p` in `w` and `w_{p+1}` in `last`; returns
-/// `‖w_{p+1}‖`. Absent `u_i` (exponentiate's `u₁`) are zero.
+/// `‖w_{p+1}‖` after `p` map applications. Absent `u_i` (exponentiate's
+/// `u₁`) are zero.
 fn rebuild<V: Vector, A: LinearMap<V>>(
+    cx: &mut V::Context,
     op: &mut A,
     y: &V,
     u: &[V],
     w: &mut [V],
     last: &mut V,
     st0: V::Scalar,
-    numops: &mut usize,
 ) -> Result<Real<V>, V::Error> {
     let p = w.len() + 1;
     for j in 1..=p {
         let (head, tail) = w.split_at_mut(j - 1);
         let src = if j == 1 { y } else { &head[j - 2] };
         let dst = if j < p { &mut tail[0] } else { &mut *last };
-        op.apply_into(src, dst)?;
-        *numops += 1;
+        op.apply_into(cx, src, dst)?;
         let mut coef = V::Scalar::one();
         for (l, ul) in u.iter().skip(j).enumerate() {
-            dst.axpby(coef, ul, V::Scalar::one())?;
+            dst.axpby(cx, coef, ul, V::Scalar::one())?;
             coef = coef * st0 / V::Scalar::from_real(Real::<V>::from_usize(l + 1));
         }
     }
-    last.norm()
+    last.norm(cx)
 }
 
 /// `y ← y + Σ_{j=1}^{p-1} xʲ/j!·w_{j+1}`.
-fn poly<V: Vector>(y: &mut V, w: &[V], x: V::Scalar) -> Result<(), Error<V::Error>> {
+fn poly<V: Vector>(
+    cx: &mut V::Context,
+    y: &mut V,
+    w: &[V],
+    x: V::Scalar,
+) -> Result<(), Error<V::Error>> {
     let mut coef = V::Scalar::one();
     for (j, wj) in w.iter().enumerate() {
         coef = coef * x / V::Scalar::from_real(Real::<V>::from_usize(j + 1));
         if !coef.all_finite() {
             return Err(Error::NonFiniteIterate);
         }
-        y.axpby(coef, wj, V::Scalar::one()).map_err(Error::Vector)?;
+        y.axpby(cx, coef, wj, V::Scalar::one())
+            .map_err(Error::Vector)?;
     }
     Ok(())
 }
@@ -701,85 +750,6 @@ fn nan_to_inf<R: Float>(e: R) -> R {
 /// `xᵖ` by repeated multiplication (exact for `p = 1`).
 fn powu<T: Copy + One + Mul<Output = T>>(x: T, p: usize) -> T {
     (0..p).fold(T::one(), |acc, _| acc * x)
-}
-
-fn eig<S: Scalar, E>(
-    fact: &Fact<S>,
-    lam: &mut [S::Real],
-    e: &mut [S::Real],
-    z: &mut [S::Real],
-    lw: &mut Work<S::Real, S::Real>,
-) -> Result<(), Error<E>> {
-    let k = fact.len();
-    lam[..k].copy_from_slice(&fact.alpha);
-    e[..k - 1].copy_from_slice(&fact.beta[..k - 1]);
-    S::Real::stegr(&mut lam[..k], &mut e[..k], &mut z[..k * k], lw)
-        .map_err(|()| Error::DenseNoConvergence)
-}
-
-/// Local error estimate `Δτᵖ·β·‖r‖·|e_kᵀ φ_{p+1}(sΔτ T) e₁|` (KrylovKit's
-/// `ϵ`, there read from the augmented matrix exponential).
-#[allow(clippy::too_many_arguments)]
-fn err<S: Scalar>(
-    sgn: S,
-    dtau: S::Real,
-    beta: S::Real,
-    fact: &Fact<S>,
-    lam: &[S::Real],
-    z: &[S::Real],
-    s1: &mut [S],
-    s2: &mut [S],
-    p: usize,
-) -> S::Real {
-    let k = lam.len();
-    let x = sgn * S::from_real(dtau);
-    let e = phi_last(x, p + 1, &fact.alpha, &fact.beta, s1, s2).unwrap_or_else(|| {
-        let mut e = S::zero();
-        for (i, &l) in lam.iter().enumerate() {
-            let (_, phi) = phi_pair(x * S::from_real(l), p);
-            e += phi.mul_real(z[(k - 1) + i * k] * z[i * k]);
-        }
-        e
-    });
-    powu(dtau, p) * beta * fact.normres() * e.modulus()
-}
-
-/// `y ← y + Σ_{j<p} (sΔτ)ʲ/j!·w_{j+1}
-///        + β(sΔτ)ᵖ·(V·φ_p(sΔτ T)e₁ + (e_kᵀ φ_{p+1}(sΔτ T) e₁)·r)`.
-#[allow(clippy::too_many_arguments)]
-fn advance<V: Vector, B: Basis<V>>(
-    ws: &Workspace<V, B>,
-    y: &mut V,
-    w: &[V],
-    c: &mut Vec<V::Scalar>,
-    p: usize,
-    sgn: V::Scalar,
-    dtau: Real<V>,
-    beta: Real<V>,
-    lam: &[Real<V>],
-    z: &[Real<V>],
-) -> Result<(), Error<V::Error>> {
-    let k = lam.len();
-    let x = sgn * V::Scalar::from_real(dtau);
-    c.clear();
-    c.resize(k, V::Scalar::zero());
-    let mut corr = V::Scalar::zero();
-    for (i, &l) in lam.iter().enumerate() {
-        let (phi_p, phi_q) = phi_pair(x * V::Scalar::from_real(l), p);
-        let w1 = phi_p.mul_real(z[i * k]);
-        for (cj, &zj) in c.iter_mut().zip(&z[i * k..(i + 1) * k]) {
-            *cj += w1.mul_real(zj);
-        }
-        corr += phi_q.mul_real(z[(k - 1) + i * k] * z[i * k]);
-    }
-    let a = V::Scalar::from_real(beta) * powu(x, p);
-    check_step(a, c, corr)?;
-    poly(y, w, x)?;
-    ws.basis
-        .combine_into(c, y, a, V::Scalar::one())
-        .map_err(Error::Vector)?;
-    y.axpby(a * corr, &ws.w, V::Scalar::one())
-        .map_err(Error::Vector)
 }
 
 /// Rejects a step whose `k + 1` update coefficients `a·c_j`, `a·corr` are

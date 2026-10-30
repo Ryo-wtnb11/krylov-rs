@@ -38,20 +38,40 @@ pub trait Vector: Sized {
     type Scalar: Scalar;
     /// Error of the vector operations.
     type Error;
+    /// Execution context the vector operations run on (a device engine, a
+    /// thread pool, a communicator, ...); `()` for vectors that need none.
+    ///
+    /// The caller owns it and passes `&mut` to every solver call; krylov
+    /// forwards that one borrow, sequentially, to every vector, basis and map
+    /// operation and never stores it. A context needed by both the vectors and
+    /// the map is therefore reached through this one borrow, not captured by
+    /// the map.
+    ///
+    /// A trait object is written `dyn Trait`, which as an associated type
+    /// means `dyn Trait + 'static`: code forwarding to such a vector takes
+    /// `&mut (dyn Trait + 'static)`. That bounds the object type, not the
+    /// borrow, so a locally owned engine coerces to it.
+    type Context: ?Sized;
 
     /// A new, independent, writable zero vector of the same space.
-    fn similar(&self) -> Result<Self, Self::Error>;
+    fn similar(&self, cx: &mut Self::Context) -> Result<Self, Self::Error>;
     /// `self ← x`.
-    fn copy_from(&mut self, x: &Self) -> Result<(), Self::Error>;
+    fn copy_from(&mut self, cx: &mut Self::Context, x: &Self) -> Result<(), Self::Error>;
     /// `⟨self, y⟩`, conjugate-linear in `self`.
-    fn inner(&self, y: &Self) -> Result<Self::Scalar, Self::Error>;
+    fn inner(&self, cx: &mut Self::Context, y: &Self) -> Result<Self::Scalar, Self::Error>;
     /// Euclidean norm induced by [`inner`](Vector::inner).
-    fn norm(&self) -> Result<Real<Self>, Self::Error>;
+    fn norm(&self, cx: &mut Self::Context) -> Result<Real<Self>, Self::Error>;
     /// `self ← a·x + b·self`.
     ///
     /// When `b` is zero, `self` must be overwritten without being read (see
     /// the trait documentation).
-    fn axpby(&mut self, a: Self::Scalar, x: &Self, b: Self::Scalar) -> Result<(), Self::Error>;
+    fn axpby(
+        &mut self,
+        cx: &mut Self::Context,
+        a: Self::Scalar,
+        x: &Self,
+        b: Self::Scalar,
+    ) -> Result<(), Self::Error>;
 }
 
 /// Storage for an orthonormal basis `V = [v₀ … v_{len-1}]`.
@@ -71,14 +91,15 @@ pub trait Basis<V: Vector> {
     /// Appends `a·v`. Normalization is the caller's choice of `a`.
     ///
     /// The caller guarantees `len() < capacity()`.
-    fn push(&mut self, v: &V, a: V::Scalar) -> Result<(), V::Error>;
+    fn push(&mut self, cx: &mut V::Context, v: &V, a: V::Scalar) -> Result<(), V::Error>;
     /// Keeps the first `len` vectors (`0` empties the basis).
     fn truncate(&mut self, len: usize);
     /// `out ← Vᴴx`; `out.len() == len()`.
-    fn project(&self, x: &V, out: &mut [V::Scalar]) -> Result<(), V::Error>;
+    fn project(&self, cx: &mut V::Context, x: &V, out: &mut [V::Scalar]) -> Result<(), V::Error>;
     /// `y ← a·V·c + b·y`; `c.len() == len()`.
     fn combine_into(
         &self,
+        cx: &mut V::Context,
         c: &[V::Scalar],
         y: &mut V,
         a: V::Scalar,
@@ -86,41 +107,31 @@ pub trait Basis<V: Vector> {
     ) -> Result<(), V::Error>;
     /// `V ← V·Q[:, ..keep]` for `Q` with `len()` rows and orthonormal columns;
     /// afterwards `len() == keep`.
-    fn rotate(&mut self, q: MatRef<'_, V::Scalar>, keep: usize) -> Result<(), V::Error>;
+    fn rotate(
+        &mut self,
+        cx: &mut V::Context,
+        q: MatRef<'_, V::Scalar>,
+        keep: usize,
+    ) -> Result<(), V::Error>;
 
-    /// `⟨v_i, x⟩`, used by modified Gram–Schmidt.
+    /// `⟨v_i, x⟩`, used by modified Gram–Schmidt: one inner product.
     ///
-    /// The default performs a full [`project`](Basis::project) into
-    /// `scratch` (`scratch.len() == len()`), i.e. `len()` inner products;
-    /// implementations with per-vector access should override it.
-    fn inner_at(&self, i: usize, x: &V, scratch: &mut [V::Scalar]) -> Result<V::Scalar, V::Error> {
-        self.project(x, scratch)?;
-        Ok(scratch[i])
-    }
+    /// Required so that [`Orth::Mgs2`](crate::Orth::Mgs2) costs `O(len)`
+    /// vector operations per orthogonalization; a full
+    /// [`project`](Basis::project) here would make it `O(len²)`.
+    fn inner_at(&self, cx: &mut V::Context, i: usize, x: &V) -> Result<V::Scalar, V::Error>;
     /// `y ← a·v_i + y`, used by modified Gram–Schmidt and by the Lanczos
-    /// three-term recurrence (`β·v_{k-1}`) under both orthogonalisers.
+    /// three-term recurrence (`β·v_{k-1}`) under both orthogonalisers: one
+    /// vector update.
     ///
-    /// The default performs a full [`combine_into`](Basis::combine_into)
-    /// with a unit coefficient vector built in `scratch`
-    /// (`scratch.len() == len()`); implementations with per-vector access
-    /// should override it.
+    /// Required for the same reason as [`inner_at`](Basis::inner_at).
     fn axpy_at(
         &self,
+        cx: &mut V::Context,
         i: usize,
         a: V::Scalar,
         y: &mut V,
-        scratch: &mut [V::Scalar],
-    ) -> Result<(), V::Error> {
-        let zero = <V::Scalar as num_traits::Zero>::zero();
-        scratch.fill(zero);
-        scratch[i] = a;
-        self.combine_into(
-            scratch,
-            y,
-            <V::Scalar as num_traits::One>::one(),
-            <V::Scalar as num_traits::One>::one(),
-        )
-    }
+    ) -> Result<(), V::Error>;
 }
 
 /// A linear map `A` from vectors of type `V` (domain) to vectors of type `W`
@@ -128,20 +139,25 @@ pub trait Basis<V: Vector> {
 ///
 /// Every solver except [`svdsolve`](crate::svdsolve) needs a square map and
 /// takes `LinearMap<V>`. The two types share their scalar and error types so
-/// that one [`Error`](crate::Error) carries the failures of both.
-pub trait LinearMap<V: Vector, W: Vector<Scalar = V::Scalar, Error = V::Error> = V> {
+/// that one [`Error`](crate::Error) carries the failures of both, and their
+/// execution context, which the solver passes to the map as `cx`.
+pub trait LinearMap<
+    V: Vector,
+    W: Vector<Scalar = V::Scalar, Error = V::Error, Context = V::Context> = V,
+>
+{
     /// `y ← A·x`. `y` holds arbitrary previous contents.
-    fn apply_into(&mut self, x: &V, y: &mut W) -> Result<(), V::Error>;
+    fn apply_into(&mut self, cx: &mut V::Context, x: &V, y: &mut W) -> Result<(), V::Error>;
 }
 
 impl<V, W, F> LinearMap<V, W> for F
 where
     V: Vector,
-    W: Vector<Scalar = V::Scalar, Error = V::Error>,
-    F: FnMut(&V, &mut W) -> Result<(), V::Error>,
+    W: Vector<Scalar = V::Scalar, Error = V::Error, Context = V::Context>,
+    F: FnMut(&mut V::Context, &V, &mut W) -> Result<(), V::Error>,
 {
-    fn apply_into(&mut self, x: &V, y: &mut W) -> Result<(), V::Error> {
-        self(x, y)
+    fn apply_into(&mut self, cx: &mut V::Context, x: &V, y: &mut W) -> Result<(), V::Error> {
+        self(cx, x, y)
     }
 }
 
@@ -151,11 +167,14 @@ where
 /// Domain and codomain may be different Rust vector types, or one type for
 /// different spaces (e.g. vectors of different lengths, tensors with
 /// different legs).
-pub trait AdjointMap<V: Vector, W: Vector<Scalar = V::Scalar, Error = V::Error> = V>:
-    LinearMap<V, W>
+pub trait AdjointMap<
+    V: Vector,
+    W: Vector<Scalar = V::Scalar, Error = V::Error, Context = V::Context> = V,
+>: LinearMap<V, W>
 {
     /// `x ← Aᴴ·y`. `x` holds arbitrary previous contents.
-    fn apply_adjoint_into(&mut self, y: &W, x: &mut V) -> Result<(), V::Error>;
+    fn apply_adjoint_into(&mut self, cx: &mut V::Context, y: &W, x: &mut V)
+    -> Result<(), V::Error>;
 }
 
 /// Working storage of one solve: the basis plus the operator input and
@@ -174,11 +193,11 @@ pub struct Workspace<V, B> {
 
 impl<V: Vector, B: Basis<V>> Workspace<V, B> {
     /// Wraps `basis` and allocates the two operator vectors like `x`.
-    pub fn new(basis: B, x: &V) -> Result<Self, V::Error> {
+    pub fn new(cx: &mut V::Context, basis: B, x: &V) -> Result<Self, V::Error> {
         Ok(Self {
             basis,
-            v: x.similar()?,
-            w: x.similar()?,
+            v: x.similar(cx)?,
+            w: x.similar(cx)?,
         })
     }
     /// The basis left by the last solve.
@@ -195,7 +214,8 @@ impl<V: Vector> Workspace<V, crate::VecBasis<V>> {
     /// A workspace with a [`VecBasis`](crate::VecBasis) of `capacity` vectors
     /// in the space of `x`: allocates `capacity + 3` vectors (basis, one
     /// rotate scratch, operator input and output).
-    pub fn with_capacity(x: &V, capacity: usize) -> Result<Self, V::Error> {
-        Self::new(crate::VecBasis::with_capacity(x, capacity)?, x)
+    pub fn with_capacity(cx: &mut V::Context, x: &V, capacity: usize) -> Result<Self, V::Error> {
+        let basis = crate::VecBasis::with_capacity(cx, x, capacity)?;
+        Self::new(cx, basis, x)
     }
 }

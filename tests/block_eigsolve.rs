@@ -26,8 +26,9 @@ fn run<S: TestScalar>(
     let x0: Vec<DVec<S>> = x0.iter().map(|x| to_dvec(x)).collect();
     let mut op = DenseOp::<S>::new(a);
     let cap = alg.get_krylovdim() + x0.len() - 1;
-    let mut ws = Workspace::with_capacity(&x0[0], cap).unwrap();
-    let (vals, vecs, info) = block_eigsolve(&mut op, &x0, howmany, which, &alg, &mut ws).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &x0[0], cap).unwrap();
+    let (vals, vecs, info) =
+        block_eigsolve(&mut (), &mut op, &x0, howmany, which, &alg, &mut ws).unwrap();
     assert_eq!(info.numops, op.applications);
     assert_eq!(vals.len(), vecs.len());
     assert_eq!(vals.len(), info.residual.len());
@@ -139,8 +140,9 @@ fn block_size_one_agrees_with_lanczos() {
     );
     let xv = to_dvec::<f64>(&x);
     let alg = Lanczos::new(20, 100, 1e-10);
-    let mut ws = Workspace::with_capacity(&xv, 20).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &xv, 20).unwrap();
     let (vals, _, _) = eigsolve(
+        &mut (),
         &mut DenseOp::new(&a),
         &xv,
         3,
@@ -273,11 +275,11 @@ fn warm_call_allocates_two_blocks_and_the_results() {
         .collect();
     let alg = BlockLanczos::new(15, 100, 1e-10, 1e-12);
     let mut op = DenseOp::new(&a);
-    let mut ws = Workspace::with_capacity(&x0[0], 17).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &x0[0], 17).unwrap();
     for _ in 0..2 {
         let before = similar_calls();
         let (vals, _, info) =
-            block_eigsolve(&mut op, &x0, 2, Which::SmallestReal, &alg, &mut ws).unwrap();
+            block_eigsolve(&mut (), &mut op, &x0, 2, Which::SmallestReal, &alg, &mut ws).unwrap();
         assert!(info.numiter > 1);
         assert_eq!(similar_calls() - before, 2 * 3 + 2 * vals.len());
     }
@@ -288,17 +290,18 @@ fn errors() {
     let a = DMatrix::<Complex64>::identity(4, 4);
     let x = DVec(vec![1.0f64, 2.0, 3.0, 4.0]);
     let mut op = DenseOp::<f64>::new(&a);
-    let mut ws = Workspace::with_capacity(&x, 4).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &x, 4).unwrap();
     let alg = BlockLanczos::new(3, 100, 1e-12, 1e-12);
     let sr = Which::SmallestReal;
     let e = |r: Result<_, Error<_>>| r.map(|_| ()).unwrap_err();
     assert!(matches!(
-        e(block_eigsolve(&mut op, &[], 1, sr, &alg, &mut ws)),
+        e(block_eigsolve(&mut (), &mut op, &[], 1, sr, &alg, &mut ws)),
         Error::InvalidArgument(_)
     ));
     let two = [DVec(vec![1.0; 4]), DVec(vec![0.0, 1.0, 0.0, 0.0])];
     assert_eq!(
         e(block_eigsolve(
+            &mut (),
             &mut op,
             &two,
             1,
@@ -313,6 +316,7 @@ fn errors() {
     );
     assert!(matches!(
         e(block_eigsolve(
+            &mut (),
             &mut op,
             &two,
             1,
@@ -323,21 +327,30 @@ fn errors() {
         Error::InvalidArgument(_)
     ));
     assert!(matches!(
-        e(block_eigsolve(&mut op, &two, 4, sr, &alg, &mut ws)),
+        e(block_eigsolve(&mut (), &mut op, &two, 4, sr, &alg, &mut ws)),
         Error::HowmanyTooLarge { .. }
     ));
     let zeros = [DVec(vec![0.0; 4]), DVec(vec![1e-14; 4])];
     assert_eq!(
-        e(block_eigsolve(&mut op, &zeros, 1, sr, &alg, &mut ws)),
+        e(block_eigsolve(
+            &mut (),
+            &mut op,
+            &zeros,
+            1,
+            sr,
+            &alg,
+            &mut ws
+        )),
         Error::ZeroStartVector
     );
     let nan = [x, DVec(vec![f64::NAN; 4])];
     assert_eq!(
-        e(block_eigsolve(&mut op, &nan, 1, sr, &alg, &mut ws)),
+        e(block_eigsolve(&mut (), &mut op, &nan, 1, sr, &alg, &mut ws)),
         Error::NonFiniteStartVector
     );
     assert!(matches!(
         e(block_eigsolve(
+            &mut (),
             &mut op,
             &two,
             1,
@@ -450,8 +463,9 @@ fn tight_tolerance_restarts_stay_finite_in_single_precision() {
             .map(|_| to_dvec(&random_vec(&mut g, n, true)))
             .collect();
         let alg = BlockLanczos::new(kd, maxiter, tol, 1e-12);
-        let mut ws = Workspace::with_capacity(&x0[0], kd + 2).unwrap();
+        let mut ws = Workspace::with_capacity(&mut (), &x0[0], kd + 2).unwrap();
         let (vals, _, _) = block_eigsolve(
+            &mut (),
             &mut DenseOp::<Complex32>::new(&a),
             &x0,
             2,
@@ -472,4 +486,188 @@ fn tight_tolerance_restarts_stay_finite_in_single_precision() {
             vals[0]
         );
     }
+}
+
+/// Host vector with an overflow/underflow-safe (`hypot`) norm, so any range
+/// failure in a residual comes from the solver's own arithmetic.
+#[derive(Debug)]
+struct Hv<T>(Vec<T>);
+
+impl<T: krylov::RealScalar> krylov::Vector for Hv<T> {
+    type Scalar = T;
+    type Error = std::convert::Infallible;
+    type Context = ();
+    fn similar(&self, _: &mut ()) -> Result<Self, Self::Error> {
+        Ok(Hv(vec![T::zero(); self.0.len()]))
+    }
+    fn copy_from(&mut self, _: &mut (), x: &Self) -> Result<(), Self::Error> {
+        self.0.copy_from_slice(&x.0);
+        Ok(())
+    }
+    fn inner(&self, _: &mut (), y: &Self) -> Result<T, Self::Error> {
+        Ok(self
+            .0
+            .iter()
+            .zip(&y.0)
+            .fold(T::zero(), |s, (&a, &b)| s + a * b))
+    }
+    fn norm(&self, _: &mut ()) -> Result<T, Self::Error> {
+        Ok(self.0.iter().fold(T::zero(), |s, &a| s.hypot(a)))
+    }
+    fn axpby(&mut self, _: &mut (), a: T, x: &Self, b: T) -> Result<(), Self::Error> {
+        for (y, &x) in self.0.iter_mut().zip(&x.0) {
+            *y = if b == T::zero() {
+                a * x
+            } else {
+                a * x + b * *y
+            };
+        }
+        Ok(())
+    }
+}
+
+/// `block_eigsolve` of the symmetric `A` from the unit vectors
+/// `e₀ … e_{p-1}`, `howmany = 1`, `LargestReal`. For every returned pair it
+/// checks that `normres` is the norm of the returned residual (up to `1e-5`
+/// relative and `tol` absolute, i.e. without changing the convergence
+/// decision) and of `A·x - λ·x` (plus that evaluation's rounding), and that `converged` counts exactly
+/// the pairs with `normres <= tol`.
+fn residual_run<T: krylov::RealScalar>(
+    a: &[&[f64]],
+    p: usize,
+    alg: BlockLanczos,
+) -> Result<Vec<T>, Error<std::convert::Infallible>> {
+    let n = a.len();
+    let apply = |x: &[T]| -> Vec<T> {
+        (0..n)
+            .map(|i| {
+                (0..n)
+                    .filter(|&j| a[i][j] != 0.0)
+                    .fold(T::zero(), |acc, j| acc + T::from(a[i][j]).unwrap() * x[j])
+            })
+            .collect()
+    };
+    let x0: Vec<Hv<T>> = (0..p)
+        .map(|i| {
+            Hv((0..n)
+                .map(|j| if i == j { T::one() } else { T::zero() })
+                .collect())
+        })
+        .collect();
+    let mut op = |_: &mut (), x: &Hv<T>, y: &mut Hv<T>| {
+        y.0 = apply(&x.0);
+        Ok::<(), std::convert::Infallible>(())
+    };
+    let cap = alg.get_krylovdim() + p - 1;
+    let mut ws = Workspace::with_capacity(&mut (), &x0[0], cap).unwrap();
+    let (vals, vecs, info) =
+        block_eigsolve(&mut (), &mut op, &x0, 1, Which::LargestReal, &alg, &mut ws)?;
+    let tol = T::from(alg.get_tol()).unwrap();
+    let rel = T::from(1e-5).unwrap();
+    let amax = a
+        .iter()
+        .flat_map(|r| r.iter())
+        .fold(T::zero(), |m, &x| m.max(T::from(x.abs()).unwrap()));
+    let hypot = |v: &[T]| v.iter().fold(T::zero(), |acc, &x| acc.hypot(x));
+    for (i, (&l, x)) in vals.iter().zip(&vecs).enumerate() {
+        let direct: Vec<T> = apply(&x.0)
+            .iter()
+            .zip(&x.0)
+            .map(|(&ax, &xi)| ax - l * xi)
+            .collect();
+        let nr = info.normres[i];
+        // Evaluating A·x - λ·x directly adds rounding of order eps·‖A‖.
+        let rounding = T::epsilon() * T::from(4 * n).unwrap() * amax;
+        for (what, want, slack) in [
+            ("returned", hypot(&info.residual[i].0), tol),
+            ("direct", hypot(&direct), tol + rounding),
+        ] {
+            assert!(
+                (nr - want).abs() <= rel * nr.max(want) + slack,
+                "pair {i}: normres {:e} vs {what} {:e}",
+                to_f64(nr),
+                to_f64(want)
+            );
+        }
+        assert_eq!(i < info.converged, nr <= tol, "pair {i}: {:e}", to_f64(nr));
+    }
+    Ok(vals)
+}
+
+#[test]
+fn block_residuals_are_exact_at_extreme_scales() {
+    // Squaring the residual norms or forming their Gram matrix unscaled
+    // under- or overflows; the solver once reported the first Krylov space as
+    // converged with zero residuals and zero eigenvalues.
+    let pair = |s: f64| [vec![0.0, s], vec![s, 0.0]];
+    let swap = |s: f64| {
+        let mut m = vec![vec![0.0; 4]; 4];
+        for i in 0..4 {
+            m[i][(i + 2) % 4] = s;
+        }
+        m
+    };
+    let run = |m: &[Vec<f64>], p, alg, single: bool| {
+        let rows: Vec<&[f64]> = m.iter().map(Vec::as_slice).collect();
+        if single {
+            residual_run::<f32>(&rows, p, alg).map(|v| v.into_iter().map(f64::from).collect())
+        } else {
+            residual_run::<f64>(&rows, p, alg)
+        }
+        .unwrap()
+    };
+    let rel = |v: f64, want: f64| ((v - want) / want).abs() < 1e-5;
+    let v = run(
+        &pair(1e-200),
+        1,
+        BlockLanczos::new(2, 1, 1e-210, 0.0),
+        false,
+    );
+    assert!(rel(v[0], 1e-200), "{v:?}");
+    let eager = |tol| BlockLanczos::new(3, 1, tol, 0.0).eager(true);
+    let v = run(&swap(1e200), 2, eager(1e190), false);
+    assert!(rel(v[0], 1e200) && rel(v[1], 1e200), "{v:?}");
+    // Single precision: squares of 1e∓30 leave the f32 range.
+    let v = run(&pair(1e-30), 1, BlockLanczos::new(2, 1, 1e-37, 0.0), true);
+    assert!(rel(v[0], 1e-30), "{v:?}");
+    let v = run(&swap(1e30), 2, eager(1e25), true);
+    assert!(rel(v[0], 1e30) && rel(v[1], 1e30), "{v:?}");
+    // Residual columns of very different size (a·e₂ and b·e₃): each column's
+    // own scale must survive, or the small one vanishes and the pair with
+    // residual a = ‖A·x - 2x‖ is reported converged.
+    let mixed = |a: f64, b: f64| {
+        vec![
+            vec![2.0, 0.0, a, 0.0],
+            vec![0.0, 1.0, 0.0, b],
+            vec![a, 0.0, 0.0, 0.0],
+            vec![0.0, b, 0.0, 0.0],
+        ]
+    };
+    // The largest eigenvalue is 1/2 + √(1/4 + b²) ≈ b.
+    let big = |v: &[f64], b: f64| rel(v[0], b);
+    for (a, b, tol, single) in [
+        (1e-100, 1e100, 1e-110, false),
+        (1e-200, 1e200, 1e-210, false),
+        (1e-12, 1e12, 1e-13, true),
+    ] {
+        let v = run(&mixed(a, b), 2, eager(tol), single);
+        assert!(big(&v, b), "a = {a:e}: {v:?}");
+    }
+}
+
+#[test]
+fn block_residual_beyond_the_range_is_an_error() {
+    // Every map output and its stable norm is finite, but the residual
+    // norm of the first Ritz pair exceeds the largest finite number.
+    let h = 1.5e308;
+    let m: [&[f64]; 5] = [
+        &[0.0, 0.0, 1.0, 0.0, 0.0],
+        &[0.0, 0.0, 0.0, 1.0, 0.0],
+        &[1.0, 0.0, 0.0, 1.0, h],
+        &[0.0, 1.0, 1.0, 0.0, h],
+        &[0.0, 0.0, h, h, 0.0],
+    ];
+    let alg = BlockLanczos::new(3, 1, 1e-10, 0.0).eager(true);
+    let out = residual_run::<f64>(&m, 2, alg);
+    assert!(matches!(out, Err(Error::NonFiniteIterate)), "{out:?}");
 }

@@ -3,9 +3,10 @@
 
 use num_traits::{Float, One, Zero};
 
+use crate::arnoldi::Step;
 use crate::dense::{Givens, givens, upper_solve};
 use crate::error::Error;
-use crate::orth::{Orth, orthogonalize};
+use crate::orth::Orth;
 use crate::scalar::Real;
 use crate::scalar::sealed::{Ops as _, RealOps as _};
 use crate::traits::{Basis, LinearMap, Vector, Workspace};
@@ -166,8 +167,10 @@ mod sealed {
 pub trait LinearSolver: sealed::Sealed {
     #[doc(hidden)]
     #[allow(clippy::type_complexity)]
+    #[allow(clippy::too_many_arguments)]
     fn solve<V, B, A>(
         &self,
+        cx: &mut V::Context,
         op: &mut A,
         b: &V,
         x0: &V,
@@ -197,7 +200,9 @@ pub trait LinearSolver: sealed::Sealed {
 /// `Error::NonFiniteStartVector` reports a non-finite `b` or `x0`; a
 /// non-finite map output (from `A·x0` on) is `Error::NonFiniteIterate`.
 #[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
 pub fn linsolve<V, B, A, L>(
+    cx: &mut V::Context,
     op: &mut A,
     b: &V,
     x0: &V,
@@ -212,7 +217,7 @@ where
     A: LinearMap<V>,
     L: LinearSolver,
 {
-    alg.solve(op, b, x0, a0, a1, ws)
+    alg.solve(cx, op, b, x0, a0, a1, ws)
 }
 
 fn check_tol<R: Float + crate::scalar::sealed::RealOps, E>(tol: f64) -> Result<R, Error<E>> {
@@ -223,7 +228,9 @@ fn check_tol<R: Float + crate::scalar::sealed::RealOps, E>(tol: f64) -> Result<R
 }
 
 /// `r ← b - a₀x - a₁A·x`, using `ws.w` for `A·x`; returns `‖r‖`.
+#[allow(clippy::too_many_arguments)]
 fn residual_into<V, B, A>(
+    cx: &mut V::Context,
     op: &mut A,
     b: &V,
     x: &V,
@@ -237,18 +244,19 @@ where
     B: Basis<V>,
     A: LinearMap<V>,
 {
-    op.apply_into(x, &mut ws.w)?;
-    r.copy_from(b)?;
+    op.apply_into(cx, x, &mut ws.w)?;
+    r.copy_from(cx, b)?;
     if a0 != V::Scalar::zero() {
-        r.axpby(-a0, x, V::Scalar::one())?;
+        r.axpby(cx, -a0, x, V::Scalar::one())?;
     }
-    r.axpby(-a1, &ws.w, V::Scalar::one())?;
-    r.norm()
+    r.axpby(cx, -a1, &ws.w, V::Scalar::one())?;
+    r.norm(cx)
 }
 
 /// Solution `x = x0`, residual and its norm.
 #[allow(clippy::type_complexity)]
 fn start<V, B, A>(
+    cx: &mut V::Context,
     op: &mut A,
     b: &V,
     x0: &V,
@@ -261,14 +269,14 @@ where
     B: Basis<V>,
     A: LinearMap<V>,
 {
-    let mut x = b.similar().map_err(Error::Vector)?;
-    x.copy_from(x0).map_err(Error::Vector)?;
-    let mut r = b.similar().map_err(Error::Vector)?;
-    let normr = residual_into(op, b, x0, a0, a1, &mut r, ws).map_err(Error::Vector)?;
+    let mut x = b.similar(cx).map_err(Error::Vector)?;
+    x.copy_from(cx, x0).map_err(Error::Vector)?;
+    let mut r = b.similar(cx).map_err(Error::Vector)?;
+    let normr = residual_into(cx, op, b, x0, a0, a1, &mut r, ws).map_err(Error::Vector)?;
     if !normr.is_finite() {
         // Classifying costs two reductions, paid only on this error path.
         for v in [b, x0] {
-            if !v.norm().map_err(Error::Vector)?.is_finite() {
+            if !v.norm(cx).map_err(Error::Vector)?.is_finite() {
                 return Err(Error::NonFiniteStartVector);
             }
         }
@@ -297,6 +305,7 @@ impl LinearSolver for Cg {
     /// Port of KrylovKit v0.10.4 `src/linsolve/cg.jl:linsolve(…, ::CG)`.
     fn solve<V, B, A>(
         &self,
+        cx: &mut V::Context,
         op: &mut A,
         b: &V,
         x0: &V,
@@ -317,7 +326,7 @@ impl LinearSolver for Cg {
         if a0.im() != zero || a1.im() != zero {
             return Err(Error::InvalidArgument("CG requires real a0 and a1"));
         }
-        let (mut x, mut r, mut normr) = start(op, b, x0, a0, a1, ws)?;
+        let (mut x, mut r, mut normr) = start(cx, op, b, x0, a0, a1, ws)?;
         let mut numops = 1;
         let mut numiter = 0;
         let mut rho = normr * normr;
@@ -334,13 +343,13 @@ impl LinearSolver for Cg {
             }
             // p ← r + β·p (β = 0 overwrites p); q ← a₀p + a₁A·p.
             let (p, q) = (&mut ws.v, &mut ws.w);
-            p.axpby(V::Scalar::one(), &r, beta).map_err(ve)?;
-            op.apply_into(p, q).map_err(ve)?;
+            p.axpby(cx, V::Scalar::one(), &r, beta).map_err(ve)?;
+            op.apply_into(cx, p, q).map_err(ve)?;
             numops += 1;
             if a0 != V::Scalar::zero() || a1 != V::Scalar::one() {
-                q.axpby(a0, p, a1).map_err(ve)?;
+                q.axpby(cx, a0, p, a1).map_err(ve)?;
             }
-            let pq = p.inner(q).map_err(ve)?;
+            let pq = p.inner(cx, q).map_err(ve)?;
             if !pq.all_finite() {
                 return Err(Error::NonFiniteIterate);
             }
@@ -348,9 +357,9 @@ impl LinearSolver for Cg {
                 return Err(Error::NotPositiveDefinite);
             }
             let alpha = V::Scalar::from_real(rho) / pq;
-            x.axpby(alpha, p, V::Scalar::one()).map_err(ve)?;
-            r.axpby(-alpha, q, V::Scalar::one()).map_err(ve)?;
-            normr = r.norm().map_err(ve)?;
+            x.axpby(cx, alpha, p, V::Scalar::one()).map_err(ve)?;
+            r.axpby(cx, -alpha, q, V::Scalar::one()).map_err(ve)?;
+            normr = r.norm(cx).map_err(ve)?;
             if !normr.is_finite() {
                 return Err(Error::NonFiniteIterate);
             }
@@ -358,7 +367,7 @@ impl LinearSolver for Cg {
             if normr < tol && numiter > 1 {
                 // Recompute against the accumulated rounding (KrylovKit also
                 // skips this after the first iteration) and restart.
-                normr = residual_into(op, b, &x, a0, a1, &mut r, ws).map_err(ve)?;
+                normr = residual_into(cx, op, b, &x, a0, a1, &mut r, ws).map_err(ve)?;
                 numops += 1;
                 if !normr.is_finite() {
                     return Err(Error::NonFiniteIterate);
@@ -379,6 +388,7 @@ impl LinearSolver for Gmres {
     /// Port of KrylovKit v0.10.4 `src/linsolve/gmres.jl:linsolve(…, ::GMRES)`.
     fn solve<V, B, A>(
         &self,
+        cx: &mut V::Context,
         op: &mut A,
         b: &V,
         x0: &V,
@@ -408,7 +418,7 @@ impl LinearSolver for Gmres {
         }
         let ve = Error::Vector;
         let zero = Real::<V>::zero();
-        let (mut x, mut r, mut beta) = start(op, b, x0, a0, a1, ws)?;
+        let (mut x, mut r, mut beta) = start(cx, op, b, x0, a0, a1, ws)?;
         let mut numops = 1;
         if beta < tol || beta == zero {
             return Ok((x, info(beta < tol, r, beta, 0, numops)));
@@ -418,19 +428,19 @@ impl LinearSolver for Gmres {
         let mut rm = vec![s0; kd * kd]; // R, column-major, leading dim kd
         let mut gs = vec![Givens::<V::Scalar>::identity(); kd];
         let mut y = vec![s0; kd + 1];
-        let mut h = Vec::with_capacity(kd);
-        let mut scratch = Vec::with_capacity(kd);
+        let mut step = Step::new(kd, self.orth);
         let mut c = vec![s0; kd + 1];
         let mut numiter = 0;
 
         // Arnoldi start from r/‖r‖.
-        let mut normres = arnoldi_step(op, ws, Some(&r), beta, &mut h, &mut scratch, self.orth)?;
+        ws.basis.truncate(0);
+        let mut normres = step.expand(cx, ws, op, Some(&r), Real::<V>::one() / beta)?;
         numops += 1;
         loop {
             numiter += 1;
             y[0] = V::Scalar::from_real(beta);
             let mut k = 1;
-            rm[0] = a0 + a1 * h[0];
+            rm[0] = a0 + a1 * step.col[0];
             let (g, rkk) = givens(rm[0], a1 * V::Scalar::from_real(normres), 0, 1);
             (gs[0], rm[0]) = (g, rkk);
             y[1] = s0;
@@ -438,14 +448,14 @@ impl LinearSolver for Gmres {
             beta = y[1].modulus();
 
             while rm[(k - 1) * (kd + 1)] != s0 && beta > tol && ws.basis.len() < kd {
-                normres = arnoldi_step(op, ws, None, normres, &mut h, &mut scratch, self.orth)?;
+                normres = step.expand(cx, ws, op, None, Real::<V>::one() / normres)?;
                 numops += 1;
                 k = ws.basis.len();
                 let col = &mut rm[(k - 1) * kd..k * kd];
-                for (ri, &hi) in col.iter_mut().zip(&h[..k - 1]) {
+                for (ri, &hi) in col.iter_mut().zip(&step.col[..k - 1]) {
                     *ri = a1 * hi;
                 }
-                col[k - 1] = a0 + a1 * h[k - 1];
+                col[k - 1] = a0 + a1 * step.col[k - 1];
                 for g in &gs[..k - 1] {
                     g.lmul(col);
                 }
@@ -472,7 +482,7 @@ impl LinearSolver for Gmres {
             };
             upper_solve(&rm, kd, &mut y, n).map_err(|()| Error::SingularKrylovSpace)?;
             ws.basis
-                .combine_into(&y[..k], &mut x, V::Scalar::one(), V::Scalar::one())
+                .combine_into(cx, &y[..k], &mut x, V::Scalar::one(), V::Scalar::one())
                 .map_err(ve)?;
 
             let recurrence = self.restart_residual == RestartResidual::Recurrence;
@@ -485,15 +495,17 @@ impl LinearSolver for Gmres {
                     g.lmul_adjoint(&mut c[..=k]);
                 }
                 let yk = y[k];
-                ws.basis.combine_into(&c[..k], &mut r, yk, s0).map_err(ve)?;
+                ws.basis
+                    .combine_into(cx, &c[..k], &mut r, yk, s0)
+                    .map_err(ve)?;
                 // c[k] = 0 after a singular step, where ‖w‖ may vanish.
                 if c[k] != s0 {
                     let a = yk * c[k] * V::Scalar::from_real(Real::<V>::one() / normres);
-                    r.axpby(a, &ws.w, V::Scalar::one()).map_err(ve)?;
+                    r.axpby(cx, a, &ws.w, V::Scalar::one()).map_err(ve)?;
                 }
-                r.norm().map_err(ve)?
+                r.norm(cx).map_err(ve)?
             } else {
-                beta = residual_into(op, b, &x, a0, a1, &mut r, ws).map_err(ve)?;
+                beta = residual_into(cx, op, b, &x, a0, a1, &mut r, ws).map_err(ve)?;
                 numops += 1;
                 if !beta.is_finite() {
                     return Err(Error::NonFiniteIterate);
@@ -506,47 +518,9 @@ impl LinearSolver for Gmres {
                 }
                 beta
             };
-            normres = arnoldi_step(op, ws, Some(&r), nr, &mut h, &mut scratch, self.orth)?;
+            ws.basis.truncate(0);
+            normres = step.expand(cx, ws, op, Some(&r), Real::<V>::one() / nr)?;
             numops += 1;
         }
     }
-}
-
-/// Appends `src/nrm` (`src = None`: the residual `ws.w`) to the basis and
-/// performs one Arnoldi step: `ws.w ← A·v` orthogonalized, with the
-/// coefficients in `h` (`len = basis.len()`). Returns `‖ws.w‖`.
-fn arnoldi_step<V, B, A>(
-    op: &mut A,
-    ws: &mut Workspace<V, B>,
-    src: Option<&V>,
-    nrm: Real<V>,
-    h: &mut Vec<V::Scalar>,
-    scratch: &mut Vec<V::Scalar>,
-    orth: Orth,
-) -> Result<Real<V>, Error<V::Error>>
-where
-    V: Vector,
-    B: Basis<V>,
-    A: LinearMap<V>,
-{
-    let ve = Error::Vector;
-    let inv = V::Scalar::from_real(Real::<V>::one() / nrm);
-    if src.is_some() {
-        ws.basis.truncate(0);
-    }
-    let src = src.unwrap_or(&ws.w);
-    ws.basis.push(src, inv).map_err(ve)?;
-    ws.v.axpby(inv, src, V::Scalar::zero()).map_err(ve)?;
-    op.apply_into(&ws.v, &mut ws.w).map_err(ve)?;
-    let k = ws.basis.len();
-    h.clear();
-    h.resize(k, V::Scalar::zero());
-    scratch.clear();
-    scratch.resize(k, V::Scalar::zero());
-    orthogonalize(&ws.basis, &mut ws.w, h, scratch, orth).map_err(ve)?;
-    let nrm = ws.w.norm().map_err(ve)?;
-    if !nrm.is_finite() || !h.iter().all(|c| c.all_finite()) {
-        return Err(Error::NonFiniteIterate);
-    }
-    Ok(nrm)
 }

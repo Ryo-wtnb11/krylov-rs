@@ -14,14 +14,16 @@ pub enum Orth {
     #[default]
     Cgs2,
     /// Modified Gram–Schmidt with one full reorthogonalization (KrylovKit's
-    /// default): `2·len` sequential inner products per iteration.
+    /// default): `2·len` sequential [`Basis::inner_at`] and
+    /// [`Basis::axpy_at`] calls per iteration, one vector operation each.
     Mgs2,
 }
 
 /// `w ← (I - V·Vᴴ)·w` by `orth`, with the projection coefficients `Vᴴ·w_old`
-/// summed over both passes into `h`. `h` must be zeroed and `scratch` hold
-/// `basis.len()` entries.
+/// summed over both passes into `h`. `h` must be zeroed and `s` (the
+/// second CGS2 pass's coefficients) hold `basis.len()` entries.
 pub(crate) fn orthogonalize<V: Vector, B: Basis<V>>(
+    cx: &mut V::Context,
     basis: &B,
     w: &mut V,
     h: &mut [V::Scalar],
@@ -30,10 +32,10 @@ pub(crate) fn orthogonalize<V: Vector, B: Basis<V>>(
 ) -> Result<(), V::Error> {
     match orth {
         Orth::Cgs2 => {
-            basis.project(w, h)?;
-            basis.combine_into(h, w, -V::Scalar::one(), V::Scalar::one())?;
-            basis.project(w, s)?;
-            basis.combine_into(s, w, -V::Scalar::one(), V::Scalar::one())?;
+            basis.project(cx, w, h)?;
+            basis.combine_into(cx, h, w, -V::Scalar::one(), V::Scalar::one())?;
+            basis.project(cx, w, s)?;
+            basis.combine_into(cx, s, w, -V::Scalar::one(), V::Scalar::one())?;
             for (hi, si) in h.iter_mut().zip(s.iter()) {
                 *hi += *si;
             }
@@ -41,8 +43,8 @@ pub(crate) fn orthogonalize<V: Vector, B: Basis<V>>(
         Orth::Mgs2 => {
             for _ in 0..2 {
                 for (i, hi) in h.iter_mut().enumerate() {
-                    let c = basis.inner_at(i, w, s)?;
-                    basis.axpy_at(i, -c, w, s)?;
+                    let c = basis.inner_at(cx, i, w)?;
+                    basis.axpy_at(cx, i, -c, w)?;
                     *hi += c;
                 }
             }

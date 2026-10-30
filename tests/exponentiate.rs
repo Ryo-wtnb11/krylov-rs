@@ -19,8 +19,8 @@ fn run<S: TestScalar>(
 ) -> (f64, krylov::ExpInfo<S::Real>) {
     let xv = to_dvec::<S>(x);
     let mut op = DenseOp::<S>::new(a);
-    let mut ws = Workspace::with_capacity(&xv, alg.get_krylovdim()).unwrap();
-    let (y, info) = exponentiate(&mut op, S::from_c64(t), &xv, &alg, &mut ws).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &xv, alg.get_krylovdim()).unwrap();
+    let (y, info) = exponentiate(&mut (), &mut op, S::from_c64(t), &xv, &alg, &mut ws).unwrap();
     assert_eq!(info.numops, op.applications);
     let exact = dense_expv(a, t, x);
     (diff_norm(&to_c64(&y), &exact) / norm(&exact), info)
@@ -106,13 +106,13 @@ fn fixed_point_and_zero_time() {
     a[(1, 1)] = Complex64::new(2.0, 0.0);
     let x = [1.0, 0.0, -1.0].map(|v| Complex64::new(v, 0.0));
     let xv = to_dvec::<f64>(&x);
-    let mut ws = Workspace::with_capacity(&xv, 3).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &xv, 3).unwrap();
     let alg = Lanczos::new(3, 100, 1e-12);
-    let (y, info) = exponentiate(&mut DenseOp::new(&a), -1.0, &xv, &alg, &mut ws).unwrap();
+    let (y, info) = exponentiate(&mut (), &mut DenseOp::new(&a), -1.0, &xv, &alg, &mut ws).unwrap();
     assert_eq!(y, xv);
     assert_eq!((info.converged, info.numops, info.numiter), (1, 1, 0));
 
-    let (y, info) = exponentiate(&mut DenseOp::new(&a), 0.0, &xv, &alg, &mut ws).unwrap();
+    let (y, info) = exponentiate(&mut (), &mut DenseOp::new(&a), 0.0, &xv, &alg, &mut ws).unwrap();
     assert_eq!(y, xv);
     assert_eq!(info.numops, 0);
 
@@ -153,11 +153,18 @@ fn warm_call_allocates_only_the_result() {
     let x = to_dvec::<Complex64>(&random_vec(&mut g, 60, true));
     let alg = Lanczos::new(10, 100, 1e-12);
     let mut op = DenseOp::new(&a);
-    let mut ws = Workspace::with_capacity(&x, 10).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &x, 10).unwrap();
     for _ in 0..2 {
         let before = similar_calls();
-        let (_, info) =
-            exponentiate(&mut op, Complex64::new(0.0, -3.0), &x, &alg, &mut ws).unwrap();
+        let (_, info) = exponentiate(
+            &mut (),
+            &mut op,
+            Complex64::new(0.0, -3.0),
+            &x,
+            &alg,
+            &mut ws,
+        )
+        .unwrap();
         assert!(info.numiter > 1);
         assert_eq!(similar_calls() - before, 1);
     }
@@ -168,15 +175,23 @@ fn errors() {
     let a = DMatrix::<Complex64>::identity(3, 3);
     let x = DVec(vec![1.0f64, 2.0, 3.0]);
     let mut op = DenseOp::<f64>::new(&a);
-    let mut ws = Workspace::with_capacity(&x, 3).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &x, 3).unwrap();
     let alg = Lanczos::new(3, 100, 1e-12);
     let e = |r: Result<_, Error<_>>| r.map(|_| ()).unwrap_err();
     assert!(matches!(
-        e(exponentiate(&mut op, f64::INFINITY, &x, &alg, &mut ws)),
+        e(exponentiate(
+            &mut (),
+            &mut op,
+            f64::INFINITY,
+            &x,
+            &alg,
+            &mut ws
+        )),
         Error::InvalidArgument(_)
     ));
     assert!(matches!(
         e(exponentiate(
+            &mut (),
             &mut op,
             1.0,
             &x,
@@ -187,6 +202,7 @@ fn errors() {
     ));
     assert_eq!(
         e(exponentiate(
+            &mut (),
             &mut op,
             1.0,
             &DVec(vec![f64::NAN; 3]),
@@ -197,6 +213,7 @@ fn errors() {
     );
     assert_eq!(
         e(exponentiate(
+            &mut (),
             &mut op,
             1.0,
             &x,
@@ -219,8 +236,8 @@ fn run_int<S: TestScalar>(
 ) -> (f64, krylov::ExpInfo<S::Real>) {
     let uv: Vec<DVec<S>> = u.iter().map(|x| to_dvec::<S>(x)).collect();
     let mut op = DenseOp::<S>::new(a);
-    let mut ws = Workspace::with_capacity(&uv[0], alg.get_krylovdim()).unwrap();
-    let (y, info) = expintegrator(&mut op, S::from_c64(t), &uv, &alg, &mut ws).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &uv[0], alg.get_krylovdim()).unwrap();
+    let (y, info) = expintegrator(&mut (), &mut op, S::from_c64(t), &uv, &alg, &mut ws).unwrap();
     assert_eq!(info.numops, op.applications);
     let exact = dense_phi_comb(a, t, u);
     (diff_norm(&to_c64(&y), &exact) / norm(&exact), info)
@@ -300,9 +317,10 @@ fn exact_polynomial_and_fixed_point() {
         vec![Complex64::new(0.0, 0.0); n],
     ];
     let uv: Vec<DVec<f64>> = u.iter().map(|x| to_dvec(x)).collect();
-    let mut ws = Workspace::with_capacity(&uv[0], 4).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &uv[0], 4).unwrap();
     let alg = Lanczos::new(4, 100, 1e-12);
-    let (y, info) = expintegrator(&mut DenseOp::new(&a), -1.5, &uv, &alg, &mut ws).unwrap();
+    let (y, info) =
+        expintegrator(&mut (), &mut DenseOp::new(&a), -1.5, &uv, &alg, &mut ws).unwrap();
     for i in 0..n {
         assert!((y.0[i] - (uv[0].0[i] - 1.5 * uv[1].0[i])).abs() < 1e-15);
     }
@@ -317,7 +335,7 @@ fn exact_polynomial_and_fixed_point() {
         .copied()
         .collect();
     let uv = [to_dvec::<f64>(&u0), to_dvec::<f64>(&u1)];
-    let (y, info) = expintegrator(&mut DenseOp::new(&a), 2.0, &uv, &alg, &mut ws).unwrap();
+    let (y, info) = expintegrator(&mut (), &mut DenseOp::new(&a), 2.0, &uv, &alg, &mut ws).unwrap();
     assert_eq!(y, uv[0]);
     assert_eq!((info.converged, info.numiter, info.numops), (1, 0, 1));
 }
@@ -331,11 +349,18 @@ fn warm_expintegrator_allocates_p_vectors() {
         .collect();
     let alg = Lanczos::new(10, 100, 1e-12);
     let mut op = DenseOp::new(&a);
-    let mut ws = Workspace::with_capacity(&u[0], 10).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &u[0], 10).unwrap();
     for _ in 0..2 {
         let before = similar_calls();
-        let (_, info) =
-            expintegrator(&mut op, Complex64::new(0.0, -3.0), &u, &alg, &mut ws).unwrap();
+        let (_, info) = expintegrator(
+            &mut (),
+            &mut op,
+            Complex64::new(0.0, -3.0),
+            &u,
+            &alg,
+            &mut ws,
+        )
+        .unwrap();
         assert!(info.numiter > 1);
         assert_eq!(similar_calls() - before, 3);
     }
@@ -352,42 +377,57 @@ struct Stable<S>(DVec<S>);
 impl<S: TestScalar> Vector for Stable<S> {
     type Scalar = S;
     type Error = std::convert::Infallible;
-    fn similar(&self) -> Result<Self, Self::Error> {
-        self.0.similar().map(Self)
+    type Context = ();
+    fn similar(&self, cx: &mut ()) -> Result<Self, Self::Error> {
+        self.0.similar(cx).map(Self)
     }
-    fn copy_from(&mut self, x: &Self) -> Result<(), Self::Error> {
-        self.0.copy_from(&x.0)
+    fn copy_from(&mut self, cx: &mut (), x: &Self) -> Result<(), Self::Error> {
+        self.0.copy_from(cx, &x.0)
     }
-    fn inner(&self, y: &Self) -> Result<S, Self::Error> {
-        self.0.inner(&y.0)
+    fn inner(&self, cx: &mut (), y: &Self) -> Result<S, Self::Error> {
+        self.0.inner(cx, &y.0)
     }
-    fn norm(&self) -> Result<S::Real, Self::Error> {
+    fn norm(&self, _: &mut ()) -> Result<S::Real, Self::Error> {
         let norm = self.0.0.iter().fold(0.0_f64, |r, z| {
             let z = z.to_c64();
             r.hypot(z.re).hypot(z.im)
         });
         Ok(<S::Real as num_traits::NumCast>::from(norm).unwrap())
     }
-    fn axpby(&mut self, a: S, x: &Self, b: S) -> Result<(), Self::Error> {
+    fn axpby(&mut self, cx: &mut (), a: S, x: &Self, b: S) -> Result<(), Self::Error> {
         VECTOR_UPDATES.with(|n| n.set(n.get() + 1));
-        self.0.axpby(a, &x.0, b)
+        self.0.axpby(cx, a, &x.0, b)
     }
 }
 
 fn check_polynomial_coefficients<S: TestScalar>(t: S, u: &[S], want: Option<S>) {
     let u: Vec<_> = u.iter().map(|&s| Stable(DVec(vec![s]))).collect();
-    let mut op = |_: &Stable<S>, y: &mut Stable<S>| {
+    let mut op = |_: &mut (), _: &Stable<S>, y: &mut Stable<S>| {
         y.0.0.fill(S::zero());
         Ok(())
     };
-    let mut ws = Workspace::with_capacity(&u[0], 4).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &u[0], 4).unwrap();
     for arnoldi in [false, true] {
         let before = similar_calls();
         VECTOR_UPDATES.with(|n| n.set(0));
         let result = if arnoldi {
-            expintegrator(&mut op, t, &u, &Arnoldi::new(4, 100, 1e-12), &mut ws)
+            expintegrator(
+                &mut (),
+                &mut op,
+                t,
+                &u,
+                &Arnoldi::new(4, 100, 1e-12),
+                &mut ws,
+            )
         } else {
-            expintegrator(&mut op, t, &u, &Lanczos::new(4, 100, 1e-12), &mut ws)
+            expintegrator(
+                &mut (),
+                &mut op,
+                t,
+                &u,
+                &Lanczos::new(4, 100, 1e-12),
+                &mut ws,
+            )
         };
         let p = u.len() - 1;
         assert_eq!(similar_calls() - before, p);
@@ -493,12 +533,26 @@ fn check_exponential_vector_overflow<S: TestScalar>() {
         2.0_f64.powi(1023),
         0.0,
     ))]));
-    assert!(to_f64(x.norm().unwrap()).is_finite());
-    let mut op = |x: &Stable<S>, y: &mut Stable<S>| y.copy_from(x);
-    let mut ws = Workspace::with_capacity(&x, 4).unwrap();
+    assert!(to_f64(x.norm(&mut ()).unwrap()).is_finite());
+    let mut op = |cx: &mut (), x: &Stable<S>, y: &mut Stable<S>| y.copy_from(cx, x);
+    let mut ws = Workspace::with_capacity(&mut (), &x, 4).unwrap();
     for result in [
-        exponentiate(&mut op, S::one(), &x, &Lanczos::new(4, 100, 1e-12), &mut ws),
-        exponentiate(&mut op, S::one(), &x, &Arnoldi::new(4, 100, 1e-12), &mut ws),
+        exponentiate(
+            &mut (),
+            &mut op,
+            S::one(),
+            &x,
+            &Lanczos::new(4, 100, 1e-12),
+            &mut ws,
+        ),
+        exponentiate(
+            &mut (),
+            &mut op,
+            S::one(),
+            &x,
+            &Arnoldi::new(4, 100, 1e-12),
+            &mut ws,
+        ),
     ] {
         assert_eq!(result.unwrap_err(), Error::NonFiniteIterate);
     }
@@ -519,11 +573,11 @@ fn expintegrator_errors() {
     let a = DMatrix::<Complex64>::identity(3, 3);
     let x = DVec(vec![1.0f64, 2.0, 3.0]);
     let mut op = DenseOp::<f64>::new(&a);
-    let mut ws = Workspace::with_capacity(&x, 3).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &x, 3).unwrap();
     let alg = Lanczos::new(3, 100, 1e-12);
     let e = |r: Result<_, Error<_>>| r.map(|_| ()).unwrap_err();
     assert!(matches!(
-        e(expintegrator(&mut op, 1.0, &[], &alg, &mut ws)),
+        e(expintegrator(&mut (), &mut op, 1.0, &[], &alg, &mut ws)),
         Error::InvalidArgument(_)
     ));
     let u = [
@@ -532,7 +586,7 @@ fn expintegrator_errors() {
         DVec(vec![f64::NAN; 3]),
     ];
     assert_eq!(
-        e(expintegrator(&mut op, 1.0, &u, &alg, &mut ws)),
+        e(expintegrator(&mut (), &mut op, 1.0, &u, &alg, &mut ws)),
         Error::NonFiniteStartVector
     );
 }
@@ -598,8 +652,8 @@ fn run_alg<S: TestScalar, L: KrylovProcess>(
 ) -> (Vec<Complex64>, f64, krylov::ExpInfo<S::Real>) {
     let uv: Vec<DVec<S>> = u.iter().map(|x| to_dvec::<S>(x)).collect();
     let mut op = DenseOp::<S>::new(a);
-    let mut ws = Workspace::with_capacity(&uv[0], capacity).unwrap();
-    let (y, info) = expintegrator(&mut op, S::from_c64(t), &uv, alg, &mut ws).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &uv[0], capacity).unwrap();
+    let (y, info) = expintegrator(&mut (), &mut op, S::from_c64(t), &uv, alg, &mut ws).unwrap();
     assert_eq!(info.numops, op.applications);
     let y = to_c64(&y);
     let exact = dense_phi_comb(a, t, u);
@@ -771,9 +825,10 @@ fn arnoldi_exact_polynomial_and_fixed_point() {
         vec![Complex64::new(0.0, 0.0); n],
     ];
     let uv: Vec<DVec<f64>> = u.iter().map(|x| to_dvec(x)).collect();
-    let mut ws = Workspace::with_capacity(&uv[0], 4).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &uv[0], 4).unwrap();
     let alg = Arnoldi::new(4, 100, 1e-12);
-    let (y, info) = expintegrator(&mut DenseOp::new(&a), -1.5, &uv, &alg, &mut ws).unwrap();
+    let (y, info) =
+        expintegrator(&mut (), &mut DenseOp::new(&a), -1.5, &uv, &alg, &mut ws).unwrap();
     for i in 0..n {
         assert!((y.0[i] - (uv[0].0[i] - 1.5 * uv[1].0[i])).abs() < 1e-15);
     }
@@ -815,16 +870,30 @@ fn arnoldi_warm_calls_allocate_only_the_result_and_scratch() {
         .collect();
     let alg = Arnoldi::new(10, 100, 1e-12);
     let mut op = DenseOp::new(&a);
-    let mut ws = Workspace::with_capacity(&u[0], 10).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &u[0], 10).unwrap();
     for _ in 0..2 {
         let before = similar_calls();
-        let (_, info) =
-            exponentiate(&mut op, Complex64::new(0.0, -3.0), &u[0], &alg, &mut ws).unwrap();
+        let (_, info) = exponentiate(
+            &mut (),
+            &mut op,
+            Complex64::new(0.0, -3.0),
+            &u[0],
+            &alg,
+            &mut ws,
+        )
+        .unwrap();
         assert!(info.numiter > 1);
         assert_eq!(similar_calls() - before, 1);
         let before = similar_calls();
-        let (_, info) =
-            expintegrator(&mut op, Complex64::new(0.0, -3.0), &u, &alg, &mut ws).unwrap();
+        let (_, info) = expintegrator(
+            &mut (),
+            &mut op,
+            Complex64::new(0.0, -3.0),
+            &u,
+            &alg,
+            &mut ws,
+        )
+        .unwrap();
         assert!(info.numiter > 1);
         assert_eq!(similar_calls() - before, 3);
     }
@@ -835,15 +904,22 @@ fn arnoldi_errors() {
     let a = DMatrix::<Complex64>::identity(3, 3);
     let x = DVec(vec![1.0f64, 2.0, 3.0]);
     let mut op = DenseOp::<f64>::new(&a);
-    let mut ws = Workspace::with_capacity(&x, 3).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &x, 3).unwrap();
     let alg = Arnoldi::new(3, 100, 1e-12);
     let e = |r: Result<_, Error<_>>| r.map(|_| ()).unwrap_err();
     assert!(matches!(
-        e(expintegrator(&mut op, 1.0, &[], &alg, &mut ws)),
+        e(expintegrator(&mut (), &mut op, 1.0, &[], &alg, &mut ws)),
         Error::InvalidArgument(_)
     ));
     assert!(matches!(
-        e(exponentiate(&mut op, f64::INFINITY, &x, &alg, &mut ws)),
+        e(exponentiate(
+            &mut (),
+            &mut op,
+            f64::INFINITY,
+            &x,
+            &alg,
+            &mut ws
+        )),
         Error::InvalidArgument(_)
     ));
     for bad in [
@@ -853,12 +929,13 @@ fn arnoldi_errors() {
         Arnoldi::new(3, 0, 1e-12),
     ] {
         assert!(matches!(
-            e(exponentiate(&mut op, 1.0, &x, &bad, &mut ws)),
+            e(exponentiate(&mut (), &mut op, 1.0, &x, &bad, &mut ws)),
             Error::InvalidArgument(_)
         ));
     }
     assert_eq!(
         e(exponentiate(
+            &mut (),
             &mut op,
             1.0,
             &DVec(vec![f64::NAN; 3]),
@@ -869,6 +946,7 @@ fn arnoldi_errors() {
     );
     assert_eq!(
         e(exponentiate(
+            &mut (),
             &mut op,
             1.0,
             &x,
@@ -881,12 +959,12 @@ fn arnoldi_errors() {
         }
     );
     // A map producing NaN is a typed error, not a NaN result.
-    let mut nan_op = |_: &DVec<f64>, y: &mut DVec<f64>| {
+    let mut nan_op = |_: &mut (), _: &DVec<f64>, y: &mut DVec<f64>| {
         y.0.fill(f64::NAN);
         Ok::<(), std::convert::Infallible>(())
     };
     assert_eq!(
-        e(exponentiate(&mut nan_op, 1.0, &x, &alg, &mut ws)),
+        e(exponentiate(&mut (), &mut nan_op, 1.0, &x, &alg, &mut ws)),
         Error::NonFiniteIterate
     );
 }
@@ -896,9 +974,9 @@ fn arnoldi_errors() {
 fn sealed_entry<L: KrylovProcess>(alg: &L) -> Error<std::convert::Infallible> {
     let a = DMatrix::<Complex64>::identity(3, 3);
     let x = DVec(vec![1.0f64; 3]);
-    let mut ws = Workspace::with_capacity(&x, 3).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &x, 3).unwrap();
     let empty: &[DVec<f64>] = &[];
-    alg.expintegrator(&mut DenseOp::<f64>::new(&a), 1.0, empty, &mut ws)
+    alg.expintegrator(&mut (), &mut DenseOp::<f64>::new(&a), 1.0, empty, &mut ws)
         .map(|_| ())
         .unwrap_err()
 }
@@ -968,9 +1046,9 @@ fn overflowing_result_is_a_typed_error() {
         alg: &L,
     ) -> Error<std::convert::Infallible> {
         let xv = to_dvec::<S>(x);
-        let mut ws = Workspace::with_capacity(&xv, 8).unwrap();
+        let mut ws = Workspace::with_capacity(&mut (), &xv, 8).unwrap();
         let t = S::from_c64(Complex64::new(800.0, 0.0));
-        match exponentiate(&mut DenseOp::<S>::new(a), t, &xv, alg, &mut ws) {
+        match exponentiate(&mut (), &mut DenseOp::<S>::new(a), t, &xv, alg, &mut ws) {
             Ok((y, info)) => panic!("{:?} {info:?}", &y.0[..2]),
             Err(e) => e,
         }
@@ -996,15 +1074,15 @@ fn large_finite_result_with_a_naive_norm_is_rejected() {
     // y = e^{λt}·x is finite, but ‖y‖² overflows the vector's own norm.
     fn go<S: TestScalar>(lambda: f64, alg: &impl KrylovProcess) {
         let x = Naive(vec![S::from_c64(Complex64::new(1e-10, 0.0)); 4]);
-        let mut op = |v: &Naive<S>, y: &mut Naive<S>| {
+        let mut op = |_: &mut (), v: &Naive<S>, y: &mut Naive<S>| {
             for (yi, vi) in y.0.iter_mut().zip(&v.0) {
                 *yi = *vi * S::from_c64(Complex64::new(lambda, 0.0));
             }
             Ok::<(), std::convert::Infallible>(())
         };
-        let mut ws = Workspace::with_capacity(&x, 8).unwrap();
+        let mut ws = Workspace::with_capacity(&mut (), &x, 8).unwrap();
         assert_eq!(
-            exponentiate(&mut op, S::one(), &x, alg, &mut ws).unwrap_err(),
+            exponentiate(&mut (), &mut op, S::one(), &x, alg, &mut ws).unwrap_err(),
             Error::NonFiniteIterate
         );
     }
