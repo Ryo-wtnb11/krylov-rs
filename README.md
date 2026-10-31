@@ -22,7 +22,7 @@ See the [KrylovKit correspondence](docs/krylovkit.md) for details and reasons.
 
 ```toml
 [dependencies]
-krylov = "0.2"
+krylov = "0.3"
 lapack-src = { version = "0.13", features = ["openblas"] } # "accelerate" on macOS
 ```
 
