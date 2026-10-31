@@ -536,38 +536,52 @@ fn gmres_with_subnormal_shift() {
     assert!((x[0].re - 1e-310).abs() < 1e-323, "{x:?}");
 }
 
-/// Vector work of the shared Arnoldi expansion inside GMRES, pinned per
-/// orthogonalizer and restart-residual mode: `[inner, norm, axpby,
-/// copy_from]` and map applications for one solve (n = 40, K = 6, three
-/// restart cycles). Each expansion takes one map, the orthogonalizer's
-/// passes and one norm; the cycle-end work is the solution update and the
-/// restart residual.
+/// Vector work of the Arnoldi expansion inside GMRES follows the
+/// orthogonalizer's per-step formula, for any orthogonalizer and
+/// restart-residual mode. With `tol = 0` every one of the `C = numiter`
+/// cycles fills the basis to `K`, so the totals follow from `C`, `K` and the
+/// number of recomputed residuals alone.
+///
+/// An expansion at basis size `k` costs 1 map, `2k` inner products, `2k + 2`
+/// axpbys (push, scaled copy of the basis vector, and the two passes) and 1
+/// norm; a cycle ends with the `K`-term solution update. A recomputed
+/// residual costs 1 map, 1 copy, 1 axpby and 1 norm (`a0 = 0`); the start
+/// residual is one of them and `x0` is copied once. A recurrence restart
+/// (all but the last cycle) costs a `K`-term combine, 1 axpby and 1 norm.
 #[test]
-fn gmres_vector_operation_counts() {
+fn gmres_vector_work_follows_the_expansion_formula() {
     let mut g = SplitMix(83);
-    let n = 40;
+    let (n, kd, cycles) = (40, 6, 3);
     let a = general(&mut g, n, false) + DMatrix::identity(n, n) * Complex64::new(12.0, 0.0);
     let b = to_dvec::<f64>(&random_vec(&mut g, n, false));
     let x0 = to_dvec::<f64>(&vec![Complex64::default(); n]);
-    let mut got = Vec::new();
     for orth in [Orth::Cgs2, Orth::Mgs2] {
         for rr in [RestartResidual::Recomputed, RestartResidual::Recurrence] {
             let mut op = DenseOp::<f64>::new(&a);
-            let mut ws = Workspace::with_capacity(&mut (), &b, 6).unwrap();
-            let alg = Gmres::new(6, 3, 0.0).orth(orth).restart_residual(rr);
+            let mut ws = Workspace::with_capacity(&mut (), &b, kd).unwrap();
+            let alg = Gmres::new(kd, cycles, 0.0).orth(orth).restart_residual(rr);
             let before = vector_ops();
             let (_, info) = linsolve(&mut (), &mut op, &b, &x0, &alg, 0.0, 1.0, &mut ws).unwrap();
-            assert_eq!(info.numops, op.applications);
             let [inner, norm, axpby, copy] = ops_since(before);
-            got.push([inner, norm, axpby, copy, op.applications]);
+            let c = info.numiter;
+            assert_eq!(c, cycles, "tol = 0 never converges");
+            let (recomputed, recurrence) = match rr {
+                RestartResidual::Recomputed => (c + 1, 0),
+                RestartResidual::Recurrence => (2, c - 1),
+            };
+            let label = format!("{orth:?} {rr:?}");
+            assert_eq!(inner, c * kd * (kd + 1), "{label}");
+            assert_eq!(norm, c * kd + recomputed + recurrence, "{label}");
+            let expansions = c * (kd * (kd + 1) + 2 * kd);
+            let updates = c * kd;
+            assert_eq!(
+                axpby,
+                expansions + updates + recomputed + recurrence * (kd + 1),
+                "{label}"
+            );
+            assert_eq!(copy, 1 + recomputed, "{label}");
+            assert_eq!(info.numops, c * kd + recomputed, "{label}");
+            assert_eq!(info.numops, op.applications, "{label}");
         }
     }
-    assert_eq!(got, GMRES_COUNTS);
 }
-
-const GMRES_COUNTS: [[usize; 5]; 4] = [
-    [126, 22, 184, 5, 22],
-    [126, 22, 196, 3, 20],
-    [126, 22, 184, 5, 22],
-    [126, 22, 196, 3, 20],
-];
