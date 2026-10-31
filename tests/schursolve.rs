@@ -561,29 +561,54 @@ fn real_pair_is_completed_and_exhausted_space_returns_what_exists() {
     }
 }
 
-/// Vector work of the Arnoldi expansion (shared with GMRES), pinned per
-/// orthogonalizer: `[inner, norm, axpby, copy_from]` and map applications
-/// for one restarted `schursolve` (n = 40, K = 8, three Krylov subspaces).
+/// Vector work of the Arnoldi expansion follows the orthogonalizer's
+/// per-step formula. A complex map keeps the Schur form triangular, so with
+/// `tol = 0` (nothing converges) every restart keeps `3K/5` vectors and the
+/// totals follow from the `C = numiter` Krylov subspaces and `K` alone.
+///
+/// An expansion at basis size `k` costs 1 map, `2k` inner products, `2k + 2`
+/// axpbys (push, scaled copy, two passes) and 1 norm. The first subspace
+/// expands at sizes `1..=K`, each later one at `keep+1..=K`. Each restart
+/// rotates the basis (`2·Σ_{j<keep}(K-j)` axpbys, Householder sweep) and
+/// rescales the residual (1 axpby); the `n = howmany` returned vectors cost a
+/// `K`-term combine and one residual axpby each. The start vector adds a norm.
 #[test]
-fn arnoldi_vector_operation_counts() {
+fn arnoldi_vector_work_follows_the_expansion_formula() {
     let mut g = SplitMix(84);
-    let n = 40;
-    let a = outliers(&mut g, n, false);
-    let x0 = to_dvec::<f64>(&random_vec(&mut g, n, false));
-    let mut got = Vec::new();
+    let (n, kd, maxiter, howmany) = (40, 8, 3, 2);
+    let a = outliers(&mut g, n, true);
+    let x0 = to_dvec::<Complex64>(&random_vec(&mut g, n, true));
     for orth in [Orth::Cgs2, Orth::Mgs2] {
-        let mut op = DenseOp::<f64>::new(&a);
-        let mut ws = Workspace::with_capacity(&mut (), &x0, 8).unwrap();
-        let alg = Arnoldi::new(8, 3, 0.0).orth(orth);
+        let mut op = DenseOp::<Complex64>::new(&a);
+        let mut ws = Workspace::with_capacity(&mut (), &x0, kd).unwrap();
+        let alg = Arnoldi::new(kd, maxiter, 0.0).orth(orth);
         let before = vector_ops();
-        let info = schursolve(&mut (), &mut op, &x0, 2, Which::LargestReal, &alg, &mut ws)
-            .unwrap()
-            .3;
-        assert_eq!(info.numops, op.applications);
+        let info = schursolve(
+            &mut (),
+            &mut op,
+            &x0,
+            howmany,
+            Which::LargestReal,
+            &alg,
+            &mut ws,
+        )
+        .unwrap()
+        .3;
         let [inner, norm, axpby, copy] = ops_since(before);
-        got.push([inner, norm, axpby, copy, op.applications]);
+        assert_eq!((info.converged, info.numiter), (0, maxiter), "{orth:?}");
+        let (c, keep) = (info.numiter, 3 * kd / 5);
+        let tail = kd * (kd + 1) - keep * (keep + 1); // 2·Σ_{k=keep+1}^{K} k
+        let expansions = kd + (c - 1) * (kd - keep);
+        let rotate = 2 * (keep * kd - keep * (keep - 1) / 2);
+        assert_eq!(inner, kd * (kd + 1) + (c - 1) * tail, "{orth:?}");
+        assert_eq!(norm, expansions + 1, "{orth:?}");
+        assert_eq!(
+            axpby,
+            inner + 2 * expansions + (c - 1) * (rotate + 1) + howmany * (kd + 1),
+            "{orth:?}"
+        );
+        assert_eq!(copy, 0, "{orth:?}");
+        assert_eq!(info.numops, expansions, "{orth:?}");
+        assert_eq!(info.numops, op.applications, "{orth:?}");
     }
-    assert_eq!(got, ARNOLDI_COUNTS);
 }
-
-const ARNOLDI_COUNTS: [[usize; 5]; 2] = [[176, 17, 332, 0, 16], [176, 17, 332, 0, 16]];
