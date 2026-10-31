@@ -683,11 +683,12 @@ mod tests {
         }
     }
 
-    /// Why the range scaling exists: LAPACK `hseqr` itself, called unscaled
-    /// as KrylovKit calls it, treats every subdiagonal entry of a matrix near
-    /// 1e-300 as negligible and returns its diagonal.
+    /// `real_schur` scales matrices near 1e-300 into range before the LAPACK
+    /// call: the Schur factorization of such a matrix is still a valid one
+    /// (reconstruction and orthogonality) and its eigenvalues are the
+    /// eigenvalues of the rescaled matrix, times the scale.
     #[test]
-    fn unscaled_hseqr_deflates_tiny_matrices_wrongly() {
+    fn real_schur_is_correct_for_tiny_matrices() {
         let n = 10;
         let mut a = random(n, 11);
         for i in 0..n {
@@ -697,20 +698,18 @@ mod tests {
                 }
             }
         }
-        let a = a * 1e-300;
-        let id: Vec<f64> = DMatrix::<f64>::identity(n, n).as_slice().to_vec();
+        let tiny = &a * 1e-300;
+        let (mut h, mut z) = (
+            tiny.as_slice().to_vec(),
+            DMatrix::<f64>::identity(n, n).as_slice().to_vec(),
+        );
         let mut w = vec![c(0.0, 0.0); n];
-        let (mut h, mut z) = (a.as_slice().to_vec(), id.clone());
-        f64::hseqr_raw(&mut h, &mut z, n, &mut w, &mut Work::default()).unwrap();
-        let t = DMatrix::from_column_slice(n, n, &h);
-        let zm = DMatrix::from_column_slice(n, n, &z);
-        let back = (&zm * (&t / amax(&a)) * zm.transpose() - &a / amax(&a)).norm();
-        assert!(back > 1e-3, "unscaled LAPACK unexpectedly fine: {back:e}");
-        let (mut h, mut z) = (a.as_slice().to_vec(), id);
         real_schur(&mut h, &mut z, n, &mut w).unwrap();
         let t = DMatrix::from_column_slice(n, n, &h);
         let zm = DMatrix::from_column_slice(n, n, &z);
-        check_real(&a, &t, &zm, &w, 1e-12);
+        check_real(&tiny, &t, &zm, &w, 1e-12);
+        let want: Vec<Complex64> = a.complex_eigenvalues().iter().map(|x| x * 1e-300).collect();
+        assert!(max_mismatch(&w, &want) <= 1e-9 * 1e-300 * amax(&a));
     }
 
     #[test]
