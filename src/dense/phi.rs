@@ -16,12 +16,12 @@ use crate::scalar::sealed::RealOps as _;
 /// `φ_j - 1/j!` keeps most of `φ_j`. The error is a few ulps times the
 /// conditioning of `φ_j` at `x` (graded against a double-double oracle in
 /// `dense::tests`). A fixed radius 1
-/// instead lost about `j!` ulps of `φ_j` just above it (#4), and a wider
+/// instead lost about `j!` ulps of `φ_j` just above it, and a wider
 /// series radius loses digits to cancellation of terms near `e^{|x|}`.
 ///
 /// When `e^{Re x}` overflows the result is infinite, even where `φ_j(x)` (about
 /// `e^x/x^j`) would be representable; expintegrator then rejects the step
-/// as non-finite (#13) and takes a shorter one.
+/// as non-finite and takes a shorter one.
 pub(crate) fn phi_pair<S: Scalar>(x: S, p: usize) -> (S, S) {
     // An exactly real argument (real t on a Hermitian map) is evaluated in
     // real arithmetic: complex `exp`, products and quotients turn an

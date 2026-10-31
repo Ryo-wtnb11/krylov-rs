@@ -149,10 +149,10 @@ mod tests {
     fn cases(tiny: f64, huge: f64, band: &[(f64, f64)]) -> Vec<Vec<Complex64>> {
         let c = Complex64::new;
         let mut v = vec![
-            // Traced (#20): a lone complex entry far below √(min positive).
+            // A lone complex entry far below √(min positive), where a naive norm underflows.
             vec![c(-2.3e-24, -2.6e-24)],
             vec![c(-2.3e-24, -2.6e-24), c(1e-25, 3e-26)],
-            // Traced: x nearly aligned with e₀, so the pivot is O(σ/ν).
+            // x nearly aligned with e₀, so the pivot is O(σ/ν).
             vec![
                 c(1.0, 0.0),
                 c(0.0, 0.0),
@@ -162,7 +162,7 @@ mod tests {
                 c(-2.2e-19, 0.0),
             ],
             vec![c(3.2e-12, 1.3e-25), c(-6.4e-32, 1.2e-32)],
-            // Traced (svdsolve restart): σ is subnormal in f32, so the
+            // svdsolve restart input: σ is subnormal in f32, so the
             // pivot -σ/(x₀+ν) underflows to 0.
             vec![c(1.0, 0.0), c(3e-23, 0.0), c(-2e-23, 0.0)],
             // Mixed scales near underflow and overflow, and ordinary input.
@@ -174,7 +174,7 @@ mod tests {
             vec![c(2.0, 0.0), c(0.0, 0.0)],
         ];
         // Largest component just above √(min positive), so the smaller
-        // ones' squares are subnormal unless x is scaled (#20).
+        // ones' squares are subnormal unless x is scaled.
         for &(a, b) in band {
             v.push(vec![c(a, 0.0), c(b, 0.0)]);
             v.push(vec![c(a, 0.0), c(b, -b), c(-b, 0.0)]);
