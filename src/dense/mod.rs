@@ -113,7 +113,7 @@ mod tests {
         assert!((b[keep - 1] - fnorm).abs() < 1e-14);
     }
 
-    /// Projected entries near the f32 range limits (#20): the reflector norms
+    /// Projected entries near the f32 range limits: the reflector norms
     /// written into the tridiagonal form must not be `√Σxᵢ²`, which is ∞ or 0
     /// there. The restoration commutes with scaling, so the f32 result over
     /// `scale` must match the f64 result of the unscaled input.
@@ -379,7 +379,7 @@ mod tests {
             ),
         ];
         for (name, w) in ["f64", "c64", "f32", "c32"].iter().zip(worst) {
-            // A fixed series radius 1 reached 2·10⁵ ulps at j = 9 (#4).
+            // A fixed series radius 1 reached 2·10⁵ ulps at j = 9.
             assert!(w[1..].iter().all(|&e| e <= 16.0), "{name}: {w:?}");
         }
         assert_eq!(phi_pair(0.0f64, 0), (1.0, 1.0));

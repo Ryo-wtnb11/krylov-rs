@@ -168,7 +168,7 @@ fn non_finite_linsolve_inputs_stay_start_vector_errors() {
 #[test]
 fn overflowing_invariant_subspace_step_is_a_typed_error() {
     // A = 800·I₄: the Krylov space is invariant after one vector and
-    // φ(800) overflows f64 (#9).
+    // φ(800) overflows f64, so the step has no finite result to return.
     let a = DMatrix::<Complex64>::identity(4, 4) * Complex64::new(800.0, 0.0);
     let x = DVec(vec![1.0, -0.5, 0.25, 2.0]);
     let mut ws = Workspace::with_capacity(&mut (), &x, 30).unwrap();

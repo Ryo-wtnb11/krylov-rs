@@ -1,6 +1,6 @@
 //! Allocation contract of the Arnoldi exponential integrator: the dense
 //! exponential's scratch is allocated once per call, not per step-size
-//! trial (#16). A counting global allocator sees every heap allocation.
+//! trial. A counting global allocator sees every heap allocation.
 
 mod common;
 

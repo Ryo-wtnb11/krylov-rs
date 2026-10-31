@@ -437,7 +437,7 @@ fn block_lanczos_matches_dense_spectrum_and_krylovkit_counts() {
 }
 
 /// Single precision at a tolerance below its reach restarts until the
-/// projected matrices carry entries near 1e-24 (#20). The Householder
+/// projected matrices carry entries near 1e-24. The Householder
 /// reflectors of the restart must keep them finite.
 #[test]
 fn tight_tolerance_restarts_stay_finite_in_single_precision() {
