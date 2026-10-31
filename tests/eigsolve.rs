@@ -17,9 +17,10 @@ struct Case<'a> {
     alg: Lanczos,
 }
 
-/// Runs eigsolve and checks values against the dense spectrum, residual
-/// vectors and norms against a recomputation, and eigenvector orthonormality.
-fn check<S: TestScalar>(c: &Case, tol_val: f64, tol_res: f64) -> krylov::ConvergenceInfo<DVec<S>> {
+/// Runs eigsolve and checks converged values against the dense spectrum and
+/// residuals against a recomputation, both within [`eig_bound`], and
+/// eigenvector orthonormality up to rounding.
+fn check<S: TestScalar>(c: &Case) -> krylov::ConvergenceInfo<DVec<S>> {
     let x0 = to_dvec::<S>(c.x0);
     let mut op = DenseOp::<S>::new(c.a);
     let mut ws = Workspace::with_capacity(&mut (), &x0, c.alg.get_krylovdim()).unwrap();
@@ -41,20 +42,36 @@ fn check<S: TestScalar>(c: &Case, tol_val: f64, tol_res: f64) -> krylov::Converg
         Which::LargestMagnitude => exact.sort_by(|a, b| b.abs().partial_cmp(&a.abs()).unwrap()),
         w => panic!("Hermitian test with selector {w:?}"),
     }
+    let n = c.a.nrows();
+    let bound = eig_bound::<S>(c.alg.get_tol(), n, op_norm(c.a));
     for (i, (&v, x)) in vals.iter().zip(&vecs).enumerate() {
-        let v = to_f64(v);
-        assert!(
-            (v - exact[i]).abs() <= tol_val,
-            "value {i}: {v} vs {}",
-            exact[i]
-        );
-        let xc = to_c64(x);
-        let r = residual(c.a, v, &xc);
-        assert!(r <= tol_res, "residual {i}: {r}");
+        let normres = to_f64(info.normres[i]);
         let rv = to_c64(&info.residual[i]);
-        assert!((norm(&rv) - to_f64(info.normres[i])).abs() <= tol_res);
+        within(
+            (norm(&rv) - normres).abs(),
+            rounding::<S>(n, normres),
+            &format!("normres {i}"),
+        );
+        if i >= info.converged {
+            continue;
+        }
+        let v = to_f64(v);
+        within(
+            (v - exact[i]).abs(),
+            bound,
+            &format!("value {i} vs {}", exact[i]),
+        );
+        within(
+            residual(c.a, v, &to_c64(x)),
+            bound,
+            &format!("residual {i}"),
+        );
     }
-    assert!(orthogonality_error(&vecs) <= 100.0 * tol_res.max(1e-13));
+    within(
+        orthogonality_error(&vecs),
+        rounding::<S>(n, 1.0),
+        "eigenvector orthonormality",
+    );
     info
 }
 
@@ -69,17 +86,13 @@ fn random_real_symmetric_all_selectors() {
         Which::LargestMagnitude,
     ] {
         let alg = Lanczos::new(24, 100, 1e-10);
-        let info = check::<f64>(
-            &Case {
-                a: &a,
-                x0: &x0,
-                howmany: 4,
-                which,
-                alg,
-            },
-            1e-9,
-            1e-9,
-        );
+        let info = check::<f64>(&Case {
+            a: &a,
+            x0: &x0,
+            howmany: 4,
+            which,
+            alg,
+        });
         assert!(info.numiter > 1, "test must exercise restarts");
         assert!(info.max_imag == 0.0);
     }
@@ -92,50 +105,55 @@ fn random_complex_hermitian_cgs2_and_mgs2() {
     let x0 = random_vec(&mut g, 120, true);
     for orth in [Orth::Cgs2, Orth::Mgs2] {
         let alg = Lanczos::new(20, 100, 1e-10).orth(orth);
-        let info = check::<Complex64>(
-            &Case {
-                a: &a,
-                x0: &x0,
-                howmany: 3,
-                which: Which::SmallestReal,
-                alg,
-            },
-            1e-9,
-            1e-9,
-        );
+        let info = check::<Complex64>(&Case {
+            a: &a,
+            x0: &x0,
+            howmany: 3,
+            which: Which::SmallestReal,
+            alg,
+        });
         assert!(info.numiter > 1);
-        assert!(info.max_imag < 1e-12);
+        // ⟨v, A·v⟩ of a Hermitian A is real up to the rounding of A·v.
+        within(
+            info.max_imag,
+            rounding::<Complex64>(120, op_norm(&a)),
+            "max_imag",
+        );
     }
 }
 
-/// Every converged value is an eigenvalue of the known spectrum, returned no
-/// more often than its multiplicity, with orthonormal eigenvectors whose
-/// residuals are small.
+/// Every converged value is within `bound` of an eigenvalue of the known
+/// spectrum (whose distinct levels are more than `2·bound` apart), returned
+/// no more often than its multiplicity, with orthonormal eigenvectors whose
+/// residuals are within `bound`.
 fn check_against_spectrum(
     a: &DMatrix<Complex64>,
     eigs: &[f64],
     vals: &[f64],
     vecs: &[DVec<Complex64>],
     converged: usize,
-    tol: f64,
+    bound: f64,
 ) {
     for &v in &vals[..converged] {
-        let mult = eigs.iter().filter(|&&e| (e - v).abs() < 1e-6).count();
+        let mult = eigs.iter().filter(|&&e| (e - v).abs() <= bound).count();
         let returned = vals[..converged]
             .iter()
-            .filter(|&&w| (w - v).abs() < 1e-6)
+            .filter(|&&w| (w - v).abs() <= 2.0 * bound)
             .count();
         assert!(mult >= 1, "{v} is not an eigenvalue");
         assert!(
             returned <= mult,
             "{v} returned {returned} times, multiplicity {mult}"
         );
-        assert!(eigs.iter().any(|&e| (e - v).abs() < tol));
     }
     for (&v, x) in vals[..converged].iter().zip(vecs) {
-        assert!(residual(a, v, &to_c64(x)) < tol);
+        within(residual(a, v, &to_c64(x)), bound, "residual");
     }
-    assert!(orthogonality_error(&vecs[..converged]) < 1e-10);
+    within(
+        orthogonality_error(&vecs[..converged]),
+        rounding::<Complex64>(a.nrows(), 1.0),
+        "eigenvector orthonormality",
+    );
 }
 
 #[test]
@@ -164,19 +182,18 @@ fn degenerate_and_clustered_spectra() {
     )
     .unwrap();
     assert!(info.converged >= 2);
-    check_against_spectrum(&a, &eigs, &vals, &vecs, info.converged, 1e-9);
+    let bound = eig_bound::<Complex64>(alg.get_tol(), 80, op_norm(&a));
+    check_against_spectrum(&a, &eigs, &vals, &vecs, info.converged, bound);
     // The two lowest distinct levels are found, in order.
     let mut distinct: Vec<f64> = Vec::new();
     for &v in &vals[..info.converged] {
-        if distinct.last().is_none_or(|&d| (v - d).abs() > 1e-6) {
+        if distinct.last().is_none_or(|&d| (v - d).abs() > 2.0 * bound) {
             distinct.push(v);
         }
     }
     assert!(distinct.len() >= 2, "{vals:?}");
-    assert!(
-        distinct[0].abs() < 1e-9 && (distinct[1] - 0.3).abs() < 1e-9,
-        "{vals:?}"
-    );
+    within(distinct[0].abs(), bound, "lowest level 0");
+    within((distinct[1] - 0.3).abs(), bound, "second level 0.3");
 
     // Clustered at the bottom of the spectrum.
     let eigs: Vec<f64> = (0..100)
@@ -191,17 +208,13 @@ fn degenerate_and_clustered_spectra() {
     let a = with_spectrum(&mut g, &eigs, false);
     let x0 = random_vec(&mut g, 100, false);
     let alg = Lanczos::new(30, 100, 1e-11);
-    check::<f64>(
-        &Case {
-            a: &a,
-            x0: &x0,
-            howmany: 4,
-            which: Which::SmallestReal,
-            alg,
-        },
-        1e-9,
-        1e-10,
-    );
+    check::<f64>(&Case {
+        a: &a,
+        x0: &x0,
+        howmany: 4,
+        which: Which::SmallestReal,
+        alg,
+    });
 }
 
 #[test]
@@ -228,8 +241,9 @@ fn invariant_subspace_stops_without_restart() {
     assert_eq!(info.numiter, 1);
     assert_eq!(info.numops, 5);
     assert_eq!(info.converged, 5);
+    let bound = eig_bound::<f64>(alg.get_tol(), 50, op_norm(&a));
     for (v, e) in vals.iter().zip([-2.0, -1.0, 0.0, 1.0, 2.0]) {
-        assert!((v - e).abs() < 1e-10);
+        within((v - e).abs(), bound, &format!("eigenvalue {e}"));
     }
     // An exact eigenvector as start vector: one-dimensional invariant subspace.
     let mut ones = DMatrix::<Complex64>::zeros(4, 4);
@@ -259,30 +273,22 @@ fn tiny_krylov_dimensions() {
     let x0 = random_vec(&mut g, 30, false);
     // krylovdim 2: keep = 1, one new vector per restart (steepest-descent like).
     let alg = Lanczos::new(2, 5000, 1e-8);
-    check::<f64>(
-        &Case {
-            a: &a,
-            x0: &x0,
-            howmany: 1,
-            which: Which::LargestReal,
-            alg,
-        },
-        1e-8,
-        1e-7,
-    );
+    check::<f64>(&Case {
+        a: &a,
+        x0: &x0,
+        howmany: 1,
+        which: Which::LargestReal,
+        alg,
+    });
     // krylovdim 3: keep is 1 or 2, i.e. at most two new vectors per restart.
     let alg = Lanczos::new(3, 5000, 1e-8);
-    check::<f64>(
-        &Case {
-            a: &a,
-            x0: &x0,
-            howmany: 2,
-            which: Which::LargestReal,
-            alg,
-        },
-        1e-8,
-        1e-7,
-    );
+    check::<f64>(&Case {
+        a: &a,
+        x0: &x0,
+        howmany: 2,
+        which: Which::LargestReal,
+        alg,
+    });
     // krylovdim 1 cannot restart: one Rayleigh quotient, reported unconverged.
     let x = to_dvec::<f64>(&x0);
     let mut ws = Workspace::with_capacity(&mut (), &x, 1).unwrap();
@@ -311,29 +317,21 @@ fn eager_returns_early() {
     let a = with_spectrum(&mut g, &eigs, false);
     let x0 = random_vec(&mut g, 200, false);
     let lazy = Lanczos::new(40, 100, 1e-10);
-    let i_lazy = check::<f64>(
-        &Case {
-            a: &a,
-            x0: &x0,
-            howmany: 1,
-            which: Which::SmallestReal,
-            alg: lazy,
-        },
-        1e-9,
-        1e-9,
-    );
+    let i_lazy = check::<f64>(&Case {
+        a: &a,
+        x0: &x0,
+        howmany: 1,
+        which: Which::SmallestReal,
+        alg: lazy,
+    });
     let eager = lazy.eager(true);
-    let i_eager = check::<f64>(
-        &Case {
-            a: &a,
-            x0: &x0,
-            howmany: 1,
-            which: Which::SmallestReal,
-            alg: eager,
-        },
-        1e-9,
-        1e-9,
-    );
+    let i_eager = check::<f64>(&Case {
+        a: &a,
+        x0: &x0,
+        howmany: 1,
+        which: Which::SmallestReal,
+        alg: eager,
+    });
     assert_eq!(i_lazy.numops, 40);
     assert!(i_eager.numops < 40, "eager numops {}", i_eager.numops);
 }
@@ -344,30 +342,22 @@ fn single_precision_real_and_complex() {
     let a = hermitian(&mut g, 80, true);
     let x0 = random_vec(&mut g, 80, true);
     let alg = Lanczos::new(20, 100, 1e-4);
-    check::<Complex32>(
-        &Case {
-            a: &a,
-            x0: &x0,
-            howmany: 2,
-            which: Which::LargestReal,
-            alg,
-        },
-        1e-4,
-        1e-3,
-    );
+    check::<Complex32>(&Case {
+        a: &a,
+        x0: &x0,
+        howmany: 2,
+        which: Which::LargestReal,
+        alg,
+    });
     let a = hermitian(&mut g, 80, false);
     let x0 = random_vec(&mut g, 80, false);
-    check::<f32>(
-        &Case {
-            a: &a,
-            x0: &x0,
-            howmany: 2,
-            which: Which::SmallestReal,
-            alg,
-        },
-        1e-4,
-        1e-3,
-    );
+    check::<f32>(&Case {
+        a: &a,
+        x0: &x0,
+        howmany: 2,
+        which: Which::SmallestReal,
+        alg,
+    });
 }
 
 #[test]
@@ -388,7 +378,8 @@ fn non_hermitian_imaginary_part_is_recorded() {
         &mut ws,
     )
     .unwrap();
-    assert!(info.max_imag > 1e-3);
+    // Recorded beyond the rounding a Hermitian map would leave.
+    assert!(info.max_imag > rounding::<Complex64>(n, op_norm(&a)));
 }
 
 #[test]
@@ -479,7 +470,11 @@ fn basis_stays_orthonormal_across_restarts() {
         .unwrap();
         let e = orthogonality_error(ws.basis().vectors());
         assert!(ws.basis().len() > 20);
-        assert!(e < 1e-13, "{orth:?}: orthogonality error {e}");
+        within(
+            e,
+            rounding::<f64>(300, 1.0),
+            &format!("{orth:?}: orthogonality"),
+        );
     }
 }
 
@@ -502,9 +497,10 @@ fn lanczos_step_uses_one_full_pass_after_the_recurrence() {
             eigsolve(&mut (), &mut op, &x0, 1, Which::SmallestReal, &alg, &mut ws).unwrap();
         assert_eq!(info.numops, kd);
         assert_eq!(inner_calls() - before, kd * (kd + 3) / 2, "{orth:?}");
-        assert!(
-            orthogonality_error(ws.basis().vectors()) < 1e-13,
-            "{orth:?}"
+        within(
+            orthogonality_error(ws.basis().vectors()),
+            rounding::<Complex64>(60, 1.0),
+            &format!("{orth:?}: orthogonality"),
         );
     }
 }
@@ -626,6 +622,12 @@ fn vecbasis_rotate_matches_dense_product() {
         let expect: Vec<Complex64> = (0..n)
             .map(|r| (0..m).map(|i| cols[i][r] * q[(i, j)]).sum())
             .collect();
-        assert!(diff_norm(&basis.vectors()[j].0, &expect) < 1e-13);
+        // An m-term sum per entry: rounding of the inputs' Frobenius norm.
+        let scale = cols.iter().map(|c| norm(c).powi(2)).sum::<f64>().sqrt();
+        within(
+            diff_norm(&basis.vectors()[j].0, &expect),
+            rounding::<Complex64>(m, scale),
+            "rotated column",
+        );
     }
 }

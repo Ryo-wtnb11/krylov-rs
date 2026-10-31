@@ -217,10 +217,11 @@ fn eigsolve_runs_on_the_context_and_matches_the_dense_spectrum() {
     let alg = Lanczos::new(14, 1, 1e-10);
     let (vals, vecs, info) =
         eigsolve(&mut cx, &mut op, &x0, 1, Which::SmallestReal, &alg, &mut ws).unwrap();
-    assert!((vals[0] - want).abs() < 1e-10);
+    let bound = eig_bound::<f64>(alg.get_tol(), 14, op_norm(&a));
+    within((vals[0] - want).abs(), bound, "lowest eigenvalue");
     assert_eq!(cx.map_calls, info.numops);
     let v: Vec<Complex64> = cx.data[vecs[0].0].iter().map(|s| s.to_c64()).collect();
-    assert!(residual(&a, vals[0], &v) < 1e-9);
+    within(residual(&a, vals[0], &v), bound, "residual");
 }
 
 #[test]
@@ -455,6 +456,12 @@ fn erased_static_engine_context_forwards_through_a_wrapper() {
     let (a, x) = hermitian_case();
     let mut engine = Counting(0);
     let got = lowest(&mut engine, &a, &x);
-    assert!((got - dense_eigenvalues(&a)[0]).abs() < 1e-10);
+    // `lowest` runs Lanczos(14, 1, 1e-10) on the full 14-dimensional space.
+    let bound = eig_bound::<f64>(1e-10, 14, op_norm(&a));
+    within(
+        (got - dense_eigenvalues(&a)[0]).abs(),
+        bound,
+        "lowest eigenvalue",
+    );
     assert!(engine.0 > 0);
 }

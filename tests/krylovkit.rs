@@ -87,19 +87,15 @@ fn eig_case<S: TestScalar>(c: &Case, howmany: usize, which: Which, kk: Option<(u
         info.converged
     );
     assert!(vals.len() >= howmany);
-    for (k, (v, x)) in vals.iter().zip(&vecs).enumerate() {
+    let bound = eig_bound::<S>(c.tol, c.n, op_norm(&a));
+    for (k, (v, x)) in vals.iter().zip(&vecs).enumerate().take(info.converged) {
         let v = to_f64(*v);
-        assert!(
-            (v - want[k]).abs() <= 1e-9 * want[k].abs().max(1.0),
-            "{name}: {v} vs {}",
-            want[k]
+        within((v - want[k]).abs(), bound, &format!("{name}: value #{k}"));
+        within(
+            residual(&a, v, &to_c64(x)),
+            bound,
+            &format!("{name}: residual #{k}"),
         );
-        if k < info.converged {
-            assert!(
-                residual(&a, v, &to_c64(x)) <= 10.0 * c.tol,
-                "{name}: residual #{k}"
-            );
-        }
     }
     if let Some((nvals, counts)) = kk {
         assert_eq!(vals.len(), nvals, "{name}: number of returned values");
@@ -124,8 +120,12 @@ fn exp_case<S: TestScalar>(c: &Case, t: Complex64, kk: Option<Counts>) {
     .unwrap();
     let name = c.name;
     let want = dense_expv(&a, t, &x);
-    let rel = diff_norm(&to_c64(&y), &want) / norm(&want);
-    assert!(rel < 1e-10, "{name}: relative difference {rel}");
+    let bound = exp_bound::<S>(c.tol, t, info.numiter, c.n, norm(&want));
+    within(
+        diff_norm(&to_c64(&y), &want),
+        bound,
+        &format!("{name}: tol per unit time"),
+    );
     assert_eq!(info.converged, 1, "{name}");
     if let Some(counts) = kk {
         // The step sequence follows KrylovKit's controller: steps within 10 %.

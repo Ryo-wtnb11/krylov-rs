@@ -126,12 +126,19 @@ fn run<S: TestScalar>(
     .unwrap();
     assert_eq!(info.numops, op.applications);
     assert_eq!(to_f64(info.max_imag), 0.0);
-    let single = std::mem::size_of::<S::Real>() == 4;
-    let eps = if single { 1e-5 } else { 1e-12 };
-    let anorm = a.norm();
+    let len = m.max(n);
+    let triplet = rounding::<S>(len, op_norm(a));
     assert!(left.iter().all(|l| l.0.len() == m) && right.iter().all(|r| r.0.len() == n));
-    assert!(orthogonality_error(&left) < eps * 10.0);
-    assert!(orthogonality_error(&right) < eps * 10.0);
+    within(
+        orthogonality_error(&left),
+        rounding::<S>(len, 1.0),
+        "left orthonormality",
+    );
+    within(
+        orthogonality_error(&right),
+        rounding::<S>(len, 1.0),
+        "right orthonormality",
+    );
     for i in 0..vals.len() {
         let s = to_f64(vals[i]);
         let (l, r) = (
@@ -140,9 +147,13 @@ fn run<S: TestScalar>(
         );
         let res = DVector::from_vec(to_c64(&info.residual[i]));
         let c = Complex64::new(s, 0.0);
-        assert!((a * &r - &l * c - &res).norm() <= eps * anorm);
-        assert!((a.adjoint() * &l - &r * c).norm() <= eps * anorm);
-        assert!((res.norm() - to_f64(info.normres[i])).abs() <= eps * anorm);
+        within((a * &r - &l * c - &res).norm(), triplet, "A·r = σ·l + res");
+        within((a.adjoint() * &l - &r * c).norm(), triplet, "Aᴴ·l = σ·r");
+        within(
+            (res.norm() - to_f64(info.normres[i])).abs(),
+            triplet,
+            "normres",
+        );
     }
     Out {
         values: vals.iter().map(|&v| to_f64(v)).collect(),
@@ -173,8 +184,13 @@ fn largest_singular_values_match_dense() {
         };
         assert!(out.converged >= 3);
         let exact = dense_singular_values(&a);
-        for (v, e) in out.values.iter().zip(&exact) {
-            assert!((v - e).abs() < 1e-9 * e, "{m}×{n}: {v} vs {e}");
+        let bound = if complex {
+            eig_bound::<Complex64>(alg.get_tol(), m.max(n), op_norm(&a))
+        } else {
+            eig_bound::<f64>(alg.get_tol(), m.max(n), op_norm(&a))
+        };
+        for (v, e) in out.values.iter().zip(&exact).take(out.converged) {
+            within((v - e).abs(), bound, &format!("{m}×{n}: {v} vs {e}"));
         }
         assert!(out.values.windows(2).all(|w| w[0] >= w[1]));
         assert!(out.numiter > 1, "restarts exercised");
@@ -207,8 +223,13 @@ fn smallest_singular_values_including_zero() {
         };
         assert!(out.converged >= 3, "converged {}", out.converged);
         assert!(out.values.windows(2).all(|w| w[0] <= w[1]));
+        let bound = if complex {
+            eig_bound::<Complex64>(alg.get_tol(), n, op_norm(&a))
+        } else {
+            eig_bound::<f64>(alg.get_tol(), n, op_norm(&a))
+        };
         for (v, e) in out.values.iter().zip([0.0, 1e-8, 1.2]) {
-            assert!((v - e).abs() < 1e-11, "{v} vs {e}");
+            within((v - e).abs(), bound, &format!("{v} vs {e}"));
         }
     }
 }
@@ -231,8 +252,13 @@ fn tall_and_wide_smallest_values() {
         assert!(out.converged >= 2, "{m}×{n}: converged {}", out.converged);
         let mut exact = dense_singular_values(&a);
         exact.reverse();
-        for (v, e) in out.values.iter().zip(&exact) {
-            assert!((v - e).abs() < 1e-9 * e.max(1.0), "{m}×{n}: {v} vs {e}");
+        let bound = if complex {
+            eig_bound::<Complex64>(alg.get_tol(), m.max(n), op_norm(&a))
+        } else {
+            eig_bound::<f64>(alg.get_tol(), m.max(n), op_norm(&a))
+        };
+        for (v, e) in out.values.iter().zip(&exact).take(out.converged) {
+            within((v - e).abs(), bound, &format!("{m}×{n}: {v} vs {e}"));
         }
     }
 }
@@ -252,7 +278,12 @@ fn tall_map_smallest_values_keep_an_unconverged_zero() {
     let alg = Gkl::new(20, 5, 1e-9);
     let out = run::<f64>(&a, &x0, 2, Which::SmallestReal, &alg);
     assert_eq!(out.converged, 0);
-    assert!(out.values[0] < 1e-12);
+    // A zero of AAᴴ: rounding only.
+    within(
+        out.values[0],
+        rounding::<f64>(60, op_norm(&a)),
+        "zero value",
+    );
     let smin = *dense_singular_values(&a).last().unwrap();
     assert!(out.normres[0] >= 0.5 * smin, "{}", out.normres[0]);
 }
@@ -266,15 +297,17 @@ fn single_precision() {
     let out = run::<Complex32>(&a, &x0, 2, Which::LargestReal, &alg);
     let exact = dense_singular_values(&a);
     assert!(out.converged >= 2);
-    for (v, e) in out.values.iter().zip(&exact) {
-        assert!((v - e).abs() < 1e-4 * e);
+    let bound = eig_bound::<Complex32>(alg.get_tol(), 40, op_norm(&a));
+    for (v, e) in out.values.iter().zip(&exact).take(out.converged) {
+        within((v - e).abs(), bound, "c32 value");
     }
     let ar = a.map(|z| Complex64::new(z.re, 0.0));
     let xr: Vec<Complex64> = x0.iter().map(|z| Complex64::new(z.re, 0.0)).collect();
     let out = run::<f32>(&ar, &xr, 2, Which::LargestReal, &alg.orth(Orth::Cgs2));
     let exact = dense_singular_values(&ar);
-    for (v, e) in out.values.iter().zip(&exact) {
-        assert!((v - e).abs() < 1e-4 * e);
+    let bound = eig_bound::<f32>(alg.get_tol(), 40, op_norm(&ar));
+    for (v, e) in out.values.iter().zip(&exact).take(out.converged) {
+        within((v - e).abs(), bound, "f32 value");
     }
 }
 
@@ -292,7 +325,10 @@ fn exhausted_spaces_return_what_they_have() {
     let out = run::<f64>(&a, &x0, 5, Which::LargestReal, &alg);
     assert!(out.values.len() < 5);
     assert!(out.converged >= 2);
-    assert!((out.values[0] - 3.0).abs() < 1e-13 && (out.values[1] - 2.0).abs() < 1e-13);
+    // An exact invariant subspace: rounding only.
+    let bound = rounding::<f64>(n, 3.0);
+    within((out.values[0] - 3.0).abs(), bound, "σ = 3");
+    within((out.values[1] - 2.0).abs(), bound, "σ = 2");
     assert_eq!(out.numiter, 1);
     // Aᴴ·x0 = 0: no triplet at all.
     let mut x0 = vec![Complex64::default(); n];
@@ -440,8 +476,9 @@ fn kk_case<S: TestScalar>(case: &KkCase) {
         "{name}: converged {}",
         out.converged
     );
+    let bound = eig_bound::<S>(tol, m.max(n), op_norm(&a));
     for ((v, e), r) in out.values.iter().zip(&want).zip(&out.normres) {
-        assert!((v - e).abs() <= 1e-9 * e.max(1.0), "{name}: {v} vs {e}");
+        within((v - e).abs(), bound, &format!("{name}: {v} vs {e}"));
         assert!(*r < tol, "{name}: residual {r}");
     }
     if let Some((nvals, converged, numiter, numops)) = kk {

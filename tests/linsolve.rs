@@ -66,14 +66,17 @@ fn run<S: TestScalar, L: LinearSolver>(
         .iter()
         .copied()
         .collect();
-    let scale = norm(b).max(1.0) * (m.norm() * norm(&x)).max(1.0);
-    let eps = if std::mem::size_of::<S::Real>() == 4 {
-        1e-5
-    } else {
-        1e-12
-    };
-    assert!(diff_norm(&r, &to_c64(&info.residual)) <= eps * scale);
-    assert!((to_f64(info.normres) - norm(&to_c64(&info.residual))).abs() <= eps * scale);
+    let bound = residual_rounding::<S>(&m, b, &x);
+    within(
+        diff_norm(&r, &to_c64(&info.residual)),
+        bound,
+        "residual vector",
+    );
+    within(
+        (to_f64(info.normres) - norm(&to_c64(&info.residual))).abs(),
+        bound,
+        "normres",
+    );
     let out = Out {
         converged: info.converged,
         numiter: info.numiter,
@@ -91,8 +94,31 @@ struct Out {
     normres: f64,
 }
 
-fn rel_err(x: &[Complex64], exact: &[Complex64]) -> f64 {
-    diff_norm(x, exact) / norm(exact)
+/// Rounding of `b - M·x` formed in `S`: the backward-error scale
+/// `‖b‖ + ‖M‖·‖x‖` times [`rounding`].
+fn residual_rounding<S: TestScalar>(
+    m: &DMatrix<Complex64>,
+    b: &[Complex64],
+    x: &[Complex64],
+) -> f64 {
+    rounding::<S>(m.nrows(), norm(b) + op_norm(m) * norm(x))
+}
+
+/// Forward error promised by an absolute residual tolerance (KrylovKit
+/// v0.10.4 `linsolve/linsolve.jl` docstring, `tol` on `‖b - M·x‖`; krylov
+/// `Cg`/`Gmres`): `‖x - x*‖ ≤ ‖M⁻¹‖₂·‖b - M·x‖` with the residual at most
+/// `tol` plus its rounding in `S`. The dense LU oracle `x*` has its own
+/// forward error, `κ(M)` times the rounding of `M·x*`.
+fn solve_bound<S: TestScalar>(
+    m: &DMatrix<Complex64>,
+    tol: f64,
+    b: &[Complex64],
+    exact: &[Complex64],
+) -> f64 {
+    let sv = m.singular_values();
+    let (smax, smin) = (sv.max(), sv.min());
+    let residual = tol + residual_rounding::<S>(m, b, exact);
+    residual / smin + smax / smin * rounding::<f64>(m.nrows(), norm(exact))
 }
 
 #[test]
@@ -115,8 +141,17 @@ fn cg_matches_dense_solution_real_and_complex() {
             run::<f64, _>(&a, &b, &x0, &alg, zero, one, 0)
         };
         assert_eq!(info.converged, 1);
-        assert!(info.normres < 1e-11);
-        assert!(rel_err(&x, &exact) < 1e-10, "complex {complex}");
+        assert!(info.normres < alg.get_tol());
+        let bound = if complex {
+            solve_bound::<Complex64>(&a, alg.get_tol(), &b, &exact)
+        } else {
+            solve_bound::<f64>(&a, alg.get_tol(), &b, &exact)
+        };
+        within(
+            diff_norm(&x, &exact),
+            bound,
+            &format!("complex {complex}: forward error"),
+        );
         assert_eq!(info.numops, info.numiter + 2, "one start + one recompute");
     }
 }
@@ -136,7 +171,8 @@ fn cg_applies_shift_and_scale_implicitly() {
     let alg = Cg::new(500, 1e-11);
     let (x, info) = run::<Complex64, _>(&a, &b, &vec![Complex64::default(); n], &alg, a0, a1, 0);
     assert_eq!(info.converged, 1);
-    assert!(rel_err(&x, &exact) < 1e-10);
+    let bound = solve_bound::<Complex64>(&shifted(&a, a0, a1), alg.get_tol(), &b, &exact);
+    within(diff_norm(&x, &exact), bound, "forward error");
 }
 
 #[test]
@@ -167,7 +203,17 @@ fn gmres_matches_dense_solution_with_restarts() {
         };
         assert_eq!(info.converged, 1);
         assert!(info.numiter > 1, "restarts exercised");
-        assert!(rel_err(&x, &exact) < 1e-10, "complex {complex} {orth:?}");
+        let m = shifted(&a, a0, a1);
+        let bound = if complex {
+            solve_bound::<Complex64>(&m, alg.get_tol(), &b, &exact)
+        } else {
+            solve_bound::<f64>(&m, alg.get_tol(), &b, &exact)
+        };
+        within(
+            diff_norm(&x, &exact),
+            bound,
+            &format!("complex {complex} {orth:?}: forward error"),
+        );
     }
 }
 
@@ -183,7 +229,8 @@ fn gmres_solves_hermitian_indefinite_in_full_space() {
     let (x, info) = run::<Complex64, _>(&a, &b, &vec![Complex64::default(); n], &alg, a0, a1, n);
     assert_eq!(info.converged, 1);
     assert_eq!(info.numiter, 1);
-    assert!(rel_err(&x, &exact) < 1e-8);
+    let bound = solve_bound::<Complex64>(&shifted(&a, a0, a1), alg.get_tol(), &b, &exact);
+    within(diff_norm(&x, &exact), bound, "forward error");
 }
 
 #[test]
@@ -198,21 +245,21 @@ fn single_precision_solves() {
     let x0 = vec![Complex64::default(); n];
     let (zero, one) = (Complex64::new(0.0, 0.0), Complex64::new(1.0, 0.0));
     let exact = dense_solve(&a, &b);
-    let (x, info) = run::<Complex32, _>(&a, &b, &x0, &Cg::new(100, 1e-4), zero, one, 0);
+    let cg = Cg::new(100, 1e-4);
+    let (x, info) = run::<Complex32, _>(&a, &b, &x0, &cg, zero, one, 0);
     assert_eq!(info.converged, 1);
-    assert!(rel_err(&x, &exact) < 1e-4);
+    let bound = solve_bound::<Complex32>(&a, cg.get_tol(), &b, &exact);
+    within(diff_norm(&x, &exact), bound, "c32 CG: forward error");
     let ar: DMatrix<Complex64> = a.map(|z| Complex64::new(z.re, 0.0));
     let ar = (&ar + ar.transpose()) * Complex64::new(0.5, 0.0);
     let br: Vec<Complex64> = b.iter().map(|z| Complex64::new(z.re, 0.0)).collect();
     let alg = Gmres::new(10, 100, 1e-4);
     let (x, info) = run::<f32, _>(&ar, &br, &x0, &alg, Complex64::new(6.0, 0.0), one, 10);
     assert_eq!(info.converged, 1);
-    assert!(
-        rel_err(
-            &x,
-            &dense_solve(&shifted(&ar, Complex64::new(6.0, 0.0), one), &br)
-        ) < 1e-4
-    );
+    let m = shifted(&ar, Complex64::new(6.0, 0.0), one);
+    let exact = dense_solve(&m, &br);
+    let bound = solve_bound::<f32>(&m, alg.get_tol(), &br, &exact);
+    within(diff_norm(&x, &exact), bound, "f32 GMRES: forward error");
 }
 
 #[test]
@@ -422,9 +469,14 @@ fn kk_case<S: TestScalar>(case: &KkCase, rr: RestartResidual) {
     };
     assert_eq!(info.converged, 1, "{name}");
     assert!(info.normres <= tol, "{name}: normres {}", info.normres);
-    let exact = dense_solve(&shifted(&a, a0, a1), &b);
-    let rel = rel_err(&x, &exact);
-    assert!(rel < 1e-9, "{name}: relative error {rel}");
+    let m = shifted(&a, a0, a1);
+    let exact = dense_solve(&m, &b);
+    let bound = solve_bound::<S>(&m, tol, &b, &exact);
+    within(
+        diff_norm(&x, &exact),
+        bound,
+        &format!("{name}: forward error"),
+    );
     if let Some((ni, no)) = kk {
         assert_eq!(info.numiter, ni, "{name}: numiter");
         // KrylovKit does not count the apply of CG's residual recompute (one
@@ -504,8 +556,10 @@ fn gmres_singular_krylov_space() {
     let alg = Gmres::new(4, 1, 1e-10);
     let (x, info) = run::<f64, _>(&a, &b, &x0, &alg, zero, one, 4);
     assert_eq!(info.converged, 0);
-    assert!((info.normres - 1.0).abs() < 1e-12, "{}", info.normres);
-    assert!((x[0].re - 1.0).abs() < 1e-12, "{:?}", x[0]); // x[n/2] lies in the null space
+    // The least-squares solution and residual are exact up to rounding.
+    let bound = rounding::<f64>(n, 1.0);
+    within((info.normres - 1.0).abs(), bound, "least-squares residual");
+    within((x[0].re - 1.0).abs(), bound, "x[0]"); // x[n/2] lies in the null space
     let (bv, xv) = (to_dvec::<f64>(&b), to_dvec::<f64>(&x0));
     let mut ws = Workspace::with_capacity(&mut (), &bv, 4).unwrap();
     let e = linsolve(
@@ -532,8 +586,14 @@ fn gmres_with_subnormal_shift() {
     let (a0, a1) = (Complex64::new(1e-310, 0.0), Complex64::new(1.0, 0.0));
     let (x, info) = run::<f64, _>(&a, &b, &x0, &alg, a0, a1, 2);
     assert_eq!(info.converged, 1);
-    assert!((x[1].re - 1.0).abs() < 1e-15, "{x:?}");
-    assert!((x[0].re - 1e-310).abs() < 1e-323, "{x:?}");
+    within((x[1].re - 1.0).abs(), rounding::<f64>(2, 1.0), "x[1]");
+    // Below `f64::MIN_POSITIVE` rounding is absolute: one subnormal ulp per
+    // operation (the Givens division and the back substitution).
+    within(
+        (x[0].re - 1e-310).abs(),
+        2.0 * f64::from_bits(1),
+        "subnormal x[0]",
+    );
 }
 
 /// Vector work of the Arnoldi expansion inside GMRES follows the

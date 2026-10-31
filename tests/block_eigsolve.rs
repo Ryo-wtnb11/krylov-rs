@@ -39,24 +39,45 @@ fn run<S: TestScalar>(
     }
 }
 
-/// The reported residuals are `A·x - λ·x`, their norms are `normres`, and
-/// the eigenvectors are orthonormal.
-fn check_pairs<S: TestScalar>(a: &DMatrix<Complex64>, out: &Out<S>, eps: f64) {
-    let scale = a.norm();
+/// The reported residuals are `A·x - λ·x` and their norms are `normres`, and
+/// the eigenvectors are orthonormal, up to rounding in `S`. The residual
+/// comes from the Krylov relation `A·V = V·T + R`, which every restart
+/// rotates once more, so its rounding grows with `numiter`.
+fn check_pairs<S: TestScalar>(a: &DMatrix<Complex64>, out: &Out<S>) {
+    let n = a.nrows();
+    let relation = out.info.numiter.max(1) as f64 * rounding::<S>(n, op_norm(a));
     for i in 0..out.vals.len() {
         let x = nalgebra::DVector::from_column_slice(&out.vecs[i]);
         let r = a * &x - &x * Complex64::new(out.vals[i], 0.0);
         let diff = diff_norm(r.as_slice(), &to_c64(&out.info.residual[i]));
-        assert!(diff <= eps * scale, "pair {i}: residual mismatch {diff}");
+        within(diff, relation, &format!("pair {i}: residual vector"));
         let nr = to_f64(out.info.normres[i]);
-        assert!(
-            (nr - r.norm()).abs() <= eps * scale,
-            "pair {i}: {nr} vs {}",
-            r.norm()
+        within(
+            (nr - r.norm()).abs(),
+            relation,
+            &format!("pair {i}: normres"),
         );
     }
     let vs: Vec<DVec<Complex64>> = out.vecs.iter().map(|x| to_dvec(x)).collect();
-    assert!(orthogonality_error(&vs) <= eps * 100.0);
+    within(
+        orthogonality_error(&vs),
+        rounding::<S>(n, 1.0),
+        "eigenvector orthonormality",
+    );
+}
+
+/// [`eig_bound`] for the first `converged` values against `want`.
+fn check_values<S: TestScalar>(
+    a: &DMatrix<Complex64>,
+    out: &Out<S>,
+    tol: f64,
+    want: &[f64],
+    what: &str,
+) {
+    let bound = eig_bound::<S>(tol, a.nrows(), op_norm(a));
+    for (v, e) in out.vals.iter().zip(want).take(out.info.converged) {
+        within((v - e).abs(), bound, &format!("{what}: {v} vs {e}"));
+    }
 }
 
 fn block(g: &mut SplitMix, n: usize, bs: usize, complex: bool) -> Vec<Vec<Complex64>> {
@@ -75,15 +96,13 @@ fn degenerate_spectrum_finds_every_copy() {
         for orth in [Orth::Cgs2, Orth::Mgs2] {
             let alg = BlockLanczos::new(30, 100, 1e-10, 1e-12).orth(orth);
             let out = run::<Complex64>(&a, &x0, 5, Which::SmallestReal, alg);
-            check_pairs(&a, &out, 1e-12);
+            check_pairs(&a, &out);
             assert!(
                 out.info.converged >= 5,
                 "complex={complex}: {:?}",
                 out.info.converged
             );
-            for (v, e) in out.vals.iter().zip(&eigs) {
-                assert!((v - e).abs() < 1e-9, "complex={complex}: {v} vs {e}");
-            }
+            check_values(&a, &out, 1e-10, &eigs, &format!("complex={complex}"));
         }
     }
 }
@@ -110,20 +129,16 @@ fn matches_dense_spectrum_with_restarts() {
         let out = run::<Complex64>(&a, &x0, 3, which, alg);
         assert!(out.info.numiter > 1, "{which:?}: restarts expected");
         assert!(out.info.converged >= 3, "{which:?}");
-        check_pairs(&a, &out, 1e-12);
-        for (v, e) in out.vals.iter().zip(&want) {
-            assert!((v - e).abs() < 1e-9, "{which:?}: {v} vs {e}");
-        }
+        check_pairs(&a, &out);
+        check_values(&a, &out, 1e-10, &want, &format!("{which:?}"));
     }
     let a = hermitian(&mut g, 80, false);
     let exact = dense_eigenvalues(&a);
     let x0 = block(&mut g, 80, 3, false);
     let alg = BlockLanczos::new(18, 100, 1e-10, 1e-12).eager(true);
     let out = run::<f64>(&a, &x0, 2, Which::SmallestReal, alg);
-    check_pairs(&a, &out, 1e-12);
-    for (v, e) in out.vals.iter().zip(&exact) {
-        assert!((v - e).abs() < 1e-9, "{v} vs {e}");
-    }
+    check_pairs(&a, &out);
+    check_values(&a, &out, 1e-10, &exact, "eager");
 }
 
 #[test]
@@ -151,8 +166,10 @@ fn block_size_one_agrees_with_lanczos() {
         &mut ws,
     )
     .unwrap();
-    for (a, b) in out.vals.iter().zip(&vals) {
-        assert!((a - b).abs() < 1e-9, "{a} vs {b}");
+    // Both are within their bound of the same exact eigenvalue.
+    let bound = 2.0 * eig_bound::<f64>(alg.get_tol(), 60, op_norm(&a));
+    for (a, b) in out.vals.iter().zip(&vals).take(out.info.converged) {
+        within((a - b).abs(), bound, &format!("{a} vs {b}"));
     }
 }
 
@@ -171,11 +188,9 @@ fn invariant_subspace_and_dropped_blocks() {
         Which::SmallestReal,
         BlockLanczos::new(20, 100, 1e-12, 1e-12),
     );
-    check_pairs(&a, &out, 1e-12);
+    check_pairs(&a, &out);
     assert_eq!(out.info.numiter, 1);
-    for (v, e) in out.vals.iter().zip([0.0, 0.0, 1.0, 1.0]) {
-        assert!((v - e).abs() < 1e-10, "{v} vs {e}");
-    }
+    check_values(&a, &out, 1e-12, &[0.0, 0.0, 1.0, 1.0], "invariant subspace");
     // A dependent start vector is dropped by the QR.
     let x1 = x0[0].iter().map(|z| z * 2.0).collect();
     let out = run::<f64>(
@@ -185,7 +200,7 @@ fn invariant_subspace_and_dropped_blocks() {
         Which::SmallestReal,
         BlockLanczos::new(20, 100, 1e-12, 1e-12),
     );
-    check_pairs(&a, &out, 1e-12);
+    check_pairs(&a, &out);
     assert_eq!(out.info.numops, 4); // block of one, Krylov space of four
     // Restarts with a residual block smaller than the start block.
     let b = hermitian(&mut g, 60, true);
@@ -201,10 +216,8 @@ fn invariant_subspace_and_dropped_blocks() {
         alg,
     );
     assert!(out.info.numiter > 1 && out.info.converged >= 3);
-    check_pairs(&b, &out, 1e-12);
-    for (v, e) in out.vals.iter().zip(&exact) {
-        assert!((v - e).abs() < 1e-9, "{v} vs {e}");
-    }
+    check_pairs(&b, &out);
+    check_values(&b, &out, alg.get_tol(), &exact, "dropped start vector");
     // A coarse qr_tol drops whole blocks early; the result stays consistent.
     let a = hermitian(&mut g, 50, true);
     let x0 = block(&mut g, 50, 2, true);
@@ -215,7 +228,7 @@ fn invariant_subspace_and_dropped_blocks() {
         Which::SmallestReal,
         BlockLanczos::new(30, 100, 1e-12, 0.5),
     );
-    check_pairs(&a, &out, 1e-12);
+    check_pairs(&a, &out);
 }
 
 #[test]
@@ -227,10 +240,8 @@ fn single_precision() {
     let a = with_spectrum(&mut g, &eigs, true);
     let out = run::<Complex32>(&a, &block(&mut g, 40, 2, true), 2, Which::SmallestReal, alg);
     assert!(out.info.converged >= 2);
-    check_pairs(&a, &out, 1e-5);
-    for v in &out.vals[..2] {
-        assert!((v + 2.0).abs() < 1e-4, "{v}");
-    }
+    check_pairs(&a, &out);
+    check_values(&a, &out, alg.get_tol(), &[-2.0, -2.0], "c32");
     let a = with_spectrum(&mut g, &eigs, false);
     let out = run::<f32>(
         &a,
@@ -240,16 +251,20 @@ fn single_precision() {
         alg,
     );
     assert!(out.info.converged >= 2);
-    check_pairs(&a, &out, 1e-5);
+    check_pairs(&a, &out);
     // A Complex32 operator of norm ~1e13 (where squares fit but cubes do not).
     let scale = 1e13;
     let a = with_spectrum(&mut g, &eigs, true) * Complex64::new(scale, 0.0);
     let alg = BlockLanczos::new(20, 100, 1e-4 * scale, 1e-5);
     let out = run::<Complex32>(&a, &block(&mut g, 40, 2, true), 2, Which::SmallestReal, alg);
     assert!(out.info.converged >= 2);
-    for v in &out.vals[..2] {
-        assert!((v / scale + 2.0).abs() < 1e-4, "{v}");
-    }
+    check_values(
+        &a,
+        &out,
+        alg.get_tol(),
+        &[-2.0 * scale; 2],
+        "c32 at scale 1e13",
+    );
 }
 
 #[test]
@@ -261,8 +276,8 @@ fn zero_qr_tol_drops_exactly_zero_vectors() {
     let zero = vec![Complex64::new(0.0, 0.0); 30];
     let alg = BlockLanczos::new(20, 100, 1e-10, 0.0);
     let out = run::<f64>(&a, &[x, zero], 1, Which::SmallestReal, alg);
-    check_pairs(&a, &out, 1e-12);
-    assert!((out.vals[0] - exact[0]).abs() < 1e-9);
+    check_pairs(&a, &out);
+    check_values(&a, &out, alg.get_tol(), &exact[..1], "zero start vector");
 }
 
 #[test]
@@ -418,13 +433,8 @@ fn block_lanczos_matches_dense_spectrum_and_krylovkit_counts() {
             .collect();
         assert!(out.info.converged >= howmany, "{name}");
         assert!(out.vals.len() >= howmany, "{name}");
-        for (v, e) in out.vals.iter().zip(&want) {
-            assert!(
-                (v - e).abs() <= 1e-9 * e.abs().max(1.0),
-                "{name}: {v} vs {e}"
-            );
-        }
-        check_pairs(&a, &out, 1e-12);
+        check_values(&a, &out, tol, &want, name);
+        check_pairs(&a, &out);
         if let Some((nvals, converged, ni, no)) = kk {
             assert_eq!(out.vals.len(), nvals, "{name}: number of values");
             assert_eq!(out.info.converged, converged, "{name}");
@@ -480,10 +490,12 @@ fn tight_tolerance_restarts_stay_finite_in_single_precision() {
         } else {
             exact[n - 1]
         };
-        assert!(
-            (f64::from(vals[0]) - want).abs() < 1e-4,
-            "seed {seed}: {} vs {want}",
-            vals[0]
+        // `tol` is below single precision's reach: the attainable accuracy
+        // is the rounding floor of `A·x` in `S`.
+        within(
+            (f64::from(vals[0]) - want).abs(),
+            rounding::<Complex32>(n, op_norm(&a)),
+            &format!("seed {seed}"),
         );
     }
 }
@@ -528,9 +540,9 @@ impl<T: krylov::RealScalar> krylov::Vector for Hv<T> {
 
 /// `block_eigsolve` of the symmetric `A` from the unit vectors
 /// `e₀ … e_{p-1}`, `howmany = 1`, `LargestReal`. For every returned pair it
-/// checks that `normres` is the norm of the returned residual (up to `1e-5`
-/// relative and `tol` absolute, i.e. without changing the convergence
-/// decision) and of `A·x - λ·x` (plus that evaluation's rounding), and that `converged` counts exactly
+/// checks that `normres` is the norm of the returned residual (up to the
+/// rounding of a length-`n` norm relative and `tol` absolute, i.e. without
+/// changing the convergence decision) and of `A·x - λ·x` (plus that evaluation's rounding), and that `converged` counts exactly
 /// the pairs with `normres <= tol`.
 fn residual_run<T: krylov::RealScalar>(
     a: &[&[f64]],
@@ -563,7 +575,7 @@ fn residual_run<T: krylov::RealScalar>(
     let (vals, vecs, info) =
         block_eigsolve(&mut (), &mut op, &x0, 1, Which::LargestReal, &alg, &mut ws)?;
     let tol = T::from(alg.get_tol()).unwrap();
-    let rel = T::from(1e-5).unwrap();
+    let rel = T::from(ROUNDING_PASSES * n as f64).unwrap() * T::epsilon();
     let amax = a
         .iter()
         .flat_map(|r| r.iter())
@@ -577,7 +589,7 @@ fn residual_run<T: krylov::RealScalar>(
             .collect();
         let nr = info.normres[i];
         // Evaluating A·x - λ·x directly adds rounding of order eps·‖A‖.
-        let rounding = T::epsilon() * T::from(4 * n).unwrap() * amax;
+        let rounding = T::epsilon() * T::from(ROUNDING_PASSES * n as f64).unwrap() * amax;
         for (what, want, slack) in [
             ("returned", hypot(&info.residual[i].0), tol),
             ("direct", hypot(&direct), tol + rounding),
@@ -616,22 +628,37 @@ fn block_residuals_are_exact_at_extreme_scales() {
         }
         .unwrap()
     };
-    let rel = |v: f64, want: f64| ((v - want) / want).abs() < 1e-5;
+    // Relative rounding of the 4×4 (or 2×2) problem in f64 or f32, plus the
+    // absolute `tol` each run converges to.
+    let rel = |v: f64, want: f64, tol: f64, single: bool| {
+        let eps = if single {
+            f64::from(f32::EPSILON)
+        } else {
+            f64::EPSILON
+        };
+        (v - want).abs() <= tol + ROUNDING_PASSES * 4.0 * eps * want
+    };
     let v = run(
         &pair(1e-200),
         1,
         BlockLanczos::new(2, 1, 1e-210, 0.0),
         false,
     );
-    assert!(rel(v[0], 1e-200), "{v:?}");
+    assert!(rel(v[0], 1e-200, 1e-210, false), "{v:?}");
     let eager = |tol| BlockLanczos::new(3, 1, tol, 0.0).eager(true);
     let v = run(&swap(1e200), 2, eager(1e190), false);
-    assert!(rel(v[0], 1e200) && rel(v[1], 1e200), "{v:?}");
+    assert!(
+        rel(v[0], 1e200, 1e190, false) && rel(v[1], 1e200, 1e190, false),
+        "{v:?}"
+    );
     // Single precision: squares of 1e∓30 leave the f32 range.
     let v = run(&pair(1e-30), 1, BlockLanczos::new(2, 1, 1e-37, 0.0), true);
-    assert!(rel(v[0], 1e-30), "{v:?}");
+    assert!(rel(v[0], 1e-30, 1e-37, true), "{v:?}");
     let v = run(&swap(1e30), 2, eager(1e25), true);
-    assert!(rel(v[0], 1e30) && rel(v[1], 1e30), "{v:?}");
+    assert!(
+        rel(v[0], 1e30, 1e25, true) && rel(v[1], 1e30, 1e25, true),
+        "{v:?}"
+    );
     // Residual columns of very different size (a·e₂ and b·e₃): each column's
     // own scale must survive, or the small one vanishes and the pair with
     // residual a = ‖A·x - 2x‖ is reported converged.
@@ -643,15 +670,14 @@ fn block_residuals_are_exact_at_extreme_scales() {
             vec![0.0, b, 0.0, 0.0],
         ]
     };
-    // The largest eigenvalue is 1/2 + √(1/4 + b²) ≈ b.
-    let big = |v: &[f64], b: f64| rel(v[0], b);
+    // The largest eigenvalue is 1/2 + √(1/4 + b²) = b + 1/2 + O(1/b).
     for (a, b, tol, single) in [
         (1e-100, 1e100, 1e-110, false),
         (1e-200, 1e200, 1e-210, false),
         (1e-12, 1e12, 1e-13, true),
     ] {
         let v = run(&mixed(a, b), 2, eager(tol), single);
-        assert!(big(&v, b), "a = {a:e}: {v:?}");
+        assert!(rel(v[0], b + 0.5, tol, single), "a = {a:e}: {v:?}");
     }
 }
 

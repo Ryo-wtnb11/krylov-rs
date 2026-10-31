@@ -36,10 +36,31 @@ fn dense_spectrum(a: &DMatrix<Complex64>) -> Vec<Complex64> {
         .collect()
 }
 
-fn nearest(spec: &[Complex64], l: Complex64) -> f64 {
-    spec.iter()
-        .map(|x| (x - l).norm())
-        .fold(f64::INFINITY, f64::min)
+/// Condition number `1/|yᴴx|` of the simple eigenvalue `l` of `a`, from
+/// the unit right and left null vectors `x`, `y` of `A - l·I` (its smallest
+/// singular triplet). A residual `‖A·q - l·q‖ = ε` moves `l` by at most
+/// `cond·ε` to first order (Wilkinson; Golub & Van Loan, §7.2.2).
+fn eig_condition(a: &DMatrix<Complex64>, l: Complex64) -> f64 {
+    let m = a - DMatrix::<Complex64>::identity(a.nrows(), a.ncols()) * l;
+    let svd = m.svd(true, true);
+    let k = svd.singular_values.imin();
+    let (u, v_t) = (svd.u.unwrap(), svd.v_t.unwrap());
+    let x = v_t.row(k).adjoint();
+    1.0 / u.column(k).dotc(&x).norm()
+}
+
+/// Asserts that `v` is within `cond·bound` of the nearest point of `spec`.
+#[track_caller]
+fn near_spectrum(a: &DMatrix<Complex64>, spec: &[Complex64], v: Complex64, bound: f64, what: &str) {
+    let l = *spec
+        .iter()
+        .min_by(|x, y| (*x - v).norm().partial_cmp(&(*y - v).norm()).unwrap())
+        .unwrap();
+    within(
+        (l - v).norm(),
+        eig_condition(a, l) * bound,
+        &format!("{what}: {v} vs {l}"),
+    );
 }
 
 fn apply(a: &DMatrix<Complex64>, x: &[Complex64]) -> Vec<Complex64> {
@@ -74,7 +95,13 @@ fn run_schur<S: TestScalar>(
     assert_eq!((t.len(), vals.len(), info.normres.len()), (n * n, n, n));
     assert_eq!(info.numops, op.applications);
     let qs: Vec<Vec<Complex64>> = q.iter().map(to_c64).collect();
-    assert!(orthogonality_error(&q) < 1e-10);
+    let dim = a.nrows();
+    within(
+        orthogonality_error(&q),
+        rounding::<S>(dim, 1.0),
+        "Schur vector orthonormality",
+    );
+    let relation = rounding::<S>(dim, op_norm(a));
     for i in 0..n {
         // A·qᵢ − Σ_j qⱼ·T[j,i] is the reported residual.
         let mut r = apply(a, &qs[i]);
@@ -86,11 +113,16 @@ fn run_schur<S: TestScalar>(
         }
         let got = to_c64(&info.residual[i]);
         let nr = to_f64(info.normres[i]);
-        assert!(
-            diff_norm(&r, &got) <= 1e-8 * (1.0 + nr),
-            "Schur residual {i}"
+        within(
+            diff_norm(&r, &got),
+            relation,
+            &format!("Schur residual {i}"),
         );
-        assert!((norm(&r) - nr).abs() <= 1e-8, "residual norm {i}");
+        within(
+            (norm(&r) - nr).abs(),
+            relation,
+            &format!("residual norm {i}"),
+        );
     }
     Run {
         values: vals
@@ -112,17 +144,24 @@ fn check_pairs(
     res: &[Vec<Complex64>],
     normres: &[f64],
 ) {
+    let n = a.nrows();
+    let relation = rounding::<Complex64>(n, op_norm(a));
     for i in 0..vals.len() {
-        assert!((norm(&vecs[i]) - 1.0).abs() < 1e-10, "unit eigenvector {i}");
+        within(
+            (norm(&vecs[i]) - 1.0).abs(),
+            rounding::<Complex64>(n, 1.0),
+            &format!("unit eigenvector {i}"),
+        );
         let mut r = apply(a, &vecs[i]);
         for (rk, xk) in r.iter_mut().zip(&vecs[i]) {
             *rk -= vals[i] * xk;
         }
-        assert!(
-            diff_norm(&r, &res[i]) <= 1e-8 * (1.0 + normres[i]),
-            "residual {i}"
+        within(diff_norm(&r, &res[i]), relation, &format!("residual {i}"));
+        within(
+            (norm(&r) - normres[i]).abs(),
+            relation,
+            &format!("residual norm {i}"),
         );
-        assert!((norm(&r) - normres[i]).abs() <= 1e-8, "residual norm {i}");
     }
 }
 
@@ -272,10 +311,11 @@ fn krylov_schur_matches_dense_spectrum_and_krylovkit_counts() {
                 })
                 .unwrap();
             used[j] = true;
-            assert!(
-                (want[j] - v).norm() <= 1e-8 * want[j].norm().max(1.0),
-                "{name}: {v} vs {}",
-                want[j]
+            let bound = eig_condition(&a, want[j]) * eig_bound::<f64>(tol, n, op_norm(&a));
+            within(
+                (want[j] - v).norm(),
+                bound,
+                &format!("{name}: {v} vs {}", want[j]),
             );
         }
         if let Some((nvals, converged, numiter, numops)) = kk {
@@ -309,9 +349,10 @@ fn single_precision_and_complex32() {
     )
     .unwrap();
     assert!(info.converged >= 3);
+    let bound = eig_bound::<f32>(alg.get_tol(), n, op_norm(&a));
     for v in &vals[..3] {
         let v = Complex64::new(v.re as f64, v.im as f64);
-        assert!(nearest(&spec, v) < 1e-3, "{v}");
+        near_spectrum(&a, &spec, v, bound, "f32");
     }
 
     let mut g = SplitMix(42);
@@ -325,12 +366,16 @@ fn single_precision_and_complex32() {
         arnoldi_eigsolve(&mut (), &mut op, &x, 2, Which::LargestImag, &alg, &mut ws).unwrap();
     assert!(info.converged >= 2);
     assert!(vals[0].im >= vals[1].im);
+    let bound = eig_bound::<Complex32>(alg.get_tol(), n, op_norm(&a));
     for (v, r) in vals.iter().zip(&info.normres).take(2) {
-        assert!(
-            nearest(&spec, Complex64::new(v.re as f64, v.im as f64)) < 1e-3,
-            "{v}"
+        near_spectrum(
+            &a,
+            &spec,
+            Complex64::new(v.re as f64, v.im as f64),
+            bound,
+            "c32",
         );
-        assert!(*r < 1e-3);
+        within(f64::from(*r), alg.get_tol(), "converged residual");
     }
     assert_eq!(vecs.len(), vals.len());
 }
@@ -556,8 +601,14 @@ fn real_pair_is_completed_and_exhausted_space_returns_what_exists() {
     let out = run_schur::<f64>(&d, &x, 3, Which::LargestReal, &Arnoldi::new(10, 100, 1e-12));
     assert_eq!(out.numiter, 1);
     assert!(out.converged >= 3);
+    let bound = eig_bound::<f64>(1e-12, 6, op_norm(&d));
     for (i, v) in out.values.iter().take(3).enumerate() {
-        assert!((v.re - (6 - i) as f64).abs() < 1e-10);
+        let l = Complex64::new((6 - i) as f64, 0.0);
+        within(
+            (v - l).norm(),
+            eig_condition(&d, l) * bound,
+            &format!("eigenvalue {l}"),
+        );
     }
 }
 
