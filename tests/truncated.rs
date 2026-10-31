@@ -120,27 +120,28 @@ impl<S: TestScalar> LowRank<S> {
 impl<S: TestScalar> Vector for LowRank<S> {
     type Scalar = S;
     type Error = std::convert::Infallible;
-    fn similar(&self) -> Result<Self, Self::Error> {
+    type Context = ();
+    fn similar(&self, _: &mut ()) -> Result<Self, Self::Error> {
         Ok(Self {
             x: DMatrix::zeros(self.x.nrows(), self.x.ncols()),
             tau: self.tau,
             _s: std::marker::PhantomData,
         })
     }
-    fn copy_from(&mut self, x: &Self) -> Result<(), Self::Error> {
+    fn copy_from(&mut self, _: &mut (), x: &Self) -> Result<(), Self::Error> {
         self.x.copy_from(&x.x);
         Ok(())
     }
-    fn inner(&self, y: &Self) -> Result<S, Self::Error> {
+    fn inner(&self, _: &mut (), y: &Self) -> Result<S, Self::Error> {
         Ok(S::from_c64(self.x.dotc(&y.x)))
     }
-    fn norm(&self) -> Result<S::Real, Self::Error> {
+    fn norm(&self, _: &mut ()) -> Result<S::Real, Self::Error> {
         Ok(<S::Real as num_traits::NumCast>::from(self.x.norm()).unwrap())
     }
     /// Rank grows only when both terms survive. Rescaling (`b = 0` or
     /// `a = 0`) never truncates again, which would let a repeatedly scaled
     /// vector drift by `τ` each time.
-    fn axpby(&mut self, a: S, x: &Self, b: S) -> Result<(), Self::Error> {
+    fn axpby(&mut self, _: &mut (), a: S, x: &Self, b: S) -> Result<(), Self::Error> {
         let (a, b) = (a.to_c64(), b.to_c64());
         if b == Complex64::new(0.0, 0.0) {
             self.x = &x.x * a;
@@ -160,6 +161,7 @@ struct KronSum(DMatrix<Complex64>);
 impl<S: TestScalar> LinearMap<LowRank<S>> for KronSum {
     fn apply_into(
         &mut self,
+        _: &mut (),
         x: &LowRank<S>,
         y: &mut LowRank<S>,
     ) -> Result<(), std::convert::Infallible> {
@@ -226,9 +228,16 @@ fn run_exp<S: TestScalar, P: KrylovProcess>(
 ) -> Run {
     reset();
     let x = LowRank::<S>::new(x0.clone(), tau);
-    let mut ws = Workspace::with_capacity(&x, KD).unwrap();
-    let (y, info) =
-        exponentiate(&mut KronSum(l.clone()), S::from_c64(t), &x, alg, &mut ws).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &x, KD).unwrap();
+    let (y, info) = exponentiate(
+        &mut (),
+        &mut KronSum(l.clone()),
+        S::from_c64(t),
+        &x,
+        alg,
+        &mut ws,
+    )
+    .unwrap();
     let e = (l * t).exp();
     let exact = &e * x0 * e.transpose();
     Run {
@@ -372,9 +381,16 @@ fn phi<S: TestScalar, P: KrylovProcess>(
         LowRank::<S>::new(u0.clone(), tau),
         LowRank::<S>::new(u1.clone(), tau),
     ];
-    let mut ws = Workspace::with_capacity(&u[0], KD).unwrap();
-    let (y, info) =
-        expintegrator(&mut KronSum(l.clone()), S::from_c64(t), &u, alg, &mut ws).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &u[0], KD).unwrap();
+    let (y, info) = expintegrator(
+        &mut (),
+        &mut KronSum(l.clone()),
+        S::from_c64(t),
+        &u,
+        alg,
+        &mut ws,
+    )
+    .unwrap();
     assert_eq!(info.converged, 1);
     assert!(
         DROPS.with(Cell::get) > 0,
@@ -404,8 +420,9 @@ fn run_gmres<S: TestScalar>(rhs: &DMatrix<Complex64>, tau: f64) -> Solve {
     let x0 = LowRank::<S>::new(DMatrix::zeros(n, n), tau);
     let alg = Gmres::new(3, 50, TOL * rhs.norm());
     assert_eq!(alg.get_restart_residual(), RestartResidual::Recomputed);
-    let mut ws = Workspace::with_capacity(&b, 3).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &b, 3).unwrap();
     let (x, info) = linsolve(
+        &mut (),
         &mut KronSum(l.clone()),
         &b,
         &x0,

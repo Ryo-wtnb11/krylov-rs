@@ -51,7 +51,12 @@ impl<S: TestScalar> RectOp<S> {
 }
 
 impl<S: TestScalar> LinearMap<DVec<S>> for RectOp<S> {
-    fn apply_into(&mut self, x: &DVec<S>, y: &mut DVec<S>) -> Result<(), std::convert::Infallible> {
+    fn apply_into(
+        &mut self,
+        _: &mut (),
+        x: &DVec<S>,
+        y: &mut DVec<S>,
+    ) -> Result<(), std::convert::Infallible> {
         self.applications += 1;
         apply(&self.a, x, y);
         self.poison(y);
@@ -62,6 +67,7 @@ impl<S: TestScalar> LinearMap<DVec<S>> for RectOp<S> {
 impl<S: TestScalar> AdjointMap<DVec<S>> for RectOp<S> {
     fn apply_adjoint_into(
         &mut self,
+        _: &mut (),
         y: &DVec<S>,
         x: &mut DVec<S>,
     ) -> Result<(), std::convert::Infallible> {
@@ -104,11 +110,20 @@ fn run<S: TestScalar>(
     let xv = to_dvec::<S>(x0);
     let domain = to_dvec::<S>(&vec![Complex64::default(); n]);
     let kd = alg.get_krylovdim();
-    let mut ws_u = Workspace::with_capacity(&xv, kd).unwrap();
-    let mut ws_v = Workspace::with_capacity(&domain, kd).unwrap();
+    let mut ws_u = Workspace::with_capacity(&mut (), &xv, kd).unwrap();
+    let mut ws_v = Workspace::with_capacity(&mut (), &domain, kd).unwrap();
     let mut op = RectOp::<S>::new(a);
-    let (vals, left, right, info) =
-        svdsolve(&mut op, &xv, howmany, which, alg, &mut ws_u, &mut ws_v).unwrap();
+    let (vals, left, right, info) = svdsolve(
+        &mut (),
+        &mut op,
+        &xv,
+        howmany,
+        which,
+        alg,
+        &mut ws_u,
+        &mut ws_v,
+    )
+    .unwrap();
     assert_eq!(info.numops, op.applications);
     assert_eq!(to_f64(info.max_imag), 0.0);
     let single = std::mem::size_of::<S::Real>() == 4;
@@ -293,11 +308,12 @@ fn warm_call_allocates_only_the_returned_triplets() {
     let x0 = to_dvec::<f64>(&random_vec(&mut g, 30, false));
     let domain = to_dvec::<f64>(&vec![Complex64::default(); 20]);
     let alg = Gkl::new(8, 100, 1e-10);
-    let mut ws_u = Workspace::with_capacity(&x0, 8).unwrap();
-    let mut ws_v = Workspace::with_capacity(&domain, 8).unwrap();
+    let mut ws_u = Workspace::with_capacity(&mut (), &x0, 8).unwrap();
+    let mut ws_v = Workspace::with_capacity(&mut (), &domain, 8).unwrap();
     let mut op = RectOp::<f64>::new(&a);
     let before = similar_calls();
     let (vals, _, _, info) = svdsolve(
+        &mut (),
         &mut op,
         &x0,
         2,
@@ -317,12 +333,12 @@ fn typed_errors() {
     let a = rectangular(&mut g, 12, 9, true);
     let x0 = to_dvec::<Complex64>(&random_vec(&mut g, 12, true));
     let domain = to_dvec::<Complex64>(&[Complex64::default(); 9]);
-    let mut ws_u = Workspace::with_capacity(&x0, 6).unwrap();
-    let mut ws_v = Workspace::with_capacity(&domain, 6).unwrap();
+    let mut ws_u = Workspace::with_capacity(&mut (), &x0, 6).unwrap();
+    let mut ws_v = Workspace::with_capacity(&mut (), &domain, 6).unwrap();
     let alg = Gkl::new(6, 100, 1e-12);
     let mut op = RectOp::<Complex64>::new(&a);
     let mut call = |op: &mut RectOp<Complex64>, x: &DVec<Complex64>, h, w, alg: &Gkl| {
-        svdsolve(op, x, h, w, alg, &mut ws_u, &mut ws_v).map(|_| ())
+        svdsolve(&mut (), op, x, h, w, alg, &mut ws_u, &mut ws_v).map(|_| ())
     };
     // Transpose without conjugation is not the adjoint of a complex map.
     let mut bad = RectOp::<Complex64>::new(&a);

@@ -1,7 +1,7 @@
 //! Lanczos thick-restart restoration (the tridiagonal eigenproblem itself is
 //! LAPACK `xSTEGR` through `RealOps::stegr`).
 
-use super::householder;
+use super::arrowhead_to_band;
 use crate::scalar::RealScalar;
 
 /// Restores Lanczos (tridiagonal) form after a thick restart.
@@ -14,7 +14,8 @@ use crate::scalar::RealScalar;
 /// `(keep+1)·keep`.
 ///
 /// Port of the restart block of KrylovKit v0.10.4
-/// `src/eigsolve/lanczos.jl:eigsolve`.
+/// `src/eigsolve/lanczos.jl:eigsolve`: the reflectors are those of the block
+/// restoration [`arrowhead_to_band`] with block size 1.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn arrowhead_to_tridiag<R: RealScalar>(
     d: &[R],
@@ -33,56 +34,7 @@ pub(crate) fn arrowhead_to_tridiag<R: RealScalar>(
         h[j + j * ld] = d[j];
         h[keep + j * ld] = f[j];
     }
-    for j in (0..keep).rev() {
-        // Reflector from row j+1 (0-based: row j+1), columns 0..=j, pivot at j.
-        // Stored reversed so the pivot is first, matching `householder`.
-        let v = &mut refl[..=j];
-        for (c, vc) in v.iter_mut().enumerate() {
-            *vc = h[(j + 1) + (j - c) * ld];
-        }
-        let (nu, beta_h) = householder(v);
-        h[(j + 1) + j * ld] = nu;
-        for c in 0..j {
-            h[(j + 1) + c * ld] = R::zero();
-        }
-        let Some(bh) = beta_h else {
-            continue;
-        };
-        // index map: reflector entry t ↔ matrix index j - t.
-        // lmul!(h, H): rows 0..=j of every column.
-        for col in 0..keep {
-            let mut mu = R::zero();
-            for (t, vt) in v.iter().enumerate() {
-                mu += *vt * h[(j - t) + col * ld];
-            }
-            mu *= bh;
-            for (t, vt) in v.iter().enumerate() {
-                h[(j - t) + col * ld] -= mu * *vt;
-            }
-        }
-        // rmul!(H[0..=j, :], hᴴ): columns 0..=j of rows 0..=j.
-        for row in 0..=j {
-            let mut mu = R::zero();
-            for (t, vt) in v.iter().enumerate() {
-                mu += h[row + (j - t) * ld] * *vt;
-            }
-            mu *= bh;
-            for (t, vt) in v.iter().enumerate() {
-                h[row + (j - t) * ld] -= mu * *vt;
-            }
-        }
-        // rmul!(U, hᴴ): columns 0..=j of every row.
-        for row in 0..ldu {
-            let mut mu = R::zero();
-            for (t, vt) in v.iter().enumerate() {
-                mu += u[row + (j - t) * ldu] * *vt;
-            }
-            mu *= bh;
-            for (t, vt) in v.iter().enumerate() {
-                u[row + (j - t) * ldu] -= mu * *vt;
-            }
-        }
-    }
+    arrowhead_to_band(h, keep, 1, u, ldu, refl);
     for j in 0..keep {
         alpha[j] = h[j + j * ld];
         beta[j] = h[(j + 1) + j * ld];

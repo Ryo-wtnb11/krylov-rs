@@ -3,7 +3,9 @@
 mod common;
 
 use common::*;
-use krylov::{Basis, Error, Lanczos, Orth, VecBasis, Which, Workspace, eigsolve};
+use krylov::{
+    Arnoldi, Basis, Error, Lanczos, Orth, VecBasis, Which, Workspace, eigsolve, schursolve,
+};
 use nalgebra::DMatrix;
 use num_complex::{Complex32, Complex64};
 
@@ -20,8 +22,9 @@ struct Case<'a> {
 fn check<S: TestScalar>(c: &Case, tol_val: f64, tol_res: f64) -> krylov::ConvergenceInfo<DVec<S>> {
     let x0 = to_dvec::<S>(c.x0);
     let mut op = DenseOp::<S>::new(c.a);
-    let mut ws = Workspace::with_capacity(&x0, c.alg.get_krylovdim()).unwrap();
-    let (vals, vecs, info) = eigsolve(&mut op, &x0, c.howmany, c.which, &c.alg, &mut ws).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &x0, c.alg.get_krylovdim()).unwrap();
+    let (vals, vecs, info) =
+        eigsolve(&mut (), &mut op, &x0, c.howmany, c.which, &c.alg, &mut ws).unwrap();
     assert!(
         info.converged >= c.howmany,
         "converged {} of {}",
@@ -149,8 +152,9 @@ fn degenerate_and_clustered_spectra() {
     let x0 = random_vec(&mut g, 80, true);
     let alg = Lanczos::new(20, 100, 1e-10);
     let x = to_dvec::<Complex64>(&x0);
-    let mut ws = Workspace::with_capacity(&x, 20).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &x, 20).unwrap();
     let (vals, vecs, info) = eigsolve(
+        &mut (),
         &mut DenseOp::new(&a),
         &x,
         2,
@@ -207,8 +211,9 @@ fn invariant_subspace_stops_without_restart() {
     let a = with_spectrum(&mut g, &eigs, false);
     let x0 = to_dvec::<f64>(&random_vec(&mut g, 50, false));
     let alg = Lanczos::new(20, 100, 1e-10);
-    let mut ws = Workspace::with_capacity(&x0, 20).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &x0, 20).unwrap();
     let (vals, vecs, info) = eigsolve(
+        &mut (),
         &mut DenseOp::new(&a),
         &x0,
         8,
@@ -232,8 +237,9 @@ fn invariant_subspace_stops_without_restart() {
         ones[(i, i)] = Complex64::new(i as f64, 0.0);
     }
     let e2 = to_dvec::<f64>(&[0.0, 0.0, 1.0, 0.0].map(|x| Complex64::new(x, 0.0)));
-    let mut ws = Workspace::with_capacity(&e2, 3).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &e2, 3).unwrap();
     let (vals, _, info) = eigsolve(
+        &mut (),
         &mut DenseOp::new(&ones),
         &e2,
         2,
@@ -279,8 +285,9 @@ fn tiny_krylov_dimensions() {
     );
     // krylovdim 1 cannot restart: one Rayleigh quotient, reported unconverged.
     let x = to_dvec::<f64>(&x0);
-    let mut ws = Workspace::with_capacity(&x, 1).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &x, 1).unwrap();
     let (vals, _, info) = eigsolve(
+        &mut (),
         &mut DenseOp::new(&a),
         &x,
         1,
@@ -369,9 +376,10 @@ fn non_hermitian_imaginary_part_is_recorded() {
     let n = 20;
     let a = DMatrix::from_fn(n, n, |_, _| g.scalar(true));
     let x0 = to_dvec::<Complex64>(&random_vec(&mut g, n, true));
-    let mut ws = Workspace::with_capacity(&x0, 10).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &x0, 10).unwrap();
     let alg = Lanczos::new(10, 1, 1e-12);
     let (_, _, info) = eigsolve(
+        &mut (),
         &mut DenseOp::new(&a),
         &x0,
         1,
@@ -388,9 +396,9 @@ fn errors() {
     let a = DMatrix::<Complex64>::identity(4, 4);
     let x = DVec(vec![1.0f64, 2.0, 3.0, 4.0]);
     let mut op = DenseOp::<f64>::new(&a);
-    let mut ws = Workspace::with_capacity(&x, 3).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &x, 3).unwrap();
     let run = |op: &mut DenseOp<f64>, x: &DVec<f64>, h, alg: Lanczos, ws: &mut Workspace<_, _>| {
-        eigsolve(op, x, h, Which::LargestReal, &alg, ws)
+        eigsolve(&mut (), op, x, h, Which::LargestReal, &alg, ws)
             .map(|_| ())
             .unwrap_err()
     };
@@ -434,11 +442,11 @@ fn warm_solve_allocates_only_returned_vectors() {
     let x0 = to_dvec::<Complex64>(&random_vec(&mut g, 100, true));
     let alg = Lanczos::new(16, 100, 1e-10);
     let mut op = DenseOp::new(&a);
-    let mut ws = Workspace::with_capacity(&x0, 16).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &x0, 16).unwrap();
     for _ in 0..2 {
         let before = similar_calls();
         let (vals, vecs, info) =
-            eigsolve(&mut op, &x0, 3, Which::SmallestReal, &alg, &mut ws).unwrap();
+            eigsolve(&mut (), &mut op, &x0, 3, Which::SmallestReal, &alg, &mut ws).unwrap();
         assert!(info.numiter > 1, "must exercise restarts");
         // Only the returned eigenvectors and residual vectors are new.
         assert_eq!(similar_calls() - before, 2 * vals.len());
@@ -458,8 +466,9 @@ fn basis_stays_orthonormal_across_restarts() {
     let x0 = to_dvec::<f64>(&random_vec(&mut g, 300, false));
     for orth in [Orth::Cgs2, Orth::Mgs2] {
         let alg = Lanczos::new(40, 6, 1e-6).orth(orth);
-        let mut ws = Workspace::with_capacity(&x0, 40).unwrap();
+        let mut ws = Workspace::with_capacity(&mut (), &x0, 40).unwrap();
         let _ = eigsolve(
+            &mut (),
             &mut DenseOp::new(&a),
             &x0,
             2,
@@ -486,10 +495,11 @@ fn lanczos_step_uses_one_full_pass_after_the_recurrence() {
     let kd = 20;
     for orth in [Orth::Cgs2, Orth::Mgs2] {
         let alg = Lanczos::new(kd, 1, 0.0).orth(orth);
-        let mut ws = Workspace::with_capacity(&x0, kd).unwrap();
+        let mut ws = Workspace::with_capacity(&mut (), &x0, kd).unwrap();
         let mut op = DenseOp::new(&a);
         let before = inner_calls();
-        let (_, _, info) = eigsolve(&mut op, &x0, 1, Which::SmallestReal, &alg, &mut ws).unwrap();
+        let (_, _, info) =
+            eigsolve(&mut (), &mut op, &x0, 1, Which::SmallestReal, &alg, &mut ws).unwrap();
         assert_eq!(info.numops, kd);
         assert_eq!(inner_calls() - before, kd * (kd + 3) / 2, "{orth:?}");
         assert!(
@@ -499,71 +509,99 @@ fn lanczos_step_uses_one_full_pass_after_the_recurrence() {
     }
 }
 
-/// A basis that implements only the required methods, so modified
-/// Gram–Schmidt goes through the defaulted `inner_at`/`axpy_at`.
-struct Minimal(VecBasis<DVec<f64>>);
-impl Basis<DVec<f64>> for Minimal {
+/// A caller-defined basis that forwards every method, including the
+/// per-column `inner_at`/`axpy_at` that modified Gram–Schmidt requires.
+struct Custom(VecBasis<DVec<f64>>);
+impl Basis<DVec<f64>> for Custom {
     fn len(&self) -> usize {
         self.0.len()
     }
     fn capacity(&self) -> usize {
         self.0.capacity()
     }
-    fn push(&mut self, v: &DVec<f64>, a: f64) -> Result<(), std::convert::Infallible> {
-        self.0.push(v, a)
+    fn push(&mut self, cx: &mut (), v: &DVec<f64>, a: f64) -> Result<(), std::convert::Infallible> {
+        self.0.push(cx, v, a)
     }
     fn truncate(&mut self, len: usize) {
         self.0.truncate(len)
     }
-    fn project(&self, x: &DVec<f64>, out: &mut [f64]) -> Result<(), std::convert::Infallible> {
-        self.0.project(x, out)
+    fn project(
+        &self,
+        cx: &mut (),
+        x: &DVec<f64>,
+        out: &mut [f64],
+    ) -> Result<(), std::convert::Infallible> {
+        self.0.project(cx, x, out)
     }
     fn combine_into(
         &self,
+        cx: &mut (),
         c: &[f64],
         y: &mut DVec<f64>,
         a: f64,
         b: f64,
     ) -> Result<(), std::convert::Infallible> {
-        self.0.combine_into(c, y, a, b)
+        self.0.combine_into(cx, c, y, a, b)
     }
     fn rotate(
         &mut self,
+        cx: &mut (),
         q: krylov::MatRef<'_, f64>,
         keep: usize,
     ) -> Result<(), std::convert::Infallible> {
-        self.0.rotate(q, keep)
+        self.0.rotate(cx, q, keep)
+    }
+    fn inner_at(
+        &self,
+        cx: &mut (),
+        i: usize,
+        x: &DVec<f64>,
+    ) -> Result<f64, std::convert::Infallible> {
+        self.0.inner_at(cx, i, x)
+    }
+    fn axpy_at(
+        &self,
+        cx: &mut (),
+        i: usize,
+        a: f64,
+        y: &mut DVec<f64>,
+    ) -> Result<(), std::convert::Infallible> {
+        self.0.axpy_at(cx, i, a, y)
     }
 }
 
 #[test]
-fn defaulted_mgs_methods_match_overrides() {
-    let mut g = SplitMix(21);
-    let a = hermitian(&mut g, 60, false);
-    let x0 = to_dvec::<f64>(&random_vec(&mut g, 60, false));
-    let alg = Lanczos::new(12, 100, 1e-10).orth(Orth::Mgs2);
-    let mut ws1 = Workspace::with_capacity(&x0, 12).unwrap();
-    let mut ws2 = Workspace::new(Minimal(VecBasis::with_capacity(&x0, 12).unwrap()), &x0).unwrap();
-    let (v1, _, i1) = eigsolve(
-        &mut DenseOp::new(&a),
-        &x0,
-        2,
-        Which::SmallestReal,
-        &alg,
-        &mut ws1,
-    )
-    .unwrap();
-    let (v2, _, i2) = eigsolve(
-        &mut DenseOp::new(&a),
-        &x0,
-        2,
-        Which::SmallestReal,
-        &alg,
-        &mut ws2,
-    )
-    .unwrap();
-    assert_eq!(v1, v2);
-    assert_eq!((i1.numops, i1.numiter), (i2.numops, i2.numiter));
+fn mgs2_on_a_custom_basis_takes_two_inner_products_per_basis_vector() {
+    // KrylovKit `orthonormal.jl:reorthogonalize!!(::ModifiedGramSchmidt2)`:
+    // two sequential passes over the k basis vectors at basis size k, so one
+    // Arnoldi cycle of size K takes Σ_{k=1}^{K} 2k = K(K + 1) inner products
+    // (a full projection per coefficient would take K(K + 1)(2K + 1)/3).
+    let n = 64;
+    let lap = DMatrix::from_fn(n, n, |i, j| {
+        Complex64::new(
+            match i.abs_diff(j) {
+                0 => 2.0,
+                1 => -1.0,
+                _ => 0.0,
+            },
+            0.0,
+        )
+    });
+    let mut e1 = vec![Complex64::new(0.0, 0.0); n];
+    e1[0] = Complex64::new(1.0, 0.0);
+    let x0 = to_dvec::<f64>(&e1);
+    for kd in [8, 16, 32] {
+        let basis = Custom(VecBasis::with_capacity(&mut (), &x0, kd).unwrap());
+        let mut ws = Workspace::new(&mut (), basis, &x0).unwrap();
+        let mut op = DenseOp::new(&lap);
+        let alg = Arnoldi::new(kd, 1, 0.0).orth(Orth::Mgs2);
+        let before = inner_calls();
+        let info = schursolve(&mut (), &mut op, &x0, 1, Which::LargestReal, &alg, &mut ws)
+            .unwrap()
+            .3;
+        assert_eq!(info.numops, kd);
+        assert_eq!(inner_calls() - before, kd * (kd + 1), "K = {kd}");
+    }
 }
 
 #[test]
@@ -571,17 +609,17 @@ fn vecbasis_rotate_matches_dense_product() {
     let mut g = SplitMix(22);
     let (n, m, keep) = (7, 5, 3);
     let x = DVec(vec![Complex64::new(0.0, 0.0); n]);
-    let mut basis = VecBasis::with_capacity(&x, m).unwrap();
+    let mut basis = VecBasis::with_capacity(&mut (), &x, m).unwrap();
     let cols: Vec<Vec<Complex64>> = (0..m).map(|_| random_vec(&mut g, n, true)).collect();
     for c in &cols {
         basis
-            .push(&DVec(c.clone()), Complex64::new(1.0, 0.0))
+            .push(&mut (), &DVec(c.clone()), Complex64::new(1.0, 0.0))
             .unwrap();
     }
     let q = unitary(&mut g, m, true);
     let qdata: Vec<Complex64> = q.iter().copied().collect();
     basis
-        .rotate(krylov::MatRef::new(&qdata, m, m), keep)
+        .rotate(&mut (), krylov::MatRef::new(&qdata, m, m), keep)
         .unwrap();
     assert_eq!(basis.len(), keep);
     for j in 0..keep {

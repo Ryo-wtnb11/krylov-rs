@@ -47,8 +47,9 @@ fn run<S: TestScalar, L: LinearSolver>(
 ) -> (Vec<Complex64>, Out) {
     let (bv, xv) = (to_dvec::<S>(b), to_dvec::<S>(x0));
     let mut op = DenseOp::<S>::new(a);
-    let mut ws = Workspace::with_capacity(&bv, capacity).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &bv, capacity).unwrap();
     let (x, info): (_, LinsolveInfo<DVec<S>>) = linsolve(
+        &mut (),
         &mut op,
         &bv,
         &xv,
@@ -265,9 +266,10 @@ fn warm_calls_allocate_only_solution_and_residual() {
     let b = to_dvec::<f64>(&random_vec(&mut g, n, false));
     let x0 = to_dvec::<f64>(&vec![Complex64::default(); n]);
     let mut op = DenseOp::<f64>::new(&a);
-    let mut ws = Workspace::with_capacity(&b, 5).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &b, 5).unwrap();
     let before = similar_calls();
     let (_, info) = linsolve(
+        &mut (),
         &mut op,
         &b,
         &x0,
@@ -280,7 +282,17 @@ fn warm_calls_allocate_only_solution_and_residual() {
     assert!(info.numiter > 1);
     assert_eq!(similar_calls() - before, 2);
     let before = similar_calls();
-    let (_, info) = linsolve(&mut op, &b, &x0, &Cg::new(100, 1e-12), 0.0, 1.0, &mut ws).unwrap();
+    let (_, info) = linsolve(
+        &mut (),
+        &mut op,
+        &b,
+        &x0,
+        &Cg::new(100, 1e-12),
+        0.0,
+        1.0,
+        &mut ws,
+    )
+    .unwrap();
     assert_eq!(info.converged, 1);
     assert_eq!(similar_calls() - before, 2);
 }
@@ -297,12 +309,13 @@ fn typed_errors() {
     let b = to_dvec::<Complex64>(&random_vec(&mut g, n, true));
     let x0 = to_dvec::<Complex64>(&vec![Complex64::default(); n]);
     let mut op = DenseOp::<Complex64>::new(&a);
-    let mut ws = Workspace::with_capacity(&b, 4).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &b, 4).unwrap();
     let (one, zero) = (Complex64::new(1.0, 0.0), Complex64::new(0.0, 0.0));
     let cg = Cg::new(100, 1e-12);
-    let e = linsolve(&mut op, &b, &x0, &cg, zero, one, &mut ws).map(|_| ());
+    let e = linsolve(&mut (), &mut op, &b, &x0, &cg, zero, one, &mut ws).map(|_| ());
     assert_eq!(e, Err(Error::NotPositiveDefinite));
     let e = linsolve(
+        &mut (),
         &mut op,
         &b,
         &x0,
@@ -313,9 +326,20 @@ fn typed_errors() {
     )
     .map(|_| ());
     assert!(matches!(e, Err(Error::InvalidArgument(_))));
-    let e = linsolve(&mut op, &b, &x0, &Cg::new(100, -1.0), zero, one, &mut ws).map(|_| ());
+    let e = linsolve(
+        &mut (),
+        &mut op,
+        &b,
+        &x0,
+        &Cg::new(100, -1.0),
+        zero,
+        one,
+        &mut ws,
+    )
+    .map(|_| ());
     assert!(matches!(e, Err(Error::InvalidArgument(_))));
     let e = linsolve(
+        &mut (),
         &mut op,
         &b,
         &x0,
@@ -333,6 +357,7 @@ fn typed_errors() {
         })
     );
     let e = linsolve(
+        &mut (),
         &mut op,
         &b,
         &x0,
@@ -346,6 +371,7 @@ fn typed_errors() {
     let mut bad = to_dvec::<Complex64>(&random_vec(&mut g, n, true));
     bad.0[3] = Complex64::new(f64::NAN, 0.0);
     let e = linsolve(
+        &mut (),
         &mut op,
         &bad,
         &x0,
@@ -359,6 +385,7 @@ fn typed_errors() {
     // The zero map with a₀ = 0: the projected problem is exactly singular.
     let mut zero_op = DenseOp::<Complex64>::new(&DMatrix::zeros(n, n));
     let e = linsolve(
+        &mut (),
         &mut zero_op,
         &b,
         &x0,
@@ -480,8 +507,9 @@ fn gmres_singular_krylov_space() {
     assert!((info.normres - 1.0).abs() < 1e-12, "{}", info.normres);
     assert!((x[0].re - 1.0).abs() < 1e-12, "{:?}", x[0]); // x[n/2] lies in the null space
     let (bv, xv) = (to_dvec::<f64>(&b), to_dvec::<f64>(&x0));
-    let mut ws = Workspace::with_capacity(&bv, 4).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &bv, 4).unwrap();
     let e = linsolve(
+        &mut (),
         &mut DenseOp::new(&a),
         &bv,
         &xv,
@@ -507,3 +535,39 @@ fn gmres_with_subnormal_shift() {
     assert!((x[1].re - 1.0).abs() < 1e-15, "{x:?}");
     assert!((x[0].re - 1e-310).abs() < 1e-323, "{x:?}");
 }
+
+/// Vector work of the shared Arnoldi expansion inside GMRES, pinned per
+/// orthogonalizer and restart-residual mode: `[inner, norm, axpby,
+/// copy_from]` and map applications for one solve (n = 40, K = 6, three
+/// restart cycles). Each expansion takes one map, the orthogonalizer's
+/// passes and one norm; the cycle-end work is the solution update and the
+/// restart residual.
+#[test]
+fn gmres_vector_operation_counts() {
+    let mut g = SplitMix(83);
+    let n = 40;
+    let a = general(&mut g, n, false) + DMatrix::identity(n, n) * Complex64::new(12.0, 0.0);
+    let b = to_dvec::<f64>(&random_vec(&mut g, n, false));
+    let x0 = to_dvec::<f64>(&vec![Complex64::default(); n]);
+    let mut got = Vec::new();
+    for orth in [Orth::Cgs2, Orth::Mgs2] {
+        for rr in [RestartResidual::Recomputed, RestartResidual::Recurrence] {
+            let mut op = DenseOp::<f64>::new(&a);
+            let mut ws = Workspace::with_capacity(&mut (), &b, 6).unwrap();
+            let alg = Gmres::new(6, 3, 0.0).orth(orth).restart_residual(rr);
+            let before = vector_ops();
+            let (_, info) = linsolve(&mut (), &mut op, &b, &x0, &alg, 0.0, 1.0, &mut ws).unwrap();
+            assert_eq!(info.numops, op.applications);
+            let [inner, norm, axpby, copy] = ops_since(before);
+            got.push([inner, norm, axpby, copy, op.applications]);
+        }
+    }
+    assert_eq!(got, GMRES_COUNTS);
+}
+
+const GMRES_COUNTS: [[usize; 5]; 4] = [
+    [126, 22, 184, 5, 22],
+    [126, 22, 196, 3, 20],
+    [126, 22, 184, 5, 22],
+    [126, 22, 196, 3, 20],
+];

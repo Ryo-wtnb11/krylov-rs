@@ -13,9 +13,18 @@ values and iteration/application counts are recorded inline in the tests.
 - **CGS2 default:** MGS2 remains available. Block projections allow batched
   reductions on devices or distributed storage instead of sequential inner
   products; Lanczos keeps its three-term recurrence plus one full pass.
+  MGS2 runs through the required per-column `Basis::{inner_at, axpy_at}`,
+  so its `2·len` inner products per step match KrylovKit's
+  `ModifiedGramSchmidt2` for every basis implementation.
 - **Caller-owned workspace:** iteration and restart code constructs no new
   vectors. Per-call scratch and results are documented on each entry point;
   caller-provided trait methods control their own allocations and placement.
+- **Explicit execution context:** every solver takes `cx: &mut V::Context`
+  first and passes that one borrow, sequentially, to every vector, basis and
+  map operation (KrylovKit has no such argument; Julia arrays carry their
+  device). A caller-held engine (device stream, thread pool, communicator)
+  therefore stays visible and is never stored by krylov. Host vectors use
+  `Context = ()`. `V` and `W` of a rectangular map share one context type.
 - **No internal threads, caches, global state or RNG:** these stay outside
   the algorithm layer. Callers supply starts; invariant subspaces stop
   eigen/SVD iterations without random restarts.
@@ -119,6 +128,19 @@ sign/phase convention differs. See [householder.rs](../src/dense/householder.rs)
 - **Diagonal blocks:** use `(M + Mᴴ)/2` rather than just the upper triangle;
   `max_imag` reports the largest discarded anti-Hermitian entry. This makes
   the treatment of non-Hermiticity explicit.
+- **Scaled residual arithmetic:** KrylovKit squares unscaled norms and
+  inner products. Here each residual vector is scaled by a power of two near
+  its own norm before the Gram matrix is formed, and each weighted
+  combination is evaluated relative to its largest term, so a reported
+  residual norm is accurate (to rounding and the Gram formula's cancellation)
+  whenever it is a normal floating-point number, whatever the sizes of the
+  individual residual vectors. A residual norm above the largest finite
+  number is `Error::NonFiniteIterate`; one below the normal range may be
+  reported as subnormal or zero. In range the scaling is exact, so results
+  equal the unscaled formula bit for bit. Each convergence check costs `b`
+  norms and `b` scaled copies into the block scratch besides KrylovKit's
+  Gram inner products (here `b(b+1)/2`, using symmetry), `b` the current
+  block size.
 - **Exhaustion:** a fully dropped new block stops iteration instead of
   throwing. Zero vectors are dropped even at `qr_tol == 0`, avoiding division
   by zero. After restart the norm is recomputed for the transformed residual

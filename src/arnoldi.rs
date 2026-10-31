@@ -80,6 +80,67 @@ impl Arnoldi {
     }
 }
 
+/// One Arnoldi expansion, shared by [`Fact`] and GMRES: the projection
+/// coefficients of the newest step in `col`, with their scratch.
+pub(crate) struct Step<S: Scalar> {
+    pub(crate) col: Vec<S>,
+    scratch: Vec<S>,
+    orth: Orth,
+}
+
+impl<S: Scalar> Step<S> {
+    pub(crate) fn new(kd: usize, orth: Orth) -> Self {
+        Self {
+            col: Vec::with_capacity(kd),
+            scratch: Vec::with_capacity(kd),
+            orth,
+        }
+    }
+
+    /// Appends `scale·src` (`src` = `x`, or the residual `ws.w` when `None`)
+    /// to the basis and to `ws.v`, then sets `ws.w ← A·v` orthogonalized
+    /// with the coefficients in `col` (`len = basis.len()`). Returns `‖ws.w‖`.
+    pub(crate) fn expand<V, B, A>(
+        &mut self,
+        cx: &mut V::Context,
+        ws: &mut Workspace<V, B>,
+        op: &mut A,
+        x: Option<&V>,
+        scale: S::Real,
+    ) -> Result<S::Real, Error<V::Error>>
+    where
+        V: Vector<Scalar = S>,
+        B: Basis<V>,
+        A: LinearMap<V>,
+    {
+        let ve = Error::Vector;
+        let src = x.unwrap_or(&ws.w);
+        ws.basis.push(cx, src, S::from_real(scale)).map_err(ve)?;
+        ws.v.axpby(cx, S::from_real(scale), src, S::zero())
+            .map_err(ve)?;
+        op.apply_into(cx, &ws.v, &mut ws.w).map_err(ve)?;
+        let k = ws.basis.len();
+        self.col.clear();
+        self.col.resize(k, S::zero());
+        self.scratch.clear();
+        self.scratch.resize(k, S::zero());
+        orthogonalize(
+            cx,
+            &ws.basis,
+            &mut ws.w,
+            &mut self.col,
+            &mut self.scratch,
+            self.orth,
+        )
+        .map_err(ve)?;
+        let beta = ws.w.norm(cx).map_err(ve)?;
+        if !beta.is_finite() || !self.col.iter().all(|c| c.all_finite()) {
+            return Err(Error::NonFiniteIterate);
+        }
+        Ok(beta)
+    }
+}
+
 /// Arnoldi factorization `A·V = V·H + r·e_kᵀ` with the Hessenberg `H` stored
 /// as `(kd+1) × kd` (the subdiagonal of the last column is `‖r‖`). `ws.v` is
 /// the current basis vector and `ws.w` the residual `r`.
@@ -87,10 +148,8 @@ pub(crate) struct Fact<S: Scalar> {
     pub(crate) h: Vec<S>,
     pub(crate) ld: usize,
     pub(crate) k: usize,
-    col: Vec<S>,
-    scratch: Vec<S>,
+    step: Step<S>,
     pub(crate) numops: usize,
-    orth: Orth,
 }
 
 impl<S: Scalar> Fact<S> {
@@ -99,10 +158,8 @@ impl<S: Scalar> Fact<S> {
             h: vec![S::zero(); (kd + 1) * kd],
             ld: kd + 1,
             k: 0,
-            col: Vec::with_capacity(kd),
-            scratch: Vec::with_capacity(kd),
+            step: Step::new(kd, orth),
             numops: 0,
-            orth,
         }
     }
 
@@ -114,6 +171,7 @@ impl<S: Scalar> Fact<S> {
     /// basis and performs one Arnoldi step.
     pub(crate) fn push<V, B, A>(
         &mut self,
+        cx: &mut V::Context,
         ws: &mut Workspace<V, B>,
         op: &mut A,
         x: Option<&V>,
@@ -124,33 +182,12 @@ impl<S: Scalar> Fact<S> {
         B: Basis<V>,
         A: LinearMap<V>,
     {
-        let ve = Error::Vector;
-        let src = x.unwrap_or(&ws.w);
-        ws.basis.push(src, S::from_real(scale)).map_err(ve)?;
-        ws.v.axpby(S::from_real(scale), src, S::zero())
-            .map_err(ve)?;
-        op.apply_into(&ws.v, &mut ws.w).map_err(ve)?;
+        let beta = self.step.expand(cx, ws, op, x, scale)?;
         self.numops += 1;
         let k = ws.basis.len();
-        self.col.clear();
-        self.col.resize(k, S::zero());
-        self.scratch.clear();
-        self.scratch.resize(k, S::zero());
-        orthogonalize(
-            &ws.basis,
-            &mut ws.w,
-            &mut self.col,
-            &mut self.scratch,
-            self.orth,
-        )
-        .map_err(ve)?;
-        let beta = ws.w.norm().map_err(ve)?;
-        if !beta.is_finite() || !self.col.iter().all(|c| c.all_finite()) {
-            return Err(Error::NonFiniteIterate);
-        }
         let j = k - 1;
         self.h[j * self.ld..(j + 1) * self.ld].fill(S::zero());
-        self.h[j * self.ld..j * self.ld + k].copy_from_slice(&self.col);
+        self.h[j * self.ld..j * self.ld + k].copy_from_slice(&self.step.col);
         self.h[k + j * self.ld] = S::from_real(beta);
         self.k = k;
         Ok(())
@@ -183,6 +220,7 @@ fn sort_key<R: RealScalar>(which: Which, l: Complex<R>) -> R {
 
 /// Port of KrylovKit `_schursolve`.
 fn krylov_schur<V, B, A>(
+    cx: &mut V::Context,
     op: &mut A,
     x0: &V,
     howmany: usize,
@@ -223,7 +261,7 @@ where
             krylovdim: kd,
         });
     }
-    let beta0 = x0.norm().map_err(Error::Vector)?;
+    let beta0 = x0.norm(cx).map_err(Error::Vector)?;
     if !beta0.is_finite() {
         return Err(Error::NonFiniteStartVector);
     }
@@ -236,7 +274,7 @@ where
 
     let mut fact = Fact::<V::Scalar>::new(kd, alg.orth);
     ws.basis.truncate(0);
-    fact.push(ws, op, Some(x0), Real::<V>::one() / beta0)?;
+    fact.push(cx, ws, op, Some(x0), Real::<V>::one() / beta0)?;
     let mut numiter = 1;
 
     let mut t = vec![s0; kd * kd];
@@ -289,7 +327,7 @@ where
             }
         }
         if k < kd {
-            fact.push(ws, op, None, Real::<V>::one() / beta)?;
+            fact.push(cx, ws, op, None, Real::<V>::one() / beta)?;
             continue;
         }
         // Shrink: keep (3·krylovdim + 2·converged)/5 Schur vectors, not
@@ -327,11 +365,11 @@ where
         }
         fact.k = keep;
         ws.basis
-            .rotate(MatRef::new(&u[..k * keep], k, keep), keep)
+            .rotate(cx, MatRef::new(&u[..k * keep], k, keep), keep)
             .map_err(Error::Vector)?;
         // The residual direction is unchanged; its new norm is H[keep, keep-1].
         let s = V::Scalar::from_real(fact.normres() / beta);
-        ws.w.axpby(V::Scalar::zero(), &ws.v, s)
+        ws.w.axpby(cx, V::Scalar::zero(), &ws.v, s)
             .map_err(Error::Vector)?;
         numiter += 1;
     }
@@ -353,6 +391,7 @@ where
 /// coefficient matrix `x`, with residual norms `β·|X[k-1, i]|`.
 #[allow(clippy::type_complexity)]
 fn assemble<V, B>(
+    cx: &mut V::Context,
     ws: &mut Workspace<V, B>,
     x0: &V,
     x: &[V::Scalar],
@@ -371,13 +410,14 @@ where
         Vec::with_capacity(n),
     );
     for col in x[..k * n].chunks_exact(k) {
-        let mut v = x0.similar().map_err(ve)?;
+        let mut v = x0.similar(cx).map_err(ve)?;
         ws.basis
-            .combine_into(col, &mut v, V::Scalar::one(), V::Scalar::zero())
+            .combine_into(cx, col, &mut v, V::Scalar::one(), V::Scalar::zero())
             .map_err(ve)?;
         vectors.push(v);
-        let mut r = x0.similar().map_err(ve)?;
-        r.axpby(col[k - 1], &ws.w, V::Scalar::zero()).map_err(ve)?;
+        let mut r = x0.similar(cx).map_err(ve)?;
+        r.axpby(cx, col[k - 1], &ws.w, V::Scalar::zero())
+            .map_err(ve)?;
         residual.push(r);
         normres.push(beta * col[k - 1].modulus());
     }
@@ -450,6 +490,7 @@ fn info<V: Vector>(
 ///   to split a 2×2 block.
 #[allow(clippy::type_complexity)]
 pub fn schursolve<V, B, A>(
+    cx: &mut V::Context,
     op: &mut A,
     x0: &V,
     howmany: usize,
@@ -470,7 +511,7 @@ where
     B: Basis<V>,
     A: LinearMap<V>,
 {
-    let o = krylov_schur(op, x0, howmany, which, alg, ws)?;
+    let o = krylov_schur(cx, op, x0, howmany, which, alg, ws)?;
     let (k, n) = (o.k, n_returned(&o, howmany));
     let mut tt = vec![V::Scalar::zero(); n * n];
     for j in 0..n {
@@ -478,7 +519,7 @@ where
     }
     let mut values = Vec::with_capacity(n);
     schur_eigvals(&tt, n, n, &mut values);
-    let (vectors, residual, normres) = assemble(ws, x0, &o.u, k, n, o.beta)?;
+    let (vectors, residual, normres) = assemble(cx, ws, x0, &o.u, k, n, o.beta)?;
     let info = info(&o, o.converged, residual, normres, Real::<V>::zero());
     Ok((tt, vectors, values, info))
 }
@@ -498,6 +539,7 @@ where
 /// listed on [`schursolve`] apply.
 #[allow(clippy::type_complexity)]
 pub fn arnoldi_eigsolve<V, B, A, R>(
+    cx: &mut V::Context,
     op: &mut A,
     x0: &V,
     howmany: usize,
@@ -512,7 +554,7 @@ where
     B: Basis<V>,
     A: LinearMap<V>,
 {
-    let o = krylov_schur(op, x0, howmany, which, alg, ws)?;
+    let o = krylov_schur(cx, op, x0, howmany, which, alg, ws)?;
     let (k, n) = (o.k, n_returned(&o, howmany));
     let zero = Complex::new(R::zero(), R::zero());
     let mut tt = vec![zero; n * n];
@@ -521,7 +563,7 @@ where
     }
     let values: Vec<Complex<R>> = (0..n).map(|i| tt[i + i * n]).collect();
     let x = eigvec_coefficients(&mut tt, &o.u, k, n)?;
-    let (vectors, residual, normres) = assemble(ws, x0, &x, k, n, o.beta)?;
+    let (vectors, residual, normres) = assemble(cx, ws, x0, &x, k, n, o.beta)?;
     let info = info(&o, o.converged, residual, normres, R::zero());
     Ok((values, vectors, info))
 }
@@ -574,6 +616,7 @@ fn eigvec_coefficients<S: Scalar, E>(
 /// `howmany` it returns what it has.
 #[allow(clippy::type_complexity)]
 pub fn realeigsolve<V, B, A>(
+    cx: &mut V::Context,
     op: &mut A,
     x0: &V,
     howmany: usize,
@@ -587,7 +630,7 @@ where
     B: Basis<V>,
     A: LinearMap<V>,
 {
-    let mut o = krylov_schur(op, x0, howmany, which, alg, ws)?;
+    let mut o = krylov_schur(cx, op, x0, howmany, which, alg, ws)?;
     let k = o.k;
     let tol = V::Scalar::from_f64(alg.tol);
     let zero = V::Scalar::zero();
@@ -632,7 +675,7 @@ where
     }
     let values: Vec<Real<V>> = (0..n).map(|i| tt[i + i * n].re()).collect();
     let x = eigvec_coefficients(&mut tt, &o.u, k, n)?;
-    let (vectors, residual, normres) = assemble(ws, x0, &x, k, n, o.beta)?;
+    let (vectors, residual, normres) = assemble(cx, ws, x0, &x, k, n, o.beta)?;
     let info = info(&o, converged, residual, normres, max_imag);
     Ok((values, vectors, info))
 }

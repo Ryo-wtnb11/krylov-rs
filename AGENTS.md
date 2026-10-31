@@ -17,7 +17,10 @@
   2026-10-17) defines the traits, error type, result semantics and the
   supported scope. Changing a trait or a result semantic is a design decision, not an
   implementation detail; extend traits only through defaulted methods, new
-  traits or defaulted type parameters.
+  traits or defaulted type parameters. The breaking 0.3 execution-context
+  API (`Vector::Context`, `cx: &mut V::Context` on every operation touching
+  vector data) and the required per-column `Basis::{inner_at, axpy_at}`
+  (both approved 2026-10-30) are the amendments to that rule.
 - **Reference.** KrylovKit.jl v0.10.4 is the semantic reference. Record every intentional deviation, with its reason,
   in `docs/krylovkit.md` and on the affected item's rustdoc.
 - **Tests.** A test's expected value is readable from the test: a dense

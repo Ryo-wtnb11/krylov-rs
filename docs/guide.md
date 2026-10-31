@@ -15,9 +15,21 @@ the [storage boundary](../src/traits.rs):
 - `Basis` owns block operations on ordered columns `V = [v₀, …, vₖ₋₁]`:
   projection is `Vᴴx`, combination is `a·V·c + b·y`, and rotation keeps the
   first `keep` columns of `V·Q`. `MatRef` stores columns consecutively.
+  The per-column `inner_at` (`⟨vᵢ, x⟩`) and `axpy_at` (`y ← a·vᵢ + y`) are
+  required too: MGS2 and the Lanczos recurrence call them once per
+  coefficient, so each must cost one vector operation, not a block one.
 - `LinearMap<V, W = V>` writes `A·x` into caller-supplied storage;
-  `AdjointMap<V, W>` also writes `Aᴴ·y`. Domain and codomain share scalar and
-  error types. `FnMut(&V, &mut W) -> Result<(), V::Error>` closures also implement `LinearMap`.
+  `AdjointMap<V, W>` also writes `Aᴴ·y`. Domain and codomain share scalar,
+  error and context types. `FnMut(&mut V::Context, &V, &mut W) -> Result<(), V::Error>`
+  closures also implement `LinearMap`.
+- `Vector::Context` is the caller's execution context (a device engine, a
+  thread pool, a communicator; `()` for host vectors). Every solver,
+  workspace constructor and vector/basis/map operation takes `cx: &mut
+  V::Context`; krylov forwards that one borrow sequentially and never stores
+  it, so a map reaches the engine through `cx` rather than capturing it.
+  Domain and codomain share the context type. A trait-object context
+  `type Context = dyn Engine` means `dyn Engine + 'static`: wrappers take
+  `&mut (dyn Engine + 'static)`, which a locally owned engine coerces to.
 
 There are no backend adapters, internal threads, caches or global state.
 Vector/map implementations own placement and parallelism.
@@ -54,7 +66,7 @@ see [restricted inputs](krylovkit.md#restricted-inputs).
 steps), except for CG where it limits iterations. Tolerances must suit the
 scalar precision.
 
-`Workspace::with_capacity(x, k)` preallocates `k + 3` vectors: `k` basis
+`Workspace::with_capacity(cx, x, k)` preallocates `k + 3` vectors: `k` basis
 slots, one rotation scratch, and operator input/output. Reuse it for the same
 vector space. A custom `Basis` can be supplied through `Workspace::new`.
 
@@ -96,7 +108,7 @@ See [lapack-src](https://github.com/blas-lapack-rs/lapack-src) for providers.
 
 ## Vector contract and distributed use
 
-`Vector::axpby(a, x, b)` with `b == 0` must overwrite `self` without reading
+`Vector::axpby(cx, a, x, b)` with `b == 0` must overwrite `self` without reading
 it: workspace contents can be stale or non-finite. Map destinations likewise
 hold arbitrary previous contents.
 

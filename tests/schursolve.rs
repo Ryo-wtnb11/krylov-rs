@@ -5,8 +5,8 @@ mod common;
 
 use common::*;
 use krylov::{
-    Arnoldi, BlockLanczos, Error, Lanczos, Which, Workspace, arnoldi_eigsolve, block_eigsolve,
-    eigsolve, realeigsolve, schursolve,
+    Arnoldi, BlockLanczos, Error, Lanczos, Orth, Which, Workspace, arnoldi_eigsolve,
+    block_eigsolve, eigsolve, realeigsolve, schursolve,
 };
 use nalgebra::DMatrix;
 use num_complex::{Complex32, Complex64};
@@ -67,8 +67,9 @@ fn run_schur<S: TestScalar>(
 ) -> Run {
     let x0 = to_dvec::<S>(x0);
     let mut op = DenseOp::<S>::new(a);
-    let mut ws = Workspace::with_capacity(&x0, alg.get_krylovdim()).unwrap();
-    let (t, q, vals, info) = schursolve(&mut op, &x0, howmany, which, alg, &mut ws).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &x0, alg.get_krylovdim()).unwrap();
+    let (t, q, vals, info) =
+        schursolve(&mut (), &mut op, &x0, howmany, which, alg, &mut ws).unwrap();
     let n = q.len();
     assert_eq!((t.len(), vals.len(), info.normres.len()), (n * n, n, n));
     assert_eq!(info.numops, op.applications);
@@ -134,8 +135,9 @@ fn run_eig(
 ) -> Run {
     let x0 = to_dvec::<Complex64>(x0);
     let mut op = DenseOp::<Complex64>::new(a);
-    let mut ws = Workspace::with_capacity(&x0, alg.get_krylovdim()).unwrap();
-    let (vals, vecs, info) = arnoldi_eigsolve(&mut op, &x0, howmany, which, alg, &mut ws).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &x0, alg.get_krylovdim()).unwrap();
+    let (vals, vecs, info) =
+        arnoldi_eigsolve(&mut (), &mut op, &x0, howmany, which, alg, &mut ws).unwrap();
     assert_eq!(info.numops, op.applications);
     let vecs: Vec<_> = vecs.iter().map(to_c64).collect();
     let res: Vec<_> = info.residual.iter().map(to_c64).collect();
@@ -158,8 +160,9 @@ fn run_real(
 ) -> Run {
     let x0 = to_dvec::<f64>(x0);
     let mut op = DenseOp::<f64>::new(a);
-    let mut ws = Workspace::with_capacity(&x0, alg.get_krylovdim()).unwrap();
-    let (vals, vecs, info) = realeigsolve(&mut op, &x0, howmany, which, alg, &mut ws).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &x0, alg.get_krylovdim()).unwrap();
+    let (vals, vecs, info) =
+        realeigsolve(&mut (), &mut op, &x0, howmany, which, alg, &mut ws).unwrap();
     assert_eq!(info.numops, op.applications);
     let vals: Vec<Complex64> = vals.iter().map(|&v| Complex64::new(v, 0.0)).collect();
     let vecs: Vec<_> = vecs.iter().map(to_c64).collect();
@@ -294,9 +297,17 @@ fn single_precision_and_complex32() {
     let spec = dense_spectrum(&a);
     let x = to_dvec::<f32>(&x0);
     let mut op = DenseOp::<f32>::new(&a);
-    let mut ws = Workspace::with_capacity(&x, 16).unwrap();
-    let (_, _, vals, info) =
-        schursolve(&mut op, &x, 3, Which::LargestMagnitude, &alg, &mut ws).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &x, 16).unwrap();
+    let (_, _, vals, info) = schursolve(
+        &mut (),
+        &mut op,
+        &x,
+        3,
+        Which::LargestMagnitude,
+        &alg,
+        &mut ws,
+    )
+    .unwrap();
     assert!(info.converged >= 3);
     for v in &vals[..3] {
         let v = Complex64::new(v.re as f64, v.im as f64);
@@ -309,9 +320,9 @@ fn single_precision_and_complex32() {
     let spec = dense_spectrum(&a);
     let x = to_dvec::<Complex32>(&x0);
     let mut op = DenseOp::<Complex32>::new(&a);
-    let mut ws = Workspace::with_capacity(&x, 16).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &x, 16).unwrap();
     let (vals, vecs, info) =
-        arnoldi_eigsolve(&mut op, &x, 2, Which::LargestImag, &alg, &mut ws).unwrap();
+        arnoldi_eigsolve(&mut (), &mut op, &x, 2, Which::LargestImag, &alg, &mut ws).unwrap();
     assert!(info.converged >= 2);
     assert!(vals[0].im >= vals[1].im);
     for (v, r) in vals.iter().zip(&info.normres).take(2) {
@@ -332,16 +343,32 @@ fn allocates_only_the_returned_vectors() {
     let x0 = to_dvec::<Complex64>(&random_vec(&mut g, n, true));
     let alg = Arnoldi::new(12, 100, 1e-10);
     let mut op = DenseOp::<Complex64>::new(&a);
-    let mut ws = Workspace::with_capacity(&x0, 12).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &x0, 12).unwrap();
     for _ in 0..2 {
         let before = similar_calls();
-        let (vals, _, info) =
-            arnoldi_eigsolve(&mut op, &x0, 3, Which::LargestMagnitude, &alg, &mut ws).unwrap();
+        let (vals, _, info) = arnoldi_eigsolve(
+            &mut (),
+            &mut op,
+            &x0,
+            3,
+            Which::LargestMagnitude,
+            &alg,
+            &mut ws,
+        )
+        .unwrap();
         assert!(info.numiter > 1, "must exercise restarts");
         assert_eq!(similar_calls() - before, 2 * vals.len());
         let before = similar_calls();
-        let (_, q, _, _) =
-            schursolve(&mut op, &x0, 3, Which::LargestMagnitude, &alg, &mut ws).unwrap();
+        let (_, q, _, _) = schursolve(
+            &mut (),
+            &mut op,
+            &x0,
+            3,
+            Which::LargestMagnitude,
+            &alg,
+            &mut ws,
+        )
+        .unwrap();
         assert_eq!(similar_calls() - before, 2 * q.len());
     }
     // realeigsolve on a real map with a real spectrum.
@@ -349,11 +376,11 @@ fn allocates_only_the_returned_vectors() {
     let (a, _) = permuted_triangular(&mut g, n);
     let x0 = to_dvec::<f64>(&random_vec(&mut g, n, false));
     let mut op = DenseOp::<f64>::new(&a);
-    let mut ws = Workspace::with_capacity(&x0, 12).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &x0, 12).unwrap();
     for _ in 0..2 {
         let before = similar_calls();
         let (vals, vecs, info) =
-            realeigsolve(&mut op, &x0, 3, Which::LargestReal, &alg, &mut ws).unwrap();
+            realeigsolve(&mut (), &mut op, &x0, 3, Which::LargestReal, &alg, &mut ws).unwrap();
         assert!(info.numiter > 1, "must exercise restarts");
         assert_eq!(vecs.len(), vals.len());
         assert_eq!(similar_calls() - before, 2 * vals.len());
@@ -369,14 +396,14 @@ fn typed_errors() {
     let xr = to_dvec::<f64>(&x0);
     let alg = Arnoldi::new(10, 100, 1e-10);
     let mut op = DenseOp::<f64>::new(&a);
-    let mut ws = Workspace::with_capacity(&xr, 10).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &xr, 10).unwrap();
     for which in [Which::LargestImag, Which::SmallestImag] {
         assert!(matches!(
-            schursolve(&mut op, &xr, 1, which, &alg, &mut ws),
+            schursolve(&mut (), &mut op, &xr, 1, which, &alg, &mut ws),
             Err(Error::InvalidArgument(_))
         ));
         assert!(matches!(
-            realeigsolve(&mut op, &xr, 1, which, &alg, &mut ws),
+            realeigsolve(&mut (), &mut op, &xr, 1, which, &alg, &mut ws),
             Err(Error::InvalidArgument(_))
         ));
         // The Hermitian solvers have real spectra.
@@ -384,6 +411,7 @@ fn typed_errors() {
         let mut hop = DenseOp::<f64>::new(&h);
         assert!(matches!(
             eigsolve(
+                &mut (),
                 &mut hop,
                 &xr,
                 1,
@@ -394,9 +422,10 @@ fn typed_errors() {
             Err(Error::InvalidArgument(_))
         ));
         let block = [to_dvec::<f64>(&x0)];
-        let mut wsb = Workspace::with_capacity(&xr, 10).unwrap();
+        let mut wsb = Workspace::with_capacity(&mut (), &xr, 10).unwrap();
         assert!(matches!(
             block_eigsolve(
+                &mut (),
                 &mut hop,
                 &block,
                 1,
@@ -410,16 +439,42 @@ fn typed_errors() {
     // The largest-magnitude eigenvalues of `outliers` are 3, -2.5, 2 and the
     // pair 1.5 ± 1.2i: asking realeigsolve for four is a complex eigenvalue.
     let alg = Arnoldi::new(20, 100, 1e-10);
-    let mut ws = Workspace::with_capacity(&xr, 20).unwrap();
+    let mut ws = Workspace::with_capacity(&mut (), &xr, 20).unwrap();
     assert_eq!(
-        realeigsolve(&mut op, &xr, 4, Which::LargestMagnitude, &alg, &mut ws).err(),
+        realeigsolve(
+            &mut (),
+            &mut op,
+            &xr,
+            4,
+            Which::LargestMagnitude,
+            &alg,
+            &mut ws
+        )
+        .err(),
         Some(Error::ComplexEigenvalue { index: 3 })
     );
-    let (vals, _, _) =
-        realeigsolve(&mut op, &xr, 3, Which::LargestMagnitude, &alg, &mut ws).unwrap();
+    let (vals, _, _) = realeigsolve(
+        &mut (),
+        &mut op,
+        &xr,
+        3,
+        Which::LargestMagnitude,
+        &alg,
+        &mut ws,
+    )
+    .unwrap();
     assert!((vals[0] - 3.0).abs() < 0.5 && (vals[1] + 2.5).abs() < 0.5);
     assert_eq!(
-        schursolve(&mut op, &xr, 21, Which::LargestMagnitude, &alg, &mut ws).err(),
+        schursolve(
+            &mut (),
+            &mut op,
+            &xr,
+            21,
+            Which::LargestMagnitude,
+            &alg,
+            &mut ws
+        )
+        .err(),
         Some(Error::HowmanyTooLarge {
             howmany: 21,
             krylovdim: 20
@@ -427,21 +482,47 @@ fn typed_errors() {
     );
     let zero = to_dvec::<f64>(&vec![Complex64::new(0.0, 0.0); n]);
     assert_eq!(
-        schursolve(&mut op, &zero, 1, Which::LargestMagnitude, &alg, &mut ws).err(),
+        schursolve(
+            &mut (),
+            &mut op,
+            &zero,
+            1,
+            Which::LargestMagnitude,
+            &alg,
+            &mut ws
+        )
+        .err(),
         Some(Error::ZeroStartVector)
     );
     // A map that returns NaN.
-    let mut nan_op = |_: &DVec<f64>, y: &mut DVec<f64>| {
+    let mut nan_op = |_: &mut (), _: &DVec<f64>, y: &mut DVec<f64>| {
         y.0.fill(f64::NAN);
         Ok(())
     };
     assert_eq!(
-        schursolve(&mut nan_op, &xr, 1, Which::LargestMagnitude, &alg, &mut ws).err(),
+        schursolve(
+            &mut (),
+            &mut nan_op,
+            &xr,
+            1,
+            Which::LargestMagnitude,
+            &alg,
+            &mut ws
+        )
+        .err(),
         Some(Error::NonFiniteIterate)
     );
-    let mut small = Workspace::with_capacity(&xr, 5).unwrap();
+    let mut small = Workspace::with_capacity(&mut (), &xr, 5).unwrap();
     assert!(matches!(
-        schursolve(&mut op, &xr, 1, Which::LargestMagnitude, &alg, &mut small),
+        schursolve(
+            &mut (),
+            &mut op,
+            &xr,
+            1,
+            Which::LargestMagnitude,
+            &alg,
+            &mut small
+        ),
         Err(Error::InsufficientCapacity { .. })
     ));
 }
@@ -479,3 +560,30 @@ fn real_pair_is_completed_and_exhausted_space_returns_what_exists() {
         assert!((v.re - (6 - i) as f64).abs() < 1e-10);
     }
 }
+
+/// Vector work of the Arnoldi expansion (shared with GMRES), pinned per
+/// orthogonalizer: `[inner, norm, axpby, copy_from]` and map applications
+/// for one restarted `schursolve` (n = 40, K = 8, three Krylov subspaces).
+#[test]
+fn arnoldi_vector_operation_counts() {
+    let mut g = SplitMix(84);
+    let n = 40;
+    let a = outliers(&mut g, n, false);
+    let x0 = to_dvec::<f64>(&random_vec(&mut g, n, false));
+    let mut got = Vec::new();
+    for orth in [Orth::Cgs2, Orth::Mgs2] {
+        let mut op = DenseOp::<f64>::new(&a);
+        let mut ws = Workspace::with_capacity(&mut (), &x0, 8).unwrap();
+        let alg = Arnoldi::new(8, 3, 0.0).orth(orth);
+        let before = vector_ops();
+        let info = schursolve(&mut (), &mut op, &x0, 2, Which::LargestReal, &alg, &mut ws)
+            .unwrap()
+            .3;
+        assert_eq!(info.numops, op.applications);
+        let [inner, norm, axpby, copy] = ops_since(before);
+        got.push([inner, norm, axpby, copy, op.applications]);
+    }
+    assert_eq!(got, ARNOLDI_COUNTS);
+}
+
+const ARNOLDI_COUNTS: [[usize; 5]; 2] = [[176, 17, 332, 0, 16], [176, 17, 332, 0, 16]];

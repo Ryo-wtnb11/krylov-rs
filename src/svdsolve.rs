@@ -100,6 +100,7 @@ impl<S: Scalar> Fact<S> {
     /// coefficient of the newest basis vector.
     fn orth<V: Vector<Scalar = S>, B: Basis<V>>(
         &mut self,
+        cx: &mut V::Context,
         basis: &B,
         w: &mut V,
     ) -> Result<(S::Real, S), V::Error> {
@@ -108,9 +109,9 @@ impl<S: Scalar> Fact<S> {
         self.h.resize(k, S::zero());
         self.scratch.clear();
         self.scratch.resize(k, S::zero());
-        orthogonalize(basis, w, &mut self.h, &mut self.scratch, self.orth)?;
+        orthogonalize(cx, basis, w, &mut self.h, &mut self.scratch, self.orth)?;
         let last = self.h.last().copied().unwrap_or(S::zero());
-        Ok((w.norm()?, last))
+        Ok((w.norm(cx)?, last))
     }
 
     /// Appends `u = src/nrm` (`src = None`: the residual `ws_u.w`) and
@@ -120,6 +121,7 @@ impl<S: Scalar> Fact<S> {
     #[allow(clippy::too_many_arguments)]
     fn push_u<V, W, BU, BV, A>(
         &mut self,
+        cx: &mut V::Context,
         op: &mut A,
         ws_u: &mut Workspace<W, BU>,
         ws_v: &mut Workspace<V, BV>,
@@ -129,19 +131,23 @@ impl<S: Scalar> Fact<S> {
     ) -> Result<Option<S::Real>, Error<V::Error>>
     where
         V: Vector<Scalar = S>,
-        W: Vector<Scalar = S, Error = V::Error>,
+        W: Vector<Scalar = S, Error = V::Error, Context = V::Context>,
         BU: Basis<W>,
         BV: Basis<V>,
         A: AdjointMap<V, W>,
     {
         let inv = S::from_real(S::Real::one() / nrm);
         let src = src.unwrap_or(&ws_u.w);
-        ws_u.basis.push(src, inv).map_err(Error::Vector)?;
-        ws_u.v.axpby(inv, src, S::zero()).map_err(Error::Vector)?;
-        op.apply_adjoint_into(&ws_u.v, &mut ws_v.w)
+        ws_u.basis.push(cx, src, inv).map_err(Error::Vector)?;
+        ws_u.v
+            .axpby(cx, inv, src, S::zero())
+            .map_err(Error::Vector)?;
+        op.apply_adjoint_into(cx, &ws_u.v, &mut ws_v.w)
             .map_err(Error::Vector)?;
         self.numops += 1;
-        let (alpha, _) = self.orth(&ws_v.basis, &mut ws_v.w).map_err(Error::Vector)?;
+        let (alpha, _) = self
+            .orth(cx, &ws_v.basis, &mut ws_v.w)
+            .map_err(Error::Vector)?;
         if !alpha.is_finite() {
             return Err(Error::NonFiniteIterate);
         }
@@ -155,6 +161,7 @@ impl<S: Scalar> Fact<S> {
     /// `β = ‖r‖`. Returns the coefficient `⟨u_k, A·v⟩`, which equals `α`.
     fn push_v<V, W, BU, BV, A>(
         &mut self,
+        cx: &mut V::Context,
         op: &mut A,
         ws_u: &mut Workspace<W, BU>,
         ws_v: &mut Workspace<V, BV>,
@@ -162,19 +169,22 @@ impl<S: Scalar> Fact<S> {
     ) -> Result<S, Error<V::Error>>
     where
         V: Vector<Scalar = S>,
-        W: Vector<Scalar = S, Error = V::Error>,
+        W: Vector<Scalar = S, Error = V::Error, Context = V::Context>,
         BU: Basis<W>,
         BV: Basis<V>,
         A: AdjointMap<V, W>,
     {
         let inv = S::from_real(S::Real::one() / alpha);
-        ws_v.basis.push(&ws_v.w, inv).map_err(Error::Vector)?;
+        ws_v.basis.push(cx, &ws_v.w, inv).map_err(Error::Vector)?;
         ws_v.v
-            .axpby(inv, &ws_v.w, S::zero())
+            .axpby(cx, inv, &ws_v.w, S::zero())
             .map_err(Error::Vector)?;
-        op.apply_into(&ws_v.v, &mut ws_u.w).map_err(Error::Vector)?;
+        op.apply_into(cx, &ws_v.v, &mut ws_u.w)
+            .map_err(Error::Vector)?;
         self.numops += 1;
-        let (beta, coupling) = self.orth(&ws_u.basis, &mut ws_u.w).map_err(Error::Vector)?;
+        let (beta, coupling) = self
+            .orth(cx, &ws_u.basis, &mut ws_u.w)
+            .map_err(Error::Vector)?;
         if !beta.is_finite() || !coupling.all_finite() {
             return Err(Error::NonFiniteIterate);
         }
@@ -188,8 +198,9 @@ impl<S: Scalar> Fact<S> {
 /// ([`Which::SmallestReal`]) singular values of `op: V → W` with their left
 /// (`W`) and right (`V`) singular vectors, starting from `x0` in the
 /// codomain. `V` and `W` may be one Rust vector type (the default of
-/// [`AdjointMap`]) or two types with the same scalar and error types, as
-/// KrylovKit's `GKLFactorization{TU, TV}` allows.
+/// [`AdjointMap`]) or two types with the same scalar, error and context
+/// types, as KrylovKit's `GKLFactorization{TU, TV}` allows; both workspaces
+/// and both map directions run on the one `cx`.
 ///
 /// Follows KrylovKit v0.10.4 `svdsolve(A, x₀, howmany, which, ::GKL)`: thick
 /// restart of the Golub–Kahan–Lanczos bidiagonalization, values in
@@ -239,7 +250,9 @@ impl<S: Scalar> Fact<S> {
 /// [`Error::IncompatibleAdjoint`] (KrylovKit: `ArgumentError`; see
 /// [docs/krylovkit.md](https://github.com/Ryo-wtnb11/krylov-rs/blob/main/docs/krylovkit.md)).
 #[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
 pub fn svdsolve<V, W, BU, BV, A>(
+    cx: &mut V::Context,
     op: &mut A,
     x0: &W,
     howmany: usize,
@@ -250,7 +263,7 @@ pub fn svdsolve<V, W, BU, BV, A>(
 ) -> Result<(Vec<Real<V>>, Vec<W>, Vec<V>, ConvergenceInfo<W>), Error<V::Error>>
 where
     V: Vector,
-    W: Vector<Scalar = V::Scalar, Error = V::Error>,
+    W: Vector<Scalar = V::Scalar, Error = V::Error, Context = V::Context>,
     BU: Basis<W>,
     BV: Basis<V>,
     A: AdjointMap<V, W>,
@@ -287,7 +300,7 @@ where
         }
     }
     let tol = Real::<V>::from_f64(alg.tol);
-    let beta0 = x0.norm().map_err(Error::Vector)?;
+    let beta0 = x0.norm(cx).map_err(Error::Vector)?;
     if !beta0.is_finite() {
         return Err(Error::NonFiniteStartVector);
     }
@@ -316,10 +329,10 @@ where
     };
     // KrylovKit `gkl.jl:initialize`, including its check that `A` and `Aᴴ`
     // belong together: ⟨u, A·v⟩ must reproduce α = ‖Aᴴu‖.
-    let Some(alpha) = fact.push_u(op, ws_u, ws_v, Some(x0), beta0, tol)? else {
+    let Some(alpha) = fact.push_u(cx, op, ws_u, ws_v, Some(x0), beta0, tol)? else {
         return Ok((Vec::new(), Vec::new(), Vec::new(), empty(fact.numops)));
     };
-    let coupling = fact.push_v(op, ws_u, ws_v, alpha)?;
+    let coupling = fact.push_v(cx, op, ws_u, ws_v, alpha)?;
     let sqrt_eps = Real::<V>::epsilon().sqrt();
     let mismatch = (coupling - V::Scalar::from_real(alpha)).modulus();
     // α and the coupling are finite here (push_u/push_v reject NaN/Inf),
@@ -394,9 +407,9 @@ where
             }
         }
         if k < kd {
-            match fact.push_u(op, ws_u, ws_v, None, beta, tol)? {
+            match fact.push_u(cx, op, ws_u, ws_v, None, beta, tol)? {
                 Some(alpha) => {
-                    fact.push_v(op, ws_u, ws_v, alpha)?;
+                    fact.push_v(cx, op, ws_u, ws_v, alpha)?;
                 }
                 None => exhausted = true,
             }
@@ -421,16 +434,18 @@ where
             q.clear();
             q.extend(p[..k * keep].iter().map(|&x| V::Scalar::from_real(x)));
             ws_u.basis
-                .rotate(MatRef::new(&q, k, keep), keep)
+                .rotate(cx, MatRef::new(&q, k, keep), keep)
                 .map_err(ve)?;
             q.clear();
             q.extend(y[..k * keep].iter().map(|&x| V::Scalar::from_real(x)));
             ws_v.basis
-                .rotate(MatRef::new(&q, k, keep), keep)
+                .rotate(cx, MatRef::new(&q, k, keep), keep)
                 .map_err(ve)?;
             // The residual direction is unchanged; its new norm is β[keep-1].
             let s = V::Scalar::from_real(fact.beta[keep - 1] / beta);
-            ws_u.w.axpby(V::Scalar::zero(), &ws_u.v, s).map_err(ve)?;
+            ws_u.w
+                .axpby(cx, V::Scalar::zero(), &ws_u.v, s)
+                .map_err(ve)?;
             numiter += 1;
         }
     }
@@ -454,9 +469,9 @@ where
                 .iter()
                 .map(|&x| V::Scalar::from_real(x)),
         );
-        let mut l = x0.similar().map_err(ve)?;
+        let mut l = x0.similar(cx).map_err(ve)?;
         ws_u.basis
-            .combine_into(&q, &mut l, one, V::Scalar::zero())
+            .combine_into(cx, &q, &mut l, one, V::Scalar::zero())
             .map_err(ve)?;
         left.push(l);
         q.clear();
@@ -465,18 +480,18 @@ where
                 .iter()
                 .map(|&x| V::Scalar::from_real(x)),
         );
-        let mut rv = ws_v.v.similar().map_err(ve)?;
+        let mut rv = ws_v.v.similar(cx).map_err(ve)?;
         ws_v.basis
-            .combine_into(&q, &mut rv, one, V::Scalar::zero())
+            .combine_into(cx, &q, &mut rv, one, V::Scalar::zero())
             .map_err(ve)?;
         right.push(rv);
-        let mut res = x0.similar().map_err(ve)?;
+        let mut res = x0.similar(cx).map_err(ve)?;
         let c = if exhausted {
             V::Scalar::zero()
         } else {
             q[k - 1]
         };
-        res.axpby(c, &ws_u.w, V::Scalar::zero()).map_err(ve)?;
+        res.axpby(cx, c, &ws_u.w, V::Scalar::zero()).map_err(ve)?;
         residual.push(res);
     }
     let info = ConvergenceInfo {

@@ -14,6 +14,26 @@ use num_complex::{Complex32, Complex64};
 thread_local! {
     static SIMILAR_CALLS: Cell<usize> = const { Cell::new(0) };
     static INNER_CALLS: Cell<usize> = const { Cell::new(0) };
+    static NORM_CALLS: Cell<usize> = const { Cell::new(0) };
+    static AXPBY_CALLS: Cell<usize> = const { Cell::new(0) };
+    static COPY_CALLS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// `DVec` operation counts on this thread so far: `[inner, norm, axpby,
+/// copy_from]`.
+pub fn vector_ops() -> [usize; 4] {
+    [
+        INNER_CALLS.with(Cell::get),
+        NORM_CALLS.with(Cell::get),
+        AXPBY_CALLS.with(Cell::get),
+        COPY_CALLS.with(Cell::get),
+    ]
+}
+
+/// Componentwise `after - before` of two [`vector_ops`] snapshots.
+pub fn ops_since(before: [usize; 4]) -> [usize; 4] {
+    let after = vector_ops();
+    core::array::from_fn(|i| after[i] - before[i])
 }
 
 /// Number of `similar` calls on this thread so far.
@@ -83,15 +103,17 @@ pub struct DVec<S>(pub Vec<S>);
 impl<S: TestScalar> Vector for DVec<S> {
     type Scalar = S;
     type Error = std::convert::Infallible;
-    fn similar(&self) -> Result<Self, Self::Error> {
+    type Context = ();
+    fn similar(&self, _: &mut ()) -> Result<Self, Self::Error> {
         SIMILAR_CALLS.with(|c| c.set(c.get() + 1));
         Ok(DVec(vec![S::zero(); self.0.len()]))
     }
-    fn copy_from(&mut self, x: &Self) -> Result<(), Self::Error> {
+    fn copy_from(&mut self, _: &mut (), x: &Self) -> Result<(), Self::Error> {
+        COPY_CALLS.with(|c| c.set(c.get() + 1));
         self.0.copy_from_slice(&x.0);
         Ok(())
     }
-    fn inner(&self, y: &Self) -> Result<S, Self::Error> {
+    fn inner(&self, _: &mut (), y: &Self) -> Result<S, Self::Error> {
         INNER_CALLS.with(|c| c.set(c.get() + 1));
         let mut s = S::zero();
         for (a, b) in self.0.iter().zip(&y.0) {
@@ -99,11 +121,13 @@ impl<S: TestScalar> Vector for DVec<S> {
         }
         Ok(s)
     }
-    fn norm(&self) -> Result<S::Real, Self::Error> {
+    fn norm(&self, _: &mut ()) -> Result<S::Real, Self::Error> {
+        NORM_CALLS.with(|c| c.set(c.get() + 1));
         let s: f64 = self.0.iter().map(|a| a.to_c64().norm_sqr()).sum();
         Ok(<S::Real as num_traits::NumCast>::from(s.sqrt()).unwrap())
     }
-    fn axpby(&mut self, a: S, x: &Self, b: S) -> Result<(), Self::Error> {
+    fn axpby(&mut self, _: &mut (), a: S, x: &Self, b: S) -> Result<(), Self::Error> {
+        AXPBY_CALLS.with(|c| c.set(c.get() + 1));
         if b == S::zero() {
             for (s, x) in self.0.iter_mut().zip(&x.0) {
                 *s = a * *x;
@@ -235,7 +259,12 @@ impl<S: TestScalar> DenseOp<S> {
 }
 
 impl<S: TestScalar> krylov::LinearMap<DVec<S>> for DenseOp<S> {
-    fn apply_into(&mut self, x: &DVec<S>, y: &mut DVec<S>) -> Result<(), std::convert::Infallible> {
+    fn apply_into(
+        &mut self,
+        _: &mut (),
+        x: &DVec<S>,
+        y: &mut DVec<S>,
+    ) -> Result<(), std::convert::Infallible> {
         self.applications += 1;
         y.0.fill(S::zero());
         for (j, &xj) in x.0.iter().enumerate() {
@@ -340,26 +369,27 @@ pub struct Naive<S>(pub Vec<S>);
 impl<S: TestScalar> krylov::Vector for Naive<S> {
     type Scalar = S;
     type Error = std::convert::Infallible;
-    fn similar(&self) -> Result<Self, Self::Error> {
+    type Context = ();
+    fn similar(&self, _: &mut ()) -> Result<Self, Self::Error> {
         Ok(Naive(vec![S::zero(); self.0.len()]))
     }
-    fn copy_from(&mut self, x: &Self) -> Result<(), Self::Error> {
+    fn copy_from(&mut self, _: &mut (), x: &Self) -> Result<(), Self::Error> {
         self.0.copy_from_slice(&x.0);
         Ok(())
     }
-    fn inner(&self, y: &Self) -> Result<S, Self::Error> {
+    fn inner(&self, _: &mut (), y: &Self) -> Result<S, Self::Error> {
         Ok(self
             .0
             .iter()
             .zip(&y.0)
             .fold(S::zero(), |s, (a, b)| s + a.cj() * *b))
     }
-    fn norm(&self) -> Result<S::Real, Self::Error> {
+    fn norm(&self, _: &mut ()) -> Result<S::Real, Self::Error> {
         // ⟨x, x⟩ overflows in `S` itself; only the result is widened.
-        let s = self.inner(self)?.to_c64().re.sqrt();
+        let s = self.inner(&mut (), self)?.to_c64().re.sqrt();
         Ok(<S::Real as num_traits::NumCast>::from(s).unwrap())
     }
-    fn axpby(&mut self, a: S, x: &Self, b: S) -> Result<(), Self::Error> {
+    fn axpby(&mut self, _: &mut (), a: S, x: &Self, b: S) -> Result<(), Self::Error> {
         for (s, x) in self.0.iter_mut().zip(&x.0) {
             *s = a * *x + b * *s;
         }

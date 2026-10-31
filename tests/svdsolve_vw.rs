@@ -18,20 +18,21 @@ struct CoVec<S>(DVec<S>);
 impl<S: TestScalar> Vector for CoVec<S> {
     type Scalar = S;
     type Error = std::convert::Infallible;
-    fn similar(&self) -> Result<Self, Self::Error> {
-        Ok(CoVec(self.0.similar()?))
+    type Context = ();
+    fn similar(&self, cx: &mut ()) -> Result<Self, Self::Error> {
+        Ok(CoVec(self.0.similar(cx)?))
     }
-    fn copy_from(&mut self, x: &Self) -> Result<(), Self::Error> {
-        self.0.copy_from(&x.0)
+    fn copy_from(&mut self, cx: &mut (), x: &Self) -> Result<(), Self::Error> {
+        self.0.copy_from(cx, &x.0)
     }
-    fn inner(&self, y: &Self) -> Result<S, Self::Error> {
-        self.0.inner(&y.0)
+    fn inner(&self, cx: &mut (), y: &Self) -> Result<S, Self::Error> {
+        self.0.inner(cx, &y.0)
     }
-    fn norm(&self) -> Result<S::Real, Self::Error> {
-        self.0.norm()
+    fn norm(&self, cx: &mut ()) -> Result<S::Real, Self::Error> {
+        self.0.norm(cx)
     }
-    fn axpby(&mut self, a: S, x: &Self, b: S) -> Result<(), Self::Error> {
-        self.0.axpby(a, &x.0, b)
+    fn axpby(&mut self, cx: &mut (), a: S, x: &Self, b: S) -> Result<(), Self::Error> {
+        self.0.axpby(cx, a, &x.0, b)
     }
 }
 
@@ -64,6 +65,7 @@ impl<S: TestScalar> Rect<S> {
 impl<S: TestScalar> LinearMap<DVec<S>, CoVec<S>> for Rect<S> {
     fn apply_into(
         &mut self,
+        _: &mut (),
         x: &DVec<S>,
         y: &mut CoVec<S>,
     ) -> Result<(), std::convert::Infallible> {
@@ -75,6 +77,7 @@ impl<S: TestScalar> LinearMap<DVec<S>, CoVec<S>> for Rect<S> {
 impl<S: TestScalar> AdjointMap<DVec<S>, CoVec<S>> for Rect<S> {
     fn apply_adjoint_into(
         &mut self,
+        _: &mut (),
         y: &CoVec<S>,
         x: &mut DVec<S>,
     ) -> Result<(), std::convert::Infallible> {
@@ -84,7 +87,12 @@ impl<S: TestScalar> AdjointMap<DVec<S>, CoVec<S>> for Rect<S> {
 }
 
 impl<S: TestScalar> LinearMap<DVec<S>> for Rect<S> {
-    fn apply_into(&mut self, x: &DVec<S>, y: &mut DVec<S>) -> Result<(), std::convert::Infallible> {
+    fn apply_into(
+        &mut self,
+        _: &mut (),
+        x: &DVec<S>,
+        y: &mut DVec<S>,
+    ) -> Result<(), std::convert::Infallible> {
         apply(&self.a, x, y);
         Ok(())
     }
@@ -93,6 +101,7 @@ impl<S: TestScalar> LinearMap<DVec<S>> for Rect<S> {
 impl<S: TestScalar> AdjointMap<DVec<S>> for Rect<S> {
     fn apply_adjoint_into(
         &mut self,
+        _: &mut (),
         y: &DVec<S>,
         x: &mut DVec<S>,
     ) -> Result<(), std::convert::Infallible> {
@@ -127,10 +136,11 @@ fn run_vw<S: TestScalar>(
     let x0 = CoVec(to_dvec::<S>(x0));
     let domain = to_dvec::<S>(&vec![Complex64::default(); n]);
     let kd = alg.get_krylovdim();
-    let mut ws_u = Workspace::with_capacity(&x0, kd).unwrap();
-    let mut ws_v = Workspace::with_capacity(&domain, kd).unwrap();
+    let mut ws_u = Workspace::with_capacity(&mut (), &x0, kd).unwrap();
+    let mut ws_v = Workspace::with_capacity(&mut (), &domain, kd).unwrap();
     let mut op = Rect::<S>::new(a);
-    let (s, l, r, info) = svdsolve(&mut op, &x0, 2, which, alg, &mut ws_u, &mut ws_v).unwrap();
+    let (s, l, r, info) =
+        svdsolve(&mut (), &mut op, &x0, 2, which, alg, &mut ws_u, &mut ws_v).unwrap();
     Flat {
         values: s.iter().map(|&x| to_f64(x)).collect(),
         normres: info.normres.iter().map(|&x| to_f64(x)).collect(),
@@ -152,10 +162,11 @@ fn run_vv<S: TestScalar>(
     let x0 = to_dvec::<S>(x0);
     let domain = to_dvec::<S>(&vec![Complex64::default(); n]);
     let kd = alg.get_krylovdim();
-    let mut ws_u = Workspace::with_capacity(&x0, kd).unwrap();
-    let mut ws_v = Workspace::with_capacity(&domain, kd).unwrap();
+    let mut ws_u = Workspace::with_capacity(&mut (), &x0, kd).unwrap();
+    let mut ws_v = Workspace::with_capacity(&mut (), &domain, kd).unwrap();
     let mut op = Rect::<S>::new(a);
-    let (s, l, r, info) = svdsolve(&mut op, &x0, 2, which, alg, &mut ws_u, &mut ws_v).unwrap();
+    let (s, l, r, info) =
+        svdsolve(&mut (), &mut op, &x0, 2, which, alg, &mut ws_u, &mut ws_v).unwrap();
     Flat {
         values: s.iter().map(|&x| to_f64(x)).collect(),
         normres: info.normres.iter().map(|&x| to_f64(x)).collect(),
@@ -226,12 +237,13 @@ fn warm_call_with_distinct_types_allocates_only_the_returned_triplets() {
     let x0 = CoVec(to_dvec::<f64>(&random_vec(&mut g, 30, false)));
     let domain = to_dvec::<f64>(&vec![Complex64::default(); 20]);
     let alg = Gkl::new(8, 100, 1e-10);
-    let mut ws_u = Workspace::with_capacity(&x0, 8).unwrap();
-    let mut ws_v = Workspace::with_capacity(&domain, 8).unwrap();
+    let mut ws_u = Workspace::with_capacity(&mut (), &x0, 8).unwrap();
+    let mut ws_v = Workspace::with_capacity(&mut (), &domain, 8).unwrap();
     let mut op = Rect::<f64>::new(&a);
     for _ in 0..2 {
         let before = similar_calls();
         let (vals, _, _, info) = svdsolve(
+            &mut (),
             &mut op,
             &x0,
             2,

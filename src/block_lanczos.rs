@@ -8,7 +8,7 @@ use crate::eigsolve::{ConvergenceInfo, Which, sort_eig};
 use crate::error::Error;
 use crate::orth::{Orth, orthogonalize};
 use crate::scalar::sealed::{Ops as _, RealOps as _};
-use crate::scalar::{MatRef, Real, Scalar};
+use crate::scalar::{MatRef, Real, RealScalar, Scalar};
 use crate::traits::{Basis, LinearMap, Vector, Workspace};
 
 /// Block Lanczos settings for Hermitian maps with (nearly) repeated
@@ -106,7 +106,14 @@ impl BlockLanczos {
 ///
 /// The workspace basis needs capacity `>= alg.get_krylovdim() + x0.len() - 1`;
 /// its operator vectors are unused. A call allocates `2·x0.len()` scratch
-/// vectors plus the returned eigenvectors and residuals.
+/// vectors plus the returned eigenvectors and residuals. Each convergence
+/// check of a residual block of size `b` costs `b` norms, `b` scaled copies
+/// and `b(b+1)/2` inner products: each residual vector is scaled by a power
+/// of two near its own norm, so a reported residual norm is accurate (to
+/// rounding and the Gram formula's cancellation) whenever it is a normal
+/// floating-point number, even where squares of the
+/// residual norms leave the range. A residual norm above the largest finite
+/// number is [`Error::NonFiniteIterate`].
 ///
 /// Differs from KrylovKit (see [docs/krylovkit.md](https://github.com/Ryo-wtnb11/krylov-rs/blob/main/docs/krylovkit.md)):
 /// - [`ConvergenceInfo::numops`] is one lower, because KrylovKit's type-probe
@@ -121,6 +128,7 @@ impl BlockLanczos {
 ///   block (KrylovKit keeps the pre-restart norm).
 #[allow(clippy::type_complexity)]
 pub fn block_eigsolve<V, B, A>(
+    cx: &mut V::Context,
     op: &mut A,
     x0: &[V],
     howmany: usize,
@@ -169,7 +177,7 @@ where
         });
     }
     for xi in x0 {
-        if !xi.norm().map_err(Error::Vector)?.is_finite() {
+        if !xi.norm(cx).map_err(Error::Vector)?.is_finite() {
             return Err(Error::NonFiniteStartVector);
         }
     }
@@ -178,8 +186,8 @@ where
     let szero = V::Scalar::zero();
 
     let mut st = State {
-        x: new_block(&x0[0], bs0).map_err(Error::Vector)?,
-        r: new_block(&x0[0], bs0).map_err(Error::Vector)?,
+        x: new_block(cx, &x0[0], bs0).map_err(Error::Vector)?,
+        r: new_block(cx, &x0[0], bs0).map_err(Error::Vector)?,
         dummy: &x0[0],
         hm: vec![szero; kmax * kmax],
         ldh: kmax,
@@ -192,28 +200,30 @@ where
         max_imag: zero,
         qr_tol: Real::<V>::from_f64(alg.qr_tol),
         orth: alg.orth,
+        rn: vec![zero; bs0],
+        rexp: vec![0; bs0],
     };
     for (xi, x0i) in st.x.iter_mut().zip(x0) {
-        xi.copy_from(x0i).map_err(Error::Vector)?;
+        xi.copy_from(cx, x0i).map_err(Error::Vector)?;
     }
     let (nb, _) =
-        block_qr(&mut st.x, st.dummy, st.qr_tol, &mut st.bq, bs0).map_err(Error::Vector)?;
+        block_qr(cx, &mut st.x, st.dummy, st.qr_tol, &mut st.bq, bs0).map_err(Error::Vector)?;
     if nb == 0 {
         return Err(Error::ZeroStartVector);
     }
     ws.basis.truncate(0);
-    st.recurrence(op, ws, nb)?;
-    let mut norm_r = frobenius(&st.r[..st.rs]).map_err(Error::Vector)?;
+    st.recurrence(cx, op, ws, nb)?;
+    let mut norm_r = st.residual_norm(cx)?;
 
     let ld = kmax;
     let mut d = vec![zero; kmax];
-    let mut tmp = vec![szero; kmax * kmax];
     let mut perm = Vec::with_capacity(kmax);
     let mut a = vec![szero; kmax * kmax];
     let mut u = vec![szero; kmax * kmax];
     let mut xs = vec![szero; kmax];
     let mut lw = Work::default();
     let mut gram = vec![szero; bs0 * bs0];
+    let mut wbuf = vec![szero; bs0];
     let mut normres = vec![zero; kmax];
     let mut hh = vec![szero; (kmax + bs0) * kmax];
     let mut col = vec![szero; bs0];
@@ -231,17 +241,13 @@ where
             }
             V::Scalar::heig(&mut a[..k * k], k, &mut d[..k], &mut u[..k * k], &mut lw)
                 .map_err(|()| Error::DenseNoConvergence)?;
-            sort_eig(which, &mut d[..k], &mut u[..k * k], &mut perm, &mut tmp);
+            sort_eig(which, &mut d[..k], &mut u[..k * k], &mut perm);
             let rs = st.rs;
-            for c in 0..rs {
-                for i in 0..=c {
-                    let g = st.r[i].inner(&st.r[c]).map_err(Error::Vector)?;
-                    gram[i + c * rs] = g;
-                    gram[c + i * rs] = g.conj();
-                }
-            }
+            st.residual_gram(cx, &mut gram[..rs * rs])?;
+            let (g, e, w) = (&gram[..rs * rs], &st.rexp[..rs], &mut wbuf[..rs]);
             for (i, nr) in normres[..k].iter_mut().enumerate() {
-                *nr = quad(&gram[..rs * rs], &u[i * k + k - rs..(i + 1) * k]);
+                let c = &u[i * k + k - rs..(i + 1) * k];
+                *nr = weighted_norm(g, e, c, w).ok_or(Error::NonFiniteIterate)?;
             }
             converged = normres[..k].iter().take_while(|&&x| x <= tol).count();
             if converged >= howmany || norm_r <= tol || exhausted {
@@ -249,9 +255,9 @@ where
             }
         }
         if k < kd {
-            exhausted = !st.expand(op, ws)?;
+            exhausted = !st.expand(cx, op, ws)?;
             if !exhausted {
-                norm_r = frobenius(&st.r[..st.rs]).map_err(Error::Vector)?;
+                norm_r = st.residual_norm(cx)?;
             }
             continue;
         }
@@ -278,31 +284,33 @@ where
             }
         }
         ws.basis
-            .rotate(MatRef::new(&u[..k * keep], k, keep), keep)
+            .rotate(cx, MatRef::new(&u[..k * keep], k, keep), keep)
             .map_err(Error::Vector)?;
         // New residual R·C, C the upper-triangular coupling corner; its norm
-        // follows from the Gram matrix without further reductions.
+        // follows from the (scaled) Gram matrix without further reductions.
         let rs = st.rs;
         let corner = |i: usize, l: usize| hb[(keep + bs0 - rs + i) + (keep - rs + l) * ldk];
-        let mut nr2 = zero;
         let col = &mut col[..rs];
         for l in (0..rs).rev() {
             for (i, ci) in col.iter_mut().enumerate() {
                 *ci = if i <= l { corner(i, l) } else { szero };
             }
-            let q = quad(&gram[..rs * rs], col);
-            nr2 += q * q;
+            st.rn[l] = weighted_norm(&gram[..rs * rs], &st.rexp[..rs], col, &mut wbuf[..rs])
+                .ok_or(Error::NonFiniteIterate)?;
             let (head, tail) = st.r.split_at_mut(l);
             tail[0]
-                .axpby(szero, st.dummy, corner(l, l))
+                .axpby(cx, szero, st.dummy, corner(l, l))
                 .map_err(Error::Vector)?;
             for (i, ri) in head.iter().enumerate() {
                 tail[0]
-                    .axpby(corner(i, l), ri, V::Scalar::one())
+                    .axpby(cx, corner(i, l), ri, V::Scalar::one())
                     .map_err(Error::Vector)?;
             }
         }
-        norm_r = nr2.sqrt();
+        norm_r = scaled_norm(&st.rn[..rs]);
+        if !norm_r.is_finite() {
+            return Err(Error::NonFiniteIterate);
+        }
         numiter += 1;
     }
 
@@ -317,15 +325,16 @@ where
     let mut residual = Vec::with_capacity(nret);
     for i in 0..nret {
         let ui = &u[i * k..(i + 1) * k];
-        let mut x = x0[0].similar().map_err(Error::Vector)?;
+        let mut x = x0[0].similar(cx).map_err(Error::Vector)?;
         ws.basis
-            .combine_into(ui, &mut x, V::Scalar::one(), szero)
+            .combine_into(cx, ui, &mut x, V::Scalar::one(), szero)
             .map_err(Error::Vector)?;
         vectors.push(x);
-        let mut res = x0[0].similar().map_err(Error::Vector)?;
+        let mut res = x0[0].similar(cx).map_err(Error::Vector)?;
         for (j, rj) in st.r[..rs].iter().enumerate() {
             let b = if j == 0 { szero } else { V::Scalar::one() };
-            res.axpby(ui[k - rs + j], rj, b).map_err(Error::Vector)?;
+            res.axpby(cx, ui[k - rs + j], rj, b)
+                .map_err(Error::Vector)?;
         }
         residual.push(res);
     }
@@ -362,23 +371,80 @@ struct State<'a, V: Vector> {
     max_imag: Real<V>,
     qr_tol: Real<V>,
     orth: Orth,
+    /// Norms of the residual block's vectors.
+    rn: Vec<Real<V>>,
+    /// `⌊log₂ ‖rᵢ‖⌋` (at least that of the smallest normal number) of the
+    /// residual vectors at the last convergence check.
+    rexp: Vec<i32>,
 }
 
 impl<V: Vector> State<'_, V> {
+    /// Frobenius norm of the residual block from its vector norms
+    /// ([`scaled_norm`]); a non-finite result is `NonFiniteIterate`.
+    fn residual_norm(&mut self, cx: &mut V::Context) -> Result<Real<V>, Error<V::Error>> {
+        let rn = &mut self.rn[..self.rs];
+        for (n, ri) in rn.iter_mut().zip(&self.r) {
+            *n = ri.norm(cx).map_err(Error::Vector)?;
+        }
+        let norm = scaled_norm(rn);
+        if !norm.is_finite() {
+            return Err(Error::NonFiniteIterate);
+        }
+        Ok(norm)
+    }
+
+    /// The Gram matrix `⟨r̂ᵢ, r̂ⱼ⟩` of the residual vectors each scaled to
+    /// `r̂ᵢ = 2^{-eᵢ}·rᵢ`, `eᵢ = ⌊log₂ ‖rᵢ‖⌋` (stored in `rexp`), into `gram`
+    /// (`rs × rs`). The scaled copies go into the next-block scratch `x`.
+    /// Every entry has modulus at most 4, whatever the columns' sizes, and
+    /// [`weighted_norm`] restores each column's own scale. Costs `rs` norms
+    /// and `rs` scaled copies besides the `rs(rs+1)/2` inner products.
+    fn residual_gram(
+        &mut self,
+        cx: &mut V::Context,
+        gram: &mut [V::Scalar],
+    ) -> Result<(), Error<V::Error>> {
+        let ve = Error::Vector;
+        let rs = self.rs;
+        let min = Real::<V>::min_positive_value();
+        for ((xi, ri), ei) in self.x.iter_mut().zip(&self.r[..rs]).zip(&mut self.rexp) {
+            let n = ri.norm(cx).map_err(ve)?;
+            if !n.is_finite() {
+                return Err(Error::NonFiniteIterate);
+            }
+            *ei = ilogb(n.max(min));
+            let inv = V::Scalar::from_real(ldexp(Real::<V>::one(), -*ei));
+            xi.axpby(cx, inv, ri, V::Scalar::zero()).map_err(ve)?;
+        }
+        for c in 0..rs {
+            for i in 0..=c {
+                let g = self.x[i].inner(cx, &self.x[c]).map_err(ve)?;
+                gram[i + c * rs] = g;
+                gram[c + i * rs] = g.conj();
+            }
+        }
+        if !gram.iter().all(|g| g.all_finite()) {
+            return Err(Error::NonFiniteIterate);
+        }
+        Ok(())
+    }
+
     /// Port of KrylovKit `expand!(::BlockLanczosIterator, …)`: QR of the
     /// residual into the next block, `B`, then [`recurrence`](Self::recurrence).
     /// Returns `false` (nothing changed) when every vector is dropped.
     fn expand<B: Basis<V>, A: LinearMap<V>>(
         &mut self,
+        cx: &mut V::Context,
         op: &mut A,
         ws: &mut Workspace<V, B>,
     ) -> Result<bool, Error<V::Error>> {
         let ve = Error::Vector;
         let (rs, ldb) = (self.rs, self.x.len());
         for (xi, ri) in self.x.iter_mut().zip(&self.r[..rs]) {
-            xi.copy_from(ri).map_err(ve)?;
+            xi.copy_from(cx, ri).map_err(ve)?;
         }
         let (mut nb, drift) = block_qr(
+            cx,
             &mut self.x[..rs],
             self.dummy,
             self.qr_tol,
@@ -394,9 +460,11 @@ impl<V: Vector> State<'_, V> {
                 self.h.resize(ws.basis.len(), V::Scalar::zero());
                 self.s.clear();
                 self.s.resize(ws.basis.len(), V::Scalar::zero());
-                orthogonalize(&ws.basis, xi, &mut self.h, &mut self.s, self.orth).map_err(ve)?;
+                orthogonalize(cx, &ws.basis, xi, &mut self.h, &mut self.s, self.orth)
+                    .map_err(ve)?;
             }
             nb = block_qr(
+                cx,
                 &mut self.x[..nb],
                 self.dummy,
                 self.qr_tol,
@@ -407,7 +475,7 @@ impl<V: Vector> State<'_, V> {
             .0;
             for c in 0..rs {
                 for a in 0..nb {
-                    self.bq[a + c * ldb] = self.x[a].inner(&self.r[c]).map_err(ve)?;
+                    self.bq[a + c * ldb] = self.x[a].inner(cx, &self.r[c]).map_err(ve)?;
                 }
             }
         }
@@ -423,7 +491,7 @@ impl<V: Vector> State<'_, V> {
                 self.hm[(k - rs + c) + (k + a) * ld] = b.conj();
             }
         }
-        self.recurrence(op, ws, nb)?;
+        self.recurrence(cx, op, ws, nb)?;
         Ok(true)
     }
 
@@ -432,6 +500,7 @@ impl<V: Vector> State<'_, V> {
     /// diagonal block `M` of `H`.
     fn recurrence<B: Basis<V>, A: LinearMap<V>>(
         &mut self,
+        cx: &mut V::Context,
         op: &mut A,
         ws: &mut Workspace<V, B>,
         nb: usize,
@@ -439,17 +508,17 @@ impl<V: Vector> State<'_, V> {
         let ve = Error::Vector;
         let k0 = ws.basis.len();
         for xi in &self.x[..nb] {
-            ws.basis.push(xi, V::Scalar::one()).map_err(ve)?;
+            ws.basis.push(cx, xi, V::Scalar::one()).map_err(ve)?;
         }
         let k = k0 + nb;
         for (i, (xi, ri)) in self.x[..nb].iter().zip(&mut self.r[..nb]).enumerate() {
-            op.apply_into(xi, ri).map_err(ve)?;
+            op.apply_into(cx, xi, ri).map_err(ve)?;
             self.numops += 1;
             self.h.clear();
             self.h.resize(k, V::Scalar::zero());
             self.s.clear();
             self.s.resize(k, V::Scalar::zero());
-            orthogonalize(&ws.basis, ri, &mut self.h, &mut self.s, self.orth).map_err(ve)?;
+            orthogonalize(cx, &ws.basis, ri, &mut self.h, &mut self.s, self.orth).map_err(ve)?;
             if !self.h.iter().all(|c| c.all_finite()) {
                 return Err(Error::NonFiniteIterate);
             }
@@ -472,8 +541,8 @@ impl<V: Vector> State<'_, V> {
     }
 }
 
-fn new_block<V: Vector>(x: &V, n: usize) -> Result<Vec<V>, V::Error> {
-    (0..n).map(|_| x.similar()).collect()
+fn new_block<V: Vector>(cx: &mut V::Context, x: &V, n: usize) -> Result<Vec<V>, V::Error> {
+    (0..n).map(|_| x.similar(cx)).collect()
 }
 
 /// In-place QR of the block `x` by modified Gram–Schmidt with DGKS
@@ -483,6 +552,7 @@ fn new_block<V: Vector>(x: &V, n: usize) -> Result<Vec<V>, V::Error> {
 /// dimension `ldb`) receives the corresponding rows of the R factor.
 /// Returns `(nb, drift)`, `drift` when DGKS was needed.
 fn block_qr<V: Vector>(
+    cx: &mut V::Context,
     x: &mut [V],
     dummy: &V,
     tol: Real<V>,
@@ -500,19 +570,19 @@ fn block_qr<V: Vector>(
         let (q, rest) = x.split_at_mut(nb);
         let xj = &mut rest[0];
         for (i, qi) in q.iter().enumerate() {
-            let c = qi.inner(xj)?;
+            let c = qi.inner(cx, xj)?;
             b[i + j * ldb] = c;
-            xj.axpby(-c, qi, one)?;
+            xj.axpby(cx, -c, qi, one)?;
         }
-        let mut beta = xj.norm()?;
+        let mut beta = xj.norm(cx)?;
         if j > 0 && tol < beta && beta < hundred * tol {
             drift = true;
             for (i, qi) in q.iter().enumerate() {
-                let c = qi.inner(xj)?;
+                let c = qi.inner(cx, xj)?;
                 b[i + j * ldb] += c;
-                xj.axpby(-c, qi, one)?;
+                xj.axpby(cx, -c, qi, one)?;
             }
-            beta = xj.norm()?;
+            beta = xj.norm(cx)?;
         }
         // `β > 0` keeps `qr_tol == 0` from normalizing a zero vector.
         let kept = if j == 0 {
@@ -522,15 +592,21 @@ fn block_qr<V: Vector>(
         };
         if kept {
             b[nb + j * ldb] = V::Scalar::from_real(beta);
-            xj.axpby(V::Scalar::zero(), dummy, V::Scalar::from_real(beta.recip()))?;
+            xj.axpby(
+                cx,
+                V::Scalar::zero(),
+                dummy,
+                V::Scalar::from_real(beta.recip()),
+            )?;
             nb += 1;
         }
     }
     Ok((nb, drift))
 }
 
-/// `sqrt(max(Re cᴴ·G·c, 0))`.
-fn quad<S: Scalar>(g: &[S], c: &[S]) -> S::Real {
+/// `sqrt(max(Re cᴴ·G·c, 0))`, or `None` when the form is not finite (the
+/// clamp only absorbs rounding below zero; it must not turn NaN into 0).
+fn quad<S: Scalar>(g: &[S], c: &[S]) -> Option<S::Real> {
     let n = c.len();
     let mut acc = S::zero();
     for (j, &cj) in c.iter().enumerate() {
@@ -540,15 +616,74 @@ fn quad<S: Scalar>(g: &[S], c: &[S]) -> S::Real {
         }
         acc += gc * cj;
     }
-    acc.re().max(S::Real::zero()).sqrt()
+    let re = acc.re();
+    re.is_finite().then(|| re.max(S::Real::zero()).sqrt())
 }
 
-/// Frobenius norm of a block.
-fn frobenius<V: Vector>(r: &[V]) -> Result<Real<V>, V::Error> {
-    let mut s = Real::<V>::zero();
-    for ri in r {
-        let n = ri.norm()?;
-        s += n * n;
+/// `‖R·c‖` for the residual block `R` given by its scaled Gram matrix `g`
+/// and column exponents `e` ([`State::residual_gram`]), with `w` scratch of
+/// `c.len()`. Each term `cᵢ·2^{eᵢ}` is formed relative to the largest one,
+/// `2^top`, so only contributions below `2^{top}` times the smallest
+/// subnormal are lost; `None` when the result is not finite. Where nothing
+/// leaves the normal range the scalings are exact and the result equals
+/// `√(cᴴ·Rᴴ·R·c)` evaluated unscaled, bit for bit.
+fn weighted_norm<S: Scalar>(g: &[S], e: &[i32], c: &[S], w: &mut [S]) -> Option<S::Real> {
+    let mut top = None;
+    for (&ci, &ei) in c.iter().zip(e) {
+        let m = ci.modulus();
+        if !m.is_finite() {
+            return None;
+        }
+        if m != S::Real::zero() {
+            let t = ei + ilogb(m);
+            top = Some(top.map_or(t, |x: i32| x.max(t)));
+        }
     }
-    Ok(s.sqrt())
+    let Some(top) = top else {
+        return Some(S::Real::zero());
+    };
+    for ((wi, &ci), &ei) in w.iter_mut().zip(c).zip(e) {
+        *wi = ldexp(ci, ei - top);
+    }
+    let q = ldexp(quad(g, w)?, top);
+    q.is_finite().then_some(q)
+}
+
+/// `√Σxᵢ²` of non-negative `xs`, formed relative to a power of two near the
+/// largest so that no square under- or overflows; in range it equals the
+/// unscaled sum exactly. Non-finite input propagates.
+fn scaled_norm<R: RealScalar>(xs: &[R]) -> R {
+    let mut big = R::zero();
+    for &x in xs {
+        if !x.is_finite() {
+            return x;
+        }
+        big = big.max(x);
+    }
+    let e = ilogb(big.max(R::min_positive_value()));
+    let inv = ldexp(R::one(), -e);
+    let ss = xs.iter().fold(R::zero(), |s, &x| s + (x * inv) * (x * inv));
+    ldexp(ss.sqrt(), e)
+}
+
+/// `⌊log₂ x⌋` for finite `x > 0`, subnormals included.
+fn ilogb<R: RealScalar>(x: R) -> i32 {
+    let (m, e, _) = x.integer_decode();
+    i32::from(e) + 63 - m.leading_zeros() as i32
+}
+
+/// `x·2ᵉ`, in factors of at most `2^±60` (representable even in `f32`), so
+/// the result is exact whenever it is a normal number.
+fn ldexp<S: Scalar>(mut x: S, mut e: i32) -> S {
+    const STEP: i32 = 60;
+    let two = S::Real::from_f64(2.0);
+    while e > STEP {
+        x = x.mul_real(two.powi(STEP));
+        e -= STEP;
+    }
+    while e < -STEP {
+        x = x.mul_real(two.powi(-STEP));
+        e += STEP;
+    }
+    x.mul_real(two.powi(e))
 }
