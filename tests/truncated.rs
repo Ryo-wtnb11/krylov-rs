@@ -174,6 +174,12 @@ impl<S: TestScalar> LinearMap<LowRank<S>> for KronSum {
 const N: usize = 32;
 const KD: usize = 10;
 const TOL: f64 = 1e-8;
+/// Truncation adds a relative error `τ` in every rank-growing operation,
+/// which the solver's own estimate does not see, so the result is accurate
+/// to a small multiple of `tol + τ` rather than to `tol` (KIOPS-TT's
+/// accuracy model, arXiv:2607.11293). A run whose error exceeds
+/// `ACCURACY_MULTIPLE·2·TOL` misses what the `τ ≤ tol` runs meet.
+const ACCURACY_MULTIPLE: f64 = 5.0;
 
 /// Scaled 1D Laplacian `c·tridiag(1, −2, 1)` plus an optional advection
 /// `d·(upper − lower)`, which makes `L` (and the map) non-normal.
@@ -277,7 +283,7 @@ fn truncation_bounds_the_rank_of_a_low_rank_flow() {
         let mut g = SplitMix(81);
         for r in both(&mut g, &l, 1, tau) {
             assert_eq!(r.converged, 1);
-            assert!(r.err <= TOL, "τ = {tau}: error {}", r.err);
+            within(r.err, TOL, &format!("τ = {tau}"));
             assert!(r.max_rank <= N / 2, "τ = {tau}: rank {}", r.max_rank);
         }
     }
@@ -304,10 +310,10 @@ fn error_follows_the_truncation_tolerance() {
             for r in both(&mut g, &l, N, tau) {
                 assert_eq!(r.converged, 1, "{what}");
                 assert!(r.drops > 0, "{what}: truncation never dropped anything");
-                assert!(
-                    r.err <= 5.0 * (TOL + tau),
-                    "{what}, τ = {tau}: error {}",
-                    r.err
+                within(
+                    r.err,
+                    ACCURACY_MULTIPLE * (TOL + tau),
+                    &format!("{what}, τ = {tau}"),
                 );
             }
         }
@@ -323,7 +329,7 @@ fn coarse_truncation_exceeds_the_krylov_tolerance() {
     for r in both(&mut g, &l, N, 1e3 * TOL) {
         assert_eq!(r.converged, 1);
         assert!(
-            r.err > 10.0 * TOL,
+            r.err > ACCURACY_MULTIPLE * 2.0 * TOL,
             "error {} should exceed the tolerance",
             r.err
         );
@@ -360,9 +366,10 @@ fn phi_combination_with_truncated_vectors() {
                 (false, true) => phi::<Complex64, _>(&l, &u0, &u1, t, tau, &arnoldi),
             };
             let err = diff_norm(&err, &exact) / (u0.norm() + u1.norm());
-            assert!(
-                err <= 5.0 * (TOL + tau),
-                "τ = {tau}, adv {adv}, complex {complex}: {err}"
+            within(
+                err,
+                ACCURACY_MULTIPLE * (TOL + tau),
+                &format!("τ = {tau}, adv {adv}, complex {complex}"),
             );
         }
     }
@@ -471,7 +478,11 @@ fn gmres_with_truncated_vectors() {
             assert_eq!(r.converged, 1, "τ = {tau}");
             assert!(r.numiter > 1, "restarts exercised");
             assert!(r.drops > 0, "truncation never dropped anything");
-            assert!(r.err <= 5.0 * (TOL + tau), "τ = {tau}: error {}", r.err);
+            within(
+                r.err,
+                ACCURACY_MULTIPLE * (TOL + tau),
+                &format!("τ = {tau}"),
+            );
         }
     }
 }
@@ -483,6 +494,10 @@ fn gmres_coarse_truncation_sets_the_accuracy_floor() {
     // and the error sits at the floor, far above the tolerance.
     for r in both_gmres(1e3 * TOL) {
         assert_eq!(r.converged, 0);
-        assert!(r.err > 10.0 * TOL, "error {} should exceed tol", r.err);
+        assert!(
+            r.err > ACCURACY_MULTIPLE * 2.0 * TOL,
+            "error {} should exceed tol",
+            r.err
+        );
     }
 }

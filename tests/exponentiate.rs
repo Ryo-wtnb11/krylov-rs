@@ -10,20 +10,37 @@ use krylov::{
 use nalgebra::DMatrix;
 use num_complex::{Complex32, Complex64};
 
-/// Runs exponentiate and returns (relative error vs dense expm, info).
+/// `tol` of the processes `expintegrator` accepts.
+trait Tol {
+    fn tol(&self) -> f64;
+}
+impl Tol for Lanczos {
+    fn tol(&self) -> f64 {
+        self.get_tol()
+    }
+}
+impl Tol for Arnoldi {
+    fn tol(&self) -> f64 {
+        self.get_tol()
+    }
+}
+
+/// Runs exponentiate and returns (absolute error vs dense expm, its
+/// [`exp_bound`], info).
 fn run<S: TestScalar>(
     a: &DMatrix<Complex64>,
     t: Complex64,
     x: &[Complex64],
     alg: Lanczos,
-) -> (f64, krylov::ExpInfo<S::Real>) {
+) -> (f64, f64, krylov::ExpInfo<S::Real>) {
     let xv = to_dvec::<S>(x);
     let mut op = DenseOp::<S>::new(a);
     let mut ws = Workspace::with_capacity(&mut (), &xv, alg.get_krylovdim()).unwrap();
     let (y, info) = exponentiate(&mut (), &mut op, S::from_c64(t), &xv, &alg, &mut ws).unwrap();
     assert_eq!(info.numops, op.applications);
     let exact = dense_expv(a, t, x);
-    (diff_norm(&to_c64(&y), &exact) / norm(&exact), info)
+    let bound = exp_bound::<S>(alg.get_tol(), t, info.numiter, a.nrows(), norm(&exact));
+    (diff_norm(&to_c64(&y), &exact), bound, info)
 }
 
 #[test]
@@ -35,9 +52,9 @@ fn imaginary_time_real_symmetric() {
     let x = random_vec(&mut g, 80, false);
     for (t, kd) in [(-0.1, 30), (-1.0, 8), (-4.0, 10)] {
         let alg = Lanczos::new(kd, 100, 1e-12);
-        let (err, info) = run::<f64>(&a, Complex64::new(t, 0.0), &x, alg);
+        let (err, bound, info) = run::<f64>(&a, Complex64::new(t, 0.0), &x, alg);
         assert_eq!(info.converged, 1, "t = {t}: {info:?}");
-        assert!(err < 1e-10, "t = {t}: relative error {err}");
+        within(err, bound, &format!("t = {t}: tol per unit time"));
         if t == -4.0 {
             assert!(info.numiter > 1, "long time must take several steps");
         }
@@ -51,9 +68,9 @@ fn real_time_complex_hermitian() {
     let x = random_vec(&mut g, 80, true);
     for (tau, kd) in [(0.5, 15), (5.0, 15), (20.0, 30)] {
         let alg = Lanczos::new(kd, 100, 1e-12);
-        let (err, info) = run::<Complex64>(&a, Complex64::new(0.0, -tau), &x, alg);
+        let (err, bound, info) = run::<Complex64>(&a, Complex64::new(0.0, -tau), &x, alg);
         assert_eq!(info.converged, 1, "tau = {tau}: {info:?}");
-        assert!(err < 1e-9, "tau = {tau}: relative error {err}");
+        within(err, bound, &format!("tau = {tau}: tol per unit time"));
         if tau == 20.0 {
             assert!(info.numiter > 5);
         }
@@ -61,13 +78,13 @@ fn real_time_complex_hermitian() {
     // A real symmetric map evolved in real time needs complex vectors.
     let a = hermitian(&mut g, 50, false);
     let x = random_vec(&mut g, 50, false);
-    let (err, _) = run::<Complex64>(
+    let (err, bound, _) = run::<Complex64>(
         &a,
         Complex64::new(0.0, 3.0),
         &x,
         Lanczos::new(20, 100, 1e-12),
     );
-    assert!(err < 1e-10);
+    within(err, bound, "real map, real time: tol per unit time");
 }
 
 #[test]
@@ -76,10 +93,10 @@ fn complex_time_and_eager() {
     let a = hermitian(&mut g, 60, true);
     let x = random_vec(&mut g, 60, true);
     let t = Complex64::new(-0.3, 1.2);
-    let (err, lazy) = run::<Complex64>(&a, t, &x, Lanczos::new(40, 100, 1e-12));
-    assert!(err < 1e-10);
-    let (err, eager) = run::<Complex64>(&a, t, &x, Lanczos::new(40, 100, 1e-12).eager(true));
-    assert!(err < 1e-10);
+    let (err, bound, lazy) = run::<Complex64>(&a, t, &x, Lanczos::new(40, 100, 1e-12));
+    within(err, bound, "lazy: tol per unit time");
+    let (err, bound, eager) = run::<Complex64>(&a, t, &x, Lanczos::new(40, 100, 1e-12).eager(true));
+    within(err, bound, "eager: tol per unit time");
     assert!(eager.numops < lazy.numops);
 }
 
@@ -89,14 +106,14 @@ fn small_time_uses_series_branch() {
     let mut g = SplitMix(34);
     let a = hermitian(&mut g, 40, false) * Complex64::new(0.05, 0.0);
     let x = random_vec(&mut g, 40, false);
-    let (err, info) = run::<f64>(
+    let (err, bound, info) = run::<f64>(
         &a,
         Complex64::new(-1e-3, 0.0),
         &x,
         Lanczos::new(10, 100, 1e-12),
     );
     assert_eq!(info.numiter, 1);
-    assert!(err < 1e-14, "relative error {err}");
+    within(err, bound, "series branch: tol per unit time");
 }
 
 #[test]
@@ -121,13 +138,15 @@ fn fixed_point_and_zero_time() {
     let eigs: Vec<f64> = (0..30).map(|i| (i % 3) as f64).collect();
     let a = with_spectrum(&mut g, &eigs, false);
     let x = random_vec(&mut g, 30, false);
-    let (err, info) = run::<f64>(
+    let (err, _, info) = run::<f64>(
         &a,
         Complex64::new(-2.0, 0.0),
         &x,
         Lanczos::new(10, 100, 1e-12),
     );
-    assert!(err < 1e-12);
+    // No truncation error: only rounding remains.
+    let y_norm = norm(&dense_expv(&a, Complex64::new(-2.0, 0.0), &x));
+    within(err, rounding::<f64>(30, y_norm), "exact Krylov space");
     assert_eq!(info.numiter, 1);
 }
 
@@ -137,13 +156,13 @@ fn single_precision() {
     let a = hermitian(&mut g, 40, true);
     let x = random_vec(&mut g, 40, true);
     let alg = Lanczos::new(15, 100, 1e-5);
-    let (err, info) = run::<Complex32>(&a, Complex64::new(0.0, -2.0), &x, alg);
+    let (err, bound, info) = run::<Complex32>(&a, Complex64::new(0.0, -2.0), &x, alg);
     assert_eq!(info.converged, 1);
-    assert!(err < 1e-4, "relative error {err}");
+    within(err, bound, "c32: tol per unit time");
     let a = hermitian(&mut g, 40, false);
     let x = random_vec(&mut g, 40, false);
-    let (err, _) = run::<f32>(&a, Complex64::new(-0.5, 0.0), &x, alg);
-    assert!(err < 1e-4, "relative error {err}");
+    let (err, bound, _) = run::<f32>(&a, Complex64::new(-0.5, 0.0), &x, alg);
+    within(err, bound, "f32: tol per unit time");
 }
 
 #[test]
@@ -227,20 +246,22 @@ fn errors() {
     );
 }
 
-/// Runs expintegrator and returns (relative error vs the dense oracle, info).
+/// Runs expintegrator and returns (absolute error vs the dense oracle, its
+/// [`exp_bound`], info).
 fn run_int<S: TestScalar>(
     a: &DMatrix<Complex64>,
     t: Complex64,
     u: &[Vec<Complex64>],
     alg: Lanczos,
-) -> (f64, krylov::ExpInfo<S::Real>) {
+) -> (f64, f64, krylov::ExpInfo<S::Real>) {
     let uv: Vec<DVec<S>> = u.iter().map(|x| to_dvec::<S>(x)).collect();
     let mut op = DenseOp::<S>::new(a);
     let mut ws = Workspace::with_capacity(&mut (), &uv[0], alg.get_krylovdim()).unwrap();
     let (y, info) = expintegrator(&mut (), &mut op, S::from_c64(t), &uv, &alg, &mut ws).unwrap();
     assert_eq!(info.numops, op.applications);
     let exact = dense_phi_comb(a, t, u);
-    (diff_norm(&to_c64(&y), &exact) / norm(&exact), info)
+    let bound = exp_bound::<S>(alg.get_tol(), t, info.numiter, a.nrows(), norm(&exact));
+    (diff_norm(&to_c64(&y), &exact), bound, info)
 }
 
 #[test]
@@ -251,9 +272,9 @@ fn phi_combinations_match_dense_oracle() {
     for nu in 2..=5 {
         for (t, kd) in [(-0.05, 20), (-1.0, 10), (-3.0, 12)] {
             let alg = Lanczos::new(kd, 100, 1e-12);
-            let (err, info) = run_int::<f64>(&a, Complex64::new(t, 0.0), &u[..nu], alg);
+            let (err, bound, info) = run_int::<f64>(&a, Complex64::new(t, 0.0), &u[..nu], alg);
             assert_eq!(info.converged, 1, "nu={nu} t={t}: {info:?}");
-            assert!(err < 1e-10, "nu={nu} t={t}: relative error {err}");
+            within(err, bound, &format!("nu={nu} t={t}: tol per unit time"));
         }
     }
     let a = hermitian(&mut g, 70, true);
@@ -265,9 +286,9 @@ fn phi_combinations_match_dense_oracle() {
         ] {
             for eager in [false, true] {
                 let alg = Lanczos::new(kd, 100, 1e-12).eager(eager);
-                let (err, info) = run_int::<Complex64>(&a, t, &u[..nu], alg);
+                let (err, bound, info) = run_int::<Complex64>(&a, t, &u[..nu], alg);
                 assert_eq!(info.converged, 1, "nu={nu} t={t}: {info:?}");
-                assert!(err < 1e-9, "nu={nu} t={t}: relative error {err}");
+                within(err, bound, &format!("nu={nu} t={t}: tol per unit time"));
                 if t.im == -4.0 && !eager {
                     assert!(info.numiter > 1);
                 }
@@ -284,9 +305,10 @@ fn exponentiate_is_the_single_vector_case() {
     let zero = vec![Complex64::new(0.0, 0.0); 50];
     let t = Complex64::new(0.0, -2.0);
     let alg = Lanczos::new(15, 100, 1e-12);
-    let (e1, i1) = run_int::<Complex64>(&a, t, std::slice::from_ref(&x), alg);
-    let (e2, i2) = run_int::<Complex64>(&a, t, &[x, zero], alg);
-    assert!(e1 < 1e-10 && e2 < 1e-10);
+    let (e1, b1, i1) = run_int::<Complex64>(&a, t, std::slice::from_ref(&x), alg);
+    let (e2, b2, i2) = run_int::<Complex64>(&a, t, &[x, zero], alg);
+    within(e1, b1, "one vector: tol per unit time");
+    within(e2, b2, "zero inhomogeneity: tol per unit time");
     assert_eq!((i1.numiter, i1.numops), (i2.numiter, i2.numops));
 }
 
@@ -296,13 +318,13 @@ fn phi_combinations_single_precision() {
     let a = hermitian(&mut g, 40, true);
     let u: Vec<_> = (0..3).map(|_| random_vec(&mut g, 40, true)).collect();
     let alg = Lanczos::new(15, 100, 1e-5);
-    let (err, info) = run_int::<Complex32>(&a, Complex64::new(0.0, -2.0), &u, alg);
+    let (err, bound, info) = run_int::<Complex32>(&a, Complex64::new(0.0, -2.0), &u, alg);
     assert_eq!(info.converged, 1);
-    assert!(err < 1e-4, "relative error {err}");
+    within(err, bound, "c32: tol per unit time");
     let a = hermitian(&mut g, 40, false) * Complex64::new(0.2, 0.0);
     let u: Vec<_> = (0..3).map(|_| random_vec(&mut g, 40, false)).collect();
-    let (err, _) = run_int::<f32>(&a, Complex64::new(-0.5, 0.0), &u, alg);
-    assert!(err < 1e-4, "relative error {err}");
+    let (err, bound, _) = run_int::<f32>(&a, Complex64::new(-0.5, 0.0), &u, alg);
+    within(err, bound, "f32: tol per unit time");
 }
 
 #[test]
@@ -321,8 +343,15 @@ fn exact_polynomial_and_fixed_point() {
     let alg = Lanczos::new(4, 100, 1e-12);
     let (y, info) =
         expintegrator(&mut (), &mut DenseOp::new(&a), -1.5, &uv, &alg, &mut ws).unwrap();
+    // u₀ - 1.5·u₁ with entries in [-1, 1): a product and a sum of size ≤ 2.5,
+    // each rounded by at most ε/2.
     for i in 0..n {
-        assert!((y.0[i] - (uv[0].0[i] - 1.5 * uv[1].0[i])).abs() < 1e-15);
+        let want = uv[0].0[i] - 1.5 * uv[1].0[i];
+        within(
+            (y.0[i] - want).abs(),
+            2.5 * f64::EPSILON,
+            "exact polynomial u₀ + t·u₁",
+        );
     }
     assert_eq!((info.converged, info.numiter, info.numops), (1, 0, 2));
     assert_eq!(info.normres, 0.0);
@@ -622,8 +651,8 @@ fn lanczos_expintegrator_matches_dense_and_krylovkit_steps() {
         let a = hermitian(&mut g, n, complex);
         let u: Vec<_> = (0..nu).map(|_| random_vec(&mut g, n, complex)).collect();
         let alg = Lanczos::new(kd, 100, 1e-12).eager(eager);
-        let (_, err, info) = run_alg::<Complex64, _>(&a, t, &u, &alg, kd);
-        assert!(err < 1e-10, "{name}: relative error {err}");
+        let (_, err, bound, info) = run_alg::<Complex64, _>(&a, t, &u, &alg, kd);
+        within(err, bound, &format!("{name}: tol per unit time"));
         assert_eq!(info.converged, 1, "{name}");
         if let Some((converged, ni, no)) = kk {
             assert_eq!(info.converged, converged, "{name}");
@@ -641,15 +670,15 @@ fn lanczos_expintegrator_matches_dense_and_krylovkit_steps() {
     }
 }
 
-/// Runs expintegrator with any process; returns (y, relative error vs the
-/// dense oracle, info).
-fn run_alg<S: TestScalar, L: KrylovProcess>(
+/// Runs expintegrator with any process; returns (y, absolute error vs the
+/// dense oracle, its [`exp_bound`], info).
+fn run_alg<S: TestScalar, L: KrylovProcess + Tol>(
     a: &DMatrix<Complex64>,
     t: Complex64,
     u: &[Vec<Complex64>],
     alg: &L,
     capacity: usize,
-) -> (Vec<Complex64>, f64, krylov::ExpInfo<S::Real>) {
+) -> (Vec<Complex64>, f64, f64, krylov::ExpInfo<S::Real>) {
     let uv: Vec<DVec<S>> = u.iter().map(|x| to_dvec::<S>(x)).collect();
     let mut op = DenseOp::<S>::new(a);
     let mut ws = Workspace::with_capacity(&mut (), &uv[0], capacity).unwrap();
@@ -657,9 +686,24 @@ fn run_alg<S: TestScalar, L: KrylovProcess>(
     assert_eq!(info.numops, op.applications);
     let y = to_c64(&y);
     let exact = dense_phi_comb(a, t, u);
-    let err = diff_norm(&y, &exact) / norm(&exact);
-    (y, err, info)
+    let err = diff_norm(&y, &exact);
+    let bound = exp_bound::<S>(alg.tol(), t, info.numiter, a.nrows(), norm(&exact));
+    (y, err, bound, info)
 }
+
+/// Relative agreement of krylov's Arnoldi error estimate with KrylovKit's.
+/// Both evaluate the same sum `Σ_k |Δτ_kᵖ·β·‖r‖·[exp(H)]_{K,K+p+1}|`
+/// (KrylovKit v0.10.4 `matrixfun/expintegrator.jl:expintegrator`, the `ϵ`
+/// line; krylov `Arnoldi::err`) over the same step sequence, so they differ
+/// by rounding only. That rounding is not bounded by a visible `n·ε`: the
+/// entry `[exp(H)]_{K,K+p+1}` is small next to `‖exp(H)‖` (relative accuracy
+/// `ε·‖exp(H)‖/|entry|` for a normwise-accurate exponential), and the step
+/// controller feeds every estimate back into `Δτ` through
+/// `(γ/ω)^{1/(q+1)}` with `q` a log ratio of estimates. The estimate is
+/// only compared with `tol·|t|`; a change of formula moves it by O(1),
+/// while six digits leave the amplified rounding room (observed: 2e-11 on
+/// 35 steps, 4e-15 on one).
+const ESTIMATE_AGREEMENT: f64 = 1e-6;
 
 /// KrylovKit.jl's Arnoldi `expintegrator` cases (non-normal `outliers`,
 /// `p = nu - 1`, `tol = 1e-12`, real vectors for a real map and real `t`)
@@ -703,28 +747,28 @@ fn arnoldi_expintegrator_matches_dense_and_krylovkit_steps() {
         let a = outliers(&mut g, n, complex);
         let u: Vec<_> = (0..nu).map(|_| random_vec(&mut g, n, complex)).collect();
         let alg = Arnoldi::new(kd, 100, 1e-12).eager(eager);
-        let (_, err, info) = if complex {
+        let (_, err, bound, info) = if complex {
             run_alg::<Complex64, _>(&a, t, &u, &alg, kd)
         } else {
             run_alg::<f64, _>(&a, t, &u, &alg, kd)
         };
-        assert!(err < 1e-9, "{name}: krylov vs dense {err}");
+        within(err, bound, &format!("{name}: tol per unit time"));
         assert_eq!(info.max_imag, 0.0);
         if let Some((converged, numiter, numops, normres)) = kk {
             assert_eq!(info.converged, converged, "{name}: converged");
             assert_eq!(info.numiter, numiter, "{name}: numiter");
             assert_eq!(info.numops, numops, "{name}: numops");
-            assert!(
-                (info.normres - normres).abs() <= 1e-6 * normres,
-                "{name}: normres {} vs {normres}",
-                info.normres
+            within(
+                (info.normres - normres).abs(),
+                ESTIMATE_AGREEMENT * normres,
+                &format!("{name}: normres vs KrylovKit"),
             );
         } else {
             assert_eq!(info.converged, 1, "{name}");
-            assert!(
-                info.normres <= 1e-12 * t.norm(),
-                "{name}: normres {}",
-                info.normres
+            within(
+                info.normres,
+                alg.get_tol() * t.norm(),
+                &format!("{name}: converged estimate"),
             );
         }
     }
@@ -769,7 +813,7 @@ fn arnoldi_matches_dense_oracle_on_non_normal_maps() {
                 for &t in ts {
                     for (kd, eager) in [(20, false), (10, true)] {
                         let alg = Arnoldi::new(kd, 100, 1e-12).eager(eager);
-                        let (_, err, info) = if complex {
+                        let (_, err, bound, info) = if complex {
                             run_alg::<Complex64, _>(&a, t, &u[..nu], &alg, kd)
                         } else {
                             run_alg::<f64, _>(&a, t, &u[..nu], &alg, kd)
@@ -777,7 +821,7 @@ fn arnoldi_matches_dense_oracle_on_non_normal_maps() {
                         let tag =
                             format!("complex={complex} offdiag={offdiag} nu={nu} t={t} kd={kd}");
                         assert_eq!(info.converged, 1, "{tag}: {info:?}");
-                        assert!(err < 1e-9, "{tag}: relative error {err}");
+                        within(err, bound, &format!("{tag}: tol per unit time"));
                         assert_eq!(info.max_imag, 0.0);
                     }
                 }
@@ -792,10 +836,12 @@ fn arnoldi_agrees_with_lanczos_on_hermitian_maps() {
     let a = hermitian(&mut g, 50, true);
     let u: Vec<_> = (0..3).map(|_| random_vec(&mut g, 50, true)).collect();
     let t = Complex64::new(0.0, -2.0);
-    let (yl, el, _) = run_alg::<Complex64, _>(&a, t, &u, &Lanczos::new(15, 100, 1e-12), 15);
-    let (ya, ea, _) = run_alg::<Complex64, _>(&a, t, &u, &Arnoldi::new(15, 100, 1e-12), 15);
-    assert!(el < 1e-10 && ea < 1e-10);
-    assert!(diff_norm(&yl, &ya) / norm(&yl) < 1e-10);
+    let (yl, el, bl, _) = run_alg::<Complex64, _>(&a, t, &u, &Lanczos::new(15, 100, 1e-12), 15);
+    let (ya, ea, ba, _) = run_alg::<Complex64, _>(&a, t, &u, &Arnoldi::new(15, 100, 1e-12), 15);
+    within(el, bl, "lanczos: tol per unit time");
+    within(ea, ba, "arnoldi: tol per unit time");
+    // Both are within their bound of the same exact result.
+    within(diff_norm(&yl, &ya), bl + ba, "lanczos vs arnoldi");
 }
 
 #[test]
@@ -804,14 +850,15 @@ fn arnoldi_single_precision() {
     let a = non_normal(&mut g, 40, true, 1.0);
     let u: Vec<_> = (0..3).map(|_| random_vec(&mut g, 40, true)).collect();
     let alg = Arnoldi::new(15, 100, 1e-5);
-    let (_, err, info) = run_alg::<Complex32, _>(&a, Complex64::new(0.0, -2.0), &u, &alg, 15);
+    let (_, err, bound, info) =
+        run_alg::<Complex32, _>(&a, Complex64::new(0.0, -2.0), &u, &alg, 15);
     assert_eq!(info.converged, 1);
-    assert!(err < 1e-4, "relative error {err}");
+    within(err, bound, "c32: tol per unit time");
     let a = non_normal(&mut g, 40, false, 1.0);
     let u: Vec<_> = (0..2).map(|_| random_vec(&mut g, 40, false)).collect();
-    let (_, err, info) = run_alg::<f32, _>(&a, Complex64::new(-0.5, 0.0), &u, &alg, 15);
+    let (_, err, bound, info) = run_alg::<f32, _>(&a, Complex64::new(-0.5, 0.0), &u, &alg, 15);
     assert_eq!(info.converged, 1);
-    assert!(err < 1e-4, "relative error {err}");
+    within(err, bound, "f32: tol per unit time");
 }
 
 #[test]
@@ -829,8 +876,15 @@ fn arnoldi_exact_polynomial_and_fixed_point() {
     let alg = Arnoldi::new(4, 100, 1e-12);
     let (y, info) =
         expintegrator(&mut (), &mut DenseOp::new(&a), -1.5, &uv, &alg, &mut ws).unwrap();
+    // u₀ - 1.5·u₁ with entries in [-1, 1): a product and a sum of size ≤ 2.5,
+    // each rounded by at most ε/2.
     for i in 0..n {
-        assert!((y.0[i] - (uv[0].0[i] - 1.5 * uv[1].0[i])).abs() < 1e-15);
+        let want = uv[0].0[i] - 1.5 * uv[1].0[i];
+        within(
+            (y.0[i] - want).abs(),
+            2.5 * f64::EPSILON,
+            "exact polynomial u₀ + t·u₁",
+        );
     }
     assert_eq!((info.converged, info.numiter, info.numops), (1, 0, 2));
 
@@ -856,8 +910,8 @@ fn arnoldi_exact_polynomial_and_fixed_point() {
     let a = &q * &s * t * s.try_inverse().unwrap() * q.adjoint();
     let x = random_vec(&mut g, 30, false);
     let alg = Arnoldi::new(10, 100, 1e-12);
-    let (_, err, info) = run_alg::<f64, _>(&a, Complex64::new(-1.0, 0.0), &[x], &alg, 10);
-    assert!(err < 1e-10, "relative error {err}");
+    let (_, err, bound, info) = run_alg::<f64, _>(&a, Complex64::new(-1.0, 0.0), &[x], &alg, 10);
+    within(err, bound, "invariant subspace: tol per unit time");
     assert_eq!(info.numiter, 1);
 }
 
@@ -1012,28 +1066,27 @@ fn overflowing_step_is_rejected_and_shrunk() {
     // complex vectors before the exact-real φ evaluation); it must be
     // rejected, and the shrunk steps reach the finite result.
     let t = 92.0;
-    let (a, x, exact) = growing(t);
+    let (a, x, _) = growing(t);
     let t = Complex64::new(t, 0.0);
     let u = std::slice::from_ref(&x);
-    let check = |y: Vec<Complex64>, numiter: usize, what: &str| {
+    let check = |y: Vec<Complex64>, err: f64, bound: f64, numiter: usize, what: &str| {
         assert!(
             y.iter().all(|z| z.re.is_finite() && z.im.is_finite()),
             "{what}: {y:?}"
         );
-        let err = diff_norm(&y, &exact) / norm(&exact);
-        assert!(err < 1e-3, "{what}: relative error {err}");
+        within(err, bound, &format!("{what}: tol per unit time"));
         assert!(numiter > 1, "{what}: the overflowing step must be split");
     };
     let lanczos = Lanczos::new(8, 100, 1e-6);
     let arnoldi = Arnoldi::new(8, 100, 1e-6);
-    let (y, _, info) = run_alg::<Complex32, _>(&a, t, u, &lanczos, 8);
-    check(y, info.numiter, "lanczos c32");
-    let (y, _, info) = run_alg::<f32, _>(&a, t, u, &lanczos, 8);
-    check(y, info.numiter, "lanczos f32");
-    let (y, _, info) = run_alg::<Complex32, _>(&a, t, u, &arnoldi, 8);
-    check(y, info.numiter, "arnoldi c32");
-    let (y, _, info) = run_alg::<f32, _>(&a, t, u, &arnoldi, 8);
-    check(y, info.numiter, "arnoldi f32");
+    let (y, err, bound, info) = run_alg::<Complex32, _>(&a, t, u, &lanczos, 8);
+    check(y, err, bound, info.numiter, "lanczos c32");
+    let (y, err, bound, info) = run_alg::<f32, _>(&a, t, u, &lanczos, 8);
+    check(y, err, bound, info.numiter, "lanczos f32");
+    let (y, err, bound, info) = run_alg::<Complex32, _>(&a, t, u, &arnoldi, 8);
+    check(y, err, bound, info.numiter, "arnoldi c32");
+    let (y, err, bound, info) = run_alg::<f32, _>(&a, t, u, &arnoldi, 8);
+    check(y, err, bound, info.numiter, "arnoldi f32");
 }
 
 #[test]

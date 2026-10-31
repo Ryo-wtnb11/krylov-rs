@@ -396,3 +396,70 @@ impl<S: TestScalar> krylov::Vector for Naive<S> {
         Ok(())
     }
 }
+
+/// Machine epsilon of `S`'s real type.
+pub fn eps<S: TestScalar>() -> f64 {
+    to_f64(<S::Real as num_traits::Float>::epsilon())
+}
+
+/// Spectral norm `‖A‖₂`, the scale of the rounding in `A·x`.
+pub fn op_norm(a: &DMatrix<Complex64>) -> f64 {
+    a.singular_values().max()
+}
+
+/// Rounding passes between a solver and its check. One length-`n` inner
+/// product or matrix–vector product rounds by at most `γ_n ≈ n·ε` relative
+/// to its scale (Higham, Accuracy and Stability, Thm 3.4); a Krylov step
+/// orthogonalizes twice (CGS2/MGS2) and the oracle evaluates once more, so
+/// a few such passes separate the returned value from the exact one.
+pub const ROUNDING_PASSES: f64 = 4.0;
+
+/// `ROUNDING_PASSES·n·ε·scale`: the rounding of `S` arithmetic on length-`n`
+/// vectors whose products have size `scale`.
+pub fn rounding<S: TestScalar>(n: usize, scale: f64) -> f64 {
+    ROUNDING_PASSES * n as f64 * eps::<S>() * scale
+}
+
+/// KrylovKit's `exponentiate`/`expintegrator` step error
+/// `ϵ = |Δτᵖ·β·‖r‖·[exp(H)]_{K,K+p+1}|` is the leading term of the local
+/// error series, not a rigorous bound; the true error may exceed it by a
+/// modest factor before the next term is negligible.
+pub const ESTIMATE_SAFETY: f64 = 10.0;
+
+/// Asserts `err <= bound`; `reason` names the promise the bound encodes.
+#[track_caller]
+pub fn within(err: f64, bound: f64, reason: &str) {
+    assert!(
+        err <= bound,
+        "{reason}: error {err:e} exceeds bound {bound:e}"
+    );
+}
+
+/// Accuracy of `exponentiate`/`expintegrator` against the dense oracle.
+/// KrylovKit's `tol` is an absolute error per unit time: the accumulated
+/// step estimate stays `<= tol·|t|` (KrylovKit v0.10.4
+/// `matrixfun/expintegrator.jl:expintegrator`, `maxerr = τ·η`; krylov's
+/// `ExpInfo::converged`). Each of the `numiter` time steps also rounds the
+/// iterate at the result's scale `‖y‖`.
+pub fn exp_bound<S: TestScalar>(
+    tol: f64,
+    t: Complex64,
+    numiter: usize,
+    n: usize,
+    y_norm: f64,
+) -> f64 {
+    ESTIMATE_SAFETY * tol * t.norm() + numiter.max(1) as f64 * rounding::<S>(n, y_norm)
+}
+
+/// Accuracy of a converged eigen- or singular triplet of a map with norm
+/// `a_norm` on length-`n` vectors. `tol` bounds the residual norm (KrylovKit
+/// v0.10.4 `eigsolve/eigsolve.jl` and `eigsolve/svdsolve.jl` docstrings,
+/// `eigsolve/lanczos.jl:eigsolve` `abs(f[k]) <= tol`; krylov
+/// `ConvergenceInfo::converged`). Recomputing `A·x - λ·x` from the returned
+/// vector adds the rounding of `A·x` and of the basis. For a Hermitian map
+/// (or a singular value) the same quantity bounds the value error: some
+/// exact eigenvalue lies within `‖A·x - λ·x‖` of the Ritz value of a unit
+/// `x` (Kahan; Parlett, The Symmetric Eigenvalue Problem, Thm 4.5.1).
+pub fn eig_bound<S: TestScalar>(tol: f64, n: usize, a_norm: f64) -> f64 {
+    tol + rounding::<S>(n, a_norm)
+}

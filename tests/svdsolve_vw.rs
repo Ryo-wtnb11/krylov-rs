@@ -220,10 +220,16 @@ fn distinct_codomain_type_matches_dense_and_the_one_type_run() {
         if which == Which::SmallestReal {
             exact.reverse();
         }
-        for (v, e) in vw.values.iter().zip(&exact) {
-            assert!(
-                (v - e).abs() < 1e-9 * e.max(1.0),
-                "{m}×{n} {which:?}: {v} vs {e}"
+        let bound = if complex {
+            eig_bound::<Complex64>(alg.get_tol(), m.max(n), op_norm(&a))
+        } else {
+            eig_bound::<f64>(alg.get_tol(), m.max(n), op_norm(&a))
+        };
+        for (v, e) in vw.values.iter().zip(&exact).take(vw.counts.0) {
+            within(
+                (v - e).abs(),
+                bound,
+                &format!("{m}×{n} {which:?}: {v} vs {e}"),
             );
         }
         assert!(vw.left.iter().all(|l| l.len() == m) && vw.right.iter().all(|r| r.len() == n));

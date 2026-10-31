@@ -208,19 +208,17 @@ fn large_finite_values_with_a_naive_norm_are_accepted() {
         };
         let x = Naive(vec![S::from_c64(Complex64::new(1.0, 0.0)); n]);
         let mut ws = Workspace::with_capacity(&mut (), &x, 6).unwrap();
-        let (vals, _, _) = eigsolve(
-            &mut (),
-            &mut op,
-            &x,
-            1,
-            Which::LargestReal,
-            &Lanczos::new(6, 100, scale * 1e-5),
-            &mut ws,
-        )
-        .unwrap();
+        let alg = Lanczos::new(6, 100, scale * 1e-5);
+        let (vals, _, _) =
+            eigsolve(&mut (), &mut op, &x, 1, Which::LargestReal, &alg, &mut ws).unwrap();
         let want = scale * n as f64;
         let got = num_traits::ToPrimitive::to_f64(&vals[0]).unwrap();
-        assert!((got - want).abs() <= 1e-4 * want, "{got} vs {want}");
+        // ‖A‖ = scale·n.
+        within(
+            (got - want).abs(),
+            eig_bound::<S>(alg.get_tol(), n, want),
+            "largest eigenvalue",
+        );
         let (y, _) = linsolve(
             &mut (),
             &mut op,
@@ -232,8 +230,14 @@ fn large_finite_values_with_a_naive_norm_are_accepted() {
             &mut ws,
         )
         .unwrap();
+        // n CG steps on an n-dimensional space solve exactly up to rounding,
+        // amplified by κ(A) = n.
         let y0 = y.0[0].to_c64().re;
-        assert!((y0 * scale - 1.0).abs() <= 1e-3, "{y0}");
+        within(
+            (y0 * scale - 1.0).abs(),
+            n as f64 * rounding::<S>(n, 1.0),
+            "y₀·scale",
+        );
     }
     go::<f64>(1e150);
     go::<f32>(1e18);
