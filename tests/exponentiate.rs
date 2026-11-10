@@ -5,7 +5,8 @@ mod common;
 
 use common::*;
 use krylov::{
-    Arnoldi, Error, KrylovProcess, Lanczos, Vector, Workspace, expintegrator, exponentiate,
+    Arnoldi, Error, KrylovProcess, Lanczos, VecBasis, Vector, Workspace, expintegrator,
+    exponentiate,
 };
 use nalgebra::DMatrix;
 use num_complex::{Complex32, Complex64};
@@ -1146,4 +1147,94 @@ fn large_finite_result_with_a_naive_norm_is_rejected() {
     go::<f32>(80.0, &lanczos);
     go::<f32>(80.0, &arnoldi);
     go::<Complex32>(80.0, &lanczos);
+}
+
+/// Runs a long `exponentiate` (many time steps) and returns the final
+/// Krylov basis, taken out of the workspace, with the run's info.
+fn long_run_basis<S: TestScalar, L: KrylovProcess>(
+    a: &DMatrix<Complex64>,
+    t: f64,
+    alg: &L,
+    seed: u64,
+) -> (VecBasis<DVec<S>>, krylov::ExpInfo<S::Real>) {
+    let n = a.nrows();
+    let x = to_dvec::<S>(&random_vec(
+        &mut SplitMix(seed),
+        n,
+        <S as TestScalar>::COMPLEX,
+    ));
+    let mut ws = Workspace::with_capacity(&mut (), &x, 10).unwrap();
+    let t = S::from_c64(Complex64::new(t, 0.0));
+    let (_, info) = exponentiate(&mut (), &mut DenseOp::<S>::new(a), t, &x, alg, &mut ws).unwrap();
+    (ws.into_basis(), info)
+}
+
+/// `max |⟨vᵢ, A·vⱼ⟩|` over `i > j + 1` (and `i + 1 < j` when `both`): the
+/// entries a Krylov relation `A·Vₖ = Vₖ₊₁·H̃` forces to vanish
+/// (upper Hessenberg, or tridiagonal for a Hermitian `A`).
+fn krylov_relation_error<S: TestScalar>(a: &DMatrix<Complex64>, vs: &[DVec<S>], both: bool) -> f64 {
+    let vc: Vec<_> = vs
+        .iter()
+        .map(|v| nalgebra::DVector::from_vec(to_c64(v)))
+        .collect();
+    let mut e: f64 = 0.0;
+    for (j, vj) in vc.iter().enumerate() {
+        let avj = a * vj;
+        for (i, vi) in vc.iter().enumerate() {
+            if i > j + 1 || (both && i + 1 < j) {
+                e = e.max(vi.dotc(&avj).norm());
+            }
+        }
+    }
+    e
+}
+
+#[test]
+fn long_run_basis_stays_orthonormal_and_satisfies_the_krylov_relation() {
+    // The workspace basis is rebuilt for every time step, so what remains
+    // after the run is the last Krylov space; the long run (>= 3 steps)
+    // shows the step loop leaves it orthonormal. Orthogonality and the
+    // relation entries round like one inner product pass over the basis
+    // (`rounding`), the relation entries at the scale ‖A‖.
+    fn go<S: TestScalar, L: KrylovProcess>(
+        a: &DMatrix<Complex64>,
+        t: f64,
+        alg: &L,
+        hermitian: bool,
+    ) {
+        let (basis, info) = long_run_basis::<S, L>(a, t, alg, 5);
+        let vs = basis.vectors();
+        let n = a.nrows();
+        assert!(info.numiter >= 3, "{info:?}");
+        assert_eq!(info.converged, 1, "{info:?}");
+        assert!(vs.len() >= 5, "basis size {}", vs.len());
+        within(
+            orthogonality_error(vs),
+            rounding::<S>(n, 1.0),
+            "basis orthonormality",
+        );
+        within(
+            krylov_relation_error(a, vs, hermitian),
+            rounding::<S>(n, op_norm(a)),
+            "Krylov relation",
+        );
+    }
+    let mut g = SplitMix(61);
+    // Lanczos: spectrum in about [-1.2, 1.2]; the step is limited by the
+    // tolerance per unit time, so |t| = 20 with krylovdim 10 takes many steps.
+    let lanczos = Lanczos::new(10, 300, 1e-4);
+    let a = hermitian(&mut g, 60, false) * Complex64::new(0.12, 0.0);
+    go::<f64, _>(&a, -20.0, &lanczos, true);
+    go::<f32, _>(&a, -20.0, &lanczos, true);
+    let a = hermitian(&mut g, 60, true) * Complex64::new(0.12, 0.0);
+    go::<Complex64, _>(&a, -20.0, &lanczos, true);
+    go::<Complex32, _>(&a, -20.0, &lanczos, true);
+    // Arnoldi on a non-Hermitian map (spectrum within |λ| <= 1.5).
+    let arnoldi = Arnoldi::new(10, 300, 1e-4);
+    let a = outliers(&mut g, 60, false) * Complex64::new(0.5, 0.0);
+    go::<f64, _>(&a, 10.0, &arnoldi, false);
+    go::<f32, _>(&a, 10.0, &arnoldi, false);
+    let a = outliers(&mut g, 60, true) * Complex64::new(0.5, 0.0);
+    go::<Complex64, _>(&a, 10.0, &arnoldi, false);
+    go::<Complex32, _>(&a, 10.0, &arnoldi, false);
 }
