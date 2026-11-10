@@ -197,6 +197,40 @@ fn sweep<S: TestScalar>(name: &str, solve: impl Fn(&mut Arena<S>) -> Result<usiz
     }
 }
 
+/// Under Olsen's correction the preconditioner runs twice per attempt; a
+/// failure of the second call, on the Ritz vector, is returned at once.
+#[test]
+fn davidson_returns_the_second_preconditioner_failure() {
+    let (a, x) = hermitian_case();
+    let mut cx = Arena::<f64>::new();
+    let x0 = [cx.input(&x)];
+    let mut ws = Workspace::with_capacity(&mut cx, &x0[0], 6).unwrap();
+    let mut ws_av = Workspace::with_capacity(&mut cx, &x0[0], 6).unwrap();
+    let mut calls = 0;
+    let mut precond = |cx: &mut Arena<f64>, _: f64, r: &H<f64>, t: &mut H<f64>| {
+        calls += 1;
+        if calls == 2 {
+            return Err(Fail::Map);
+        }
+        t.copy_from(cx, r)
+    };
+    let alg = Davidson::new(6, 2, 2, 3, 1e-14, 1e-12);
+    let e = davidson_eigsolve(
+        &mut cx,
+        &mut Mat::new(&a),
+        &mut precond,
+        &x0,
+        1,
+        Which::SmallestReal,
+        &alg,
+        &mut ws,
+        &mut ws_av,
+    )
+    .err();
+    assert_eq!(e, Some(Error::Vector(Fail::Map)));
+    assert_eq!(calls, 2);
+}
+
 fn hermitian_case() -> (DMatrix<Complex64>, Vec<Complex64>) {
     let mut g = SplitMix(31);
     let a = hermitian(&mut g, 14, false);

@@ -7,7 +7,8 @@
 - `davidson_eigsolve` with `Davidson` settings and the `Preconditioner`
   trait (closures implement it): the preconditioned block Davidson method
   for Hermitian maps, with a caller-supplied correction such as the guarded
-  diagonal `rᵢ/(θ − dᵢ)`. It takes two workspaces (basis and images).
+  diagonal `rᵢ/(θ − dᵢ)`, and Olsen's correction (`Correction`, default
+  `Olsen`). It takes two workspaces (basis and images).
 
 ## 0.3.0 (2026-10-31)
 

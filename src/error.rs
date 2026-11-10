@@ -44,9 +44,10 @@ pub enum Error<E> {
     /// `svdsolve`'s start check `⟨u, A·v⟩ = ‖Aᴴu‖` (with `v = Aᴴu/‖Aᴴu‖`)
     /// failed: the adjoint does not belong to the map.
     IncompatibleAdjoint,
-    /// A map application produced a non-finite vector during the iteration,
-    /// detected in the recurrence scalars (projection coefficients and norms)
-    /// as they are produced. In `expintegrator`/`exponentiate` also: the time-step
+    /// The map, the preconditioner or a residual produced a non-finite value
+    /// during the iteration, detected in the recurrence scalars (projection
+    /// coefficients, norms and, for `davidson_eigsolve`, Olsen's inner
+    /// products) as they are produced. In `expintegrator`/`exponentiate` also: the time-step
     /// error estimate stays non-finite at the smallest allowed step, or a
     /// step's update coefficients are not finite (typically `exp(t·A)`
     /// overflows).
@@ -89,7 +90,9 @@ impl<E: fmt::Display> fmt::Display for Error<E> {
             Error::IncompatibleAdjoint => {
                 f.write_str("adjoint map is not compatible with the linear map")
             }
-            Error::NonFiniteIterate => f.write_str("linear map produced a non-finite vector"),
+            Error::NonFiniteIterate => {
+                f.write_str("map, preconditioner or residual produced a non-finite value")
+            }
             Error::SchurReorderFailed => f.write_str("reordering the small Schur form failed"),
             Error::ComplexEigenvalue { index } => {
                 write!(f, "requested eigenvalue {index} is complex, not real")

@@ -13,7 +13,7 @@
 //! `φ`-function combinations. [`linsolve`] solves `(a₀ + a₁·A)·x = b` by
 //! [`Cg`] or [`Gmres`]. [`block_eigsolve`] handles degenerate
 //! spectra with [`BlockLanczos`]. [`davidson_eigsolve`] is the preconditioned
-//! block Davidson method ([`Davidson`], [`Preconditioner`]). [`svdsolve`]
+//! block Davidson method ([`Davidson`], [`Preconditioner`], [`Correction`]). [`svdsolve`]
 //! computes partial SVDs of an [`AdjointMap`] by [`Gkl`]. Non-Hermitian maps use the Krylov–Schur method
 //! with [`Arnoldi`]: [`schursolve`], [`arnoldi_eigsolve`] (complex vectors)
 //! and [`realeigsolve`] (real vectors); [`exponentiate`] and
@@ -87,6 +87,7 @@ mod exponentiate;
 mod lanczos;
 mod linsolve;
 mod orth;
+mod pow2;
 mod scalar;
 mod svdsolve;
 mod traits;
@@ -94,7 +95,7 @@ mod traits;
 pub use arnoldi::{Arnoldi, arnoldi_eigsolve, realeigsolve, schursolve};
 pub use basis::VecBasis;
 pub use block_lanczos::{BlockLanczos, block_eigsolve};
-pub use davidson::{Davidson, Preconditioner, davidson_eigsolve};
+pub use davidson::{Correction, Davidson, Preconditioner, davidson_eigsolve};
 pub use eigsolve::{ConvergenceInfo, Which, eigsolve};
 pub use error::Error;
 pub use exponentiate::{ExpInfo, KrylovProcess, expintegrator, exponentiate};

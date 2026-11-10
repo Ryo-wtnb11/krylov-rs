@@ -7,6 +7,7 @@ use crate::dense::{Problem, Work};
 use crate::eigsolve::{ConvergenceInfo, Which, real_spectrum, sort_eig};
 use crate::error::Error;
 use crate::orth::{Orth, orthogonalize};
+use crate::pow2::{ilogb, ldexp};
 use crate::scalar::sealed::{Ops as _, RealOps as _};
 use crate::scalar::{MatRef, Real};
 use crate::traits::{Basis, LinearMap, Vector, Workspace};
@@ -34,7 +35,8 @@ use crate::traits::{Basis, LinearMap, Vector, Workspace};
 /// can trigger a restart in the first pass. Small `m − r` makes restarts
 /// frequent: `r = m − 1` with `b = 1` restarts after every expansion.
 ///
-/// `orth` defaults to [`Orth::Cgs2`].
+/// `orth` defaults to [`Orth::Cgs2`] and `correction` to
+/// [`Correction::Olsen`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Davidson {
     krylovdim: usize,
@@ -44,11 +46,26 @@ pub struct Davidson {
     tol: f64,
     drop_tol: f64,
     orth: Orth,
+    correction: Correction,
+}
+
+/// The correction added for an attempted Ritz pair `(θ, x)` with residual
+/// `r = A·x − θ·x` and preconditioner `M = M(θ)` (see [`Preconditioner`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Correction {
+    /// `t = M·r`: one preconditioner call per attempt.
+    Plain,
+    /// Olsen's correction `t ∝ M·r − ε·M·x` with `ε = ⟨x, M·r⟩/⟨x, M·x⟩`
+    /// (both inner products conjugate `x`), so that `⟨x, t⟩ = 0`: two
+    /// preconditioner calls per attempt. This is block2's default.
+    Olsen,
 }
 
 impl Davidson {
     /// Settings with the given cost and accuracy parameters; the
-    /// orthogonalizer starts at [`Orth::Cgs2`]. The values are validated
+    /// orthogonalizer starts at [`Orth::Cgs2`] and the correction at
+    /// [`Correction::Olsen`]. The values are validated
     /// when [`davidson_eigsolve`] is called.
     pub fn new(
         krylovdim: usize,
@@ -66,11 +83,17 @@ impl Davidson {
             tol,
             drop_tol,
             orth: Orth::Cgs2,
+            correction: Correction::Olsen,
         }
     }
     /// Sets the orthogonalizer.
     pub fn orth(mut self, orth: Orth) -> Self {
         self.orth = orth;
+        self
+    }
+    /// Sets the correction.
+    pub fn correction(mut self, correction: Correction) -> Self {
+        self.correction = correction;
         self
     }
     /// Maximal subspace size.
@@ -101,14 +124,21 @@ impl Davidson {
     pub fn get_orth(&self) -> Orth {
         self.orth
     }
+    /// Correction.
+    pub fn get_correction(&self) -> Correction {
+        self.correction
+    }
 }
 
 /// A Davidson preconditioner: `t ← M(θ)·r` for the residual `r` of the Ritz
 /// pair with value `θ`.
 ///
-/// `M(θ)` must be linear in `r`. `t` holds arbitrary previous contents and
-/// is overwritten. Under the distributed contract of [`Vector`] the result
-/// must be consistent, and an error returned, on every rank.
+/// `M(θ)` must be linear in its vector argument and depend only on `θ`.
+/// Under [`Correction::Olsen`] it is called twice per attempt with the same
+/// `θ`: first on the residual `r`, then on the Ritz vector `x`. `t` holds
+/// arbitrary previous contents on each call and is overwritten. Under the
+/// distributed contract of [`Vector`] the result must be consistent, and an
+/// error returned, on every rank.
 ///
 /// Closures `FnMut(&mut V::Context, Real<V>, &V, &mut V) -> Result<(), V::Error>`
 /// implement this trait. The identity is `|cx, _, r, t| t.copy_from(cx, r)`.
@@ -126,11 +156,12 @@ impl Davidson {
 /// are not related by a global sign flip. See [`davidson_eigsolve`] for a
 /// runnable closure.
 ///
-/// The plain correction can stagnate: for `A = diag(1, 3)` and
-/// `x0 = (1, 1)/√2`, `θ = 2`, `r = (−1, 1)/√2` and `(θ − D)⁻¹·r = −x0`,
-/// which lies in the current subspace and is dropped. The call then returns
-/// unconverged, without an error. block2's default (`Normal`, Olsen's
-/// correction) is not this method.
+/// [`Correction::Plain`] stagnates for a nonconverged Ritz vector with an
+/// unguarded exact inverse of a diagonal `A = D`: `(θ − D)⁻¹·(D − θ)·x = −x`
+/// lies in the current subspace and is dropped. For example, for
+/// `A = diag(1, 3)` and `x0 = (1, 1)/√2`, `θ = 2`, `r = (−1, 1)/√2` and
+/// `(θ − D)⁻¹·r = −x0`; the call then returns unconverged, without an
+/// error. [`Correction::Olsen`] avoids it: there it adds `−(θ − D)⁻¹·x`.
 pub trait Preconditioner<V: Vector> {
     /// `t ← M(θ)·r`. `t` holds arbitrary previous contents.
     fn apply_into(
@@ -164,12 +195,36 @@ where
 ///
 /// Each Rayleigh–Ritz pass scans the Ritz pairs in `which` order and, for
 /// up to `blocksize` of those with residual norm above `tol`, adds the
-/// orthogonalized correction `M(θ)·r` from `precond` (see [`Preconditioner`]).
+/// orthogonalized correction selected by [`Davidson::correction`] from
+/// `precond` (see [`Preconditioner`]).
 /// Once the subspace exceeds `krylovdim − blocksize` it is restarted to the
 /// `restartdim` best Ritz vectors; their images are rotated, not re-applied.
-/// No KrylovKit counterpart exists; the method follows block2's `davidson`
-/// with the plain (not Olsen) correction, extended to blocks (see
+/// No KrylovKit counterpart exists; the method follows block2's `davidson`,
+/// extended to blocks (see
 /// [docs/krylovkit.md](https://github.com/Ryo-wtnb11/krylov-rs/blob/main/docs/krylovkit.md)).
+///
+/// # Corrections
+///
+/// [`Correction::Plain`] adds `t = M·r`. [`Correction::Olsen`] (the default,
+/// block2's `Normal`) forms `w = M·r` and `z = M·x`, `n = ⟨x, w⟩` and
+/// `d = ⟨x, z⟩`, and adds the candidate
+///
+/// - `t = w − (n/d)·z` when `|n| <= |d|` (Olsen's formula),
+/// - `t = (d/n)·w − z` when `|n| > |d|` (the same direction scaled by
+///   `d/n`; `t = −z` at `d = 0`),
+/// - `t = w` when `n = d = 0` (a chosen fallback: every `ε` keeps
+///   `⟨x, t⟩ = 0` there).
+///
+/// Both quotients are formed after scaling `n` and `d` by a common power of
+/// two, so neither overflows nor loses its relative accuracy unless the
+/// quotient itself is below the normal range. The rule never drops a
+/// candidate by itself and needs no tolerance; a candidate that is zero or
+/// lies in the subspace is dropped by `drop_tol` as for Plain. Two
+/// limitations remain: `(d/n)·w − z` can overflow when `w` and `z` are near
+/// the overflow threshold (reported as [`Error::NonFiniteIterate`]), and a
+/// quotient that underflows loses the components of the scaled image, which
+/// matters only for a preconditioner whose range spans about the full
+/// exponent range.
 ///
 /// Result: `nret = min(howmany, q)` pairs in `which` order, `q` the size of
 /// the final Ritz decomposition, so fewer than `howmany` are returned when
@@ -182,20 +237,24 @@ where
 /// The residuals are formed from the stored images `A·V`.
 ///
 /// Workspaces: `ws` holds the orthonormal basis `V` and two scratch vectors;
-/// `ws_av` holds the images `A·V` (not orthonormal; its scratch vectors are
-/// unused). Both bases need capacity `>= krylovdim`. Each call starts from
-/// `x0`: the workspaces keep allocation, not state, across calls. Passes and
+/// `ws_av` holds the images `A·V` (not orthonormal; its two scratch vectors
+/// hold the Ritz vector and its preconditioned image). Both bases need
+/// capacity `>= krylovdim`. Each call starts from `x0`: the workspaces keep
+/// allocation, not state, across calls. Passes and
 /// restarts construct no vectors; a call constructs the `2·nret` returned
 /// eigenvectors and residuals.
 ///
 /// Each pass without a restart costs `O((howmany + blocksize)·k)` vector
 /// operations at subspace size `k`. In detail, with
 /// `s <= howmany + blocksize` scanned roots, `a <= blocksize` attempted and
-/// `c` accepted corrections: `2k` vector updates and one norm per scanned
-/// root, `2k` inner products, `2k`
-/// updates, two norms and one preconditioner call per attempt, and `k + 1`
-/// inner products, three updates and one map application per accepted
-/// correction, plus an `O(k³)` dense eigenproblem.
+/// `c` accepted corrections: `2k + 1` vector updates and one norm per
+/// scanned root, `2k` inner products, `2k` updates, two norms and one
+/// preconditioner call per attempt, and `k + 1` inner products, three
+/// updates and one map application per accepted correction, plus an
+/// `O(k³)` dense eigenproblem. Olsen adds one preconditioner call, two inner
+/// products and at most one update per attempt, so a call makes `2·Σa`
+/// preconditioner calls (`Σa` for Plain) over its passes, dropped
+/// candidates included.
 ///
 /// Errors: [`Error::InvalidArgument`] for an empty `x0`, `blocksize`,
 /// `maxiter` or `howmany` of zero, a negative or NaN `tol`, `drop_tol`
@@ -206,7 +265,8 @@ where
 /// `krylovdim`; [`Error::NonFiniteStartVector`] for a start vector with NaN
 /// or ±∞; [`Error::ZeroStartVector`] when every start vector is dropped;
 /// [`Error::NonFiniteIterate`] for NaN or ±∞ produced by the map, the
-/// preconditioner or a residual; [`Error::DenseNoConvergence`]; and
+/// preconditioner, a residual or Olsen's `⟨x, M·r⟩` and `⟨x, M·x⟩`;
+/// [`Error::DenseNoConvergence`]; and
 /// [`Error::Vector`] for any failing vector, basis, map or preconditioner
 /// call.
 ///
@@ -433,14 +493,17 @@ where
         // Scan the Ritz pairs `i < q`; corrections accepted earlier in this
         // pass are already in V, so later ones are orthogonalized against them.
         let (mut att, mut acc, mut lead) = (0, 0, 0);
+        // The Ritz vector `x` goes to `ws_av.v` and its residual to `ws.v`.
         for i in 0..q {
             ritz_coeffs(&mut yhat, &y[i * q..(i + 1) * q], ws.basis.len());
+            ws.basis
+                .combine_into(cx, &yhat, &mut ws_av.v, sone, szero)
+                .map_err(ve)?;
             ws_av
                 .basis
                 .combine_into(cx, &yhat, &mut ws.v, sone, szero)
                 .map_err(ve)?;
-            ws.basis
-                .combine_into(cx, &yhat, &mut ws.v, -V::Scalar::from_real(theta[i]), sone)
+            ws.v.axpby(cx, -V::Scalar::from_real(theta[i]), &ws_av.v, sone)
                 .map_err(ve)?;
             let rn = ws.v.norm(cx).map_err(ve)?;
             if !rn.is_finite() {
@@ -456,6 +519,19 @@ where
                 precond
                     .apply_into(cx, theta[i], &ws.v, &mut ws.w)
                     .map_err(ve)?;
+                if alg.correction == Correction::Olsen {
+                    precond
+                        .apply_into(cx, theta[i], &ws_av.v, &mut ws_av.w)
+                        .map_err(ve)?;
+                    let n = ws_av.v.inner(cx, &ws.w).map_err(ve)?;
+                    let d = ws_av.v.inner(cx, &ws_av.w).map_err(ve)?;
+                    match olsen(n, d)? {
+                        Olsen::SubtractImage(q) => ws.w.axpby(cx, -q, &ws_av.w, sone),
+                        Olsen::ScaleResidual(q) => ws.w.axpby(cx, -sone, &ws_av.w, q),
+                        Olsen::Keep => Ok(()),
+                    }
+                    .map_err(ve)?;
+                }
                 if st.attempt(cx, op, ws, ws_av)? {
                     acc += 1;
                 }
@@ -500,6 +576,43 @@ where
         max_imag: st.max_imag,
     };
     Ok((theta[..nret].to_vec(), vectors, info))
+}
+
+/// How Olsen's candidate is formed from `w = M·r` and `z = M·x`.
+enum Olsen<S> {
+    /// `w ← w − q·z`.
+    SubtractImage(S),
+    /// `w ← q·w − z`.
+    ScaleResidual(S),
+    /// `w` unchanged.
+    Keep,
+}
+
+/// The branch rule of [`davidson_eigsolve`] for `n = ⟨x, w⟩` and
+/// `d = ⟨x, z⟩`. Scaling both by the power of two of their largest
+/// component bounds every squared modulus by 8 and the larger one below by
+/// 1, so the denominator of the scalar `/` (`b.re² + b.im²` for complex)
+/// stays in `[1, 8]` and the division cannot overflow. Tiny numerator
+/// components or a tiny quotient can still underflow. A rounded reciprocal is not used: `b·(1/b)` is not
+/// exactly 1, and the difference can survive projection against `w` and `z`.
+fn olsen<S: crate::scalar::Scalar, E>(n: S, d: S) -> Result<Olsen<S>, Error<E>> {
+    if !n.all_finite() || !d.all_finite() {
+        return Err(Error::NonFiniteIterate);
+    }
+    let big = [n.re(), n.im(), d.re(), d.im()]
+        .into_iter()
+        .fold(S::Real::zero(), |m, c| m.max(c.abs()));
+    if big == S::Real::zero() {
+        return Ok(Olsen::Keep);
+    }
+    let e = ilogb(big);
+    let (n, d) = (ldexp(n, -e), ldexp(d, -e));
+    let sq = |x: S| x.re() * x.re() + x.im() * x.im();
+    Ok(if sq(n) <= sq(d) {
+        Olsen::SubtractImage(n / d)
+    } else {
+        Olsen::ScaleResidual(d / n)
+    })
 }
 
 /// `out ← y` zero-padded to `len`: the same Ritz vector in a basis that has
