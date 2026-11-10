@@ -40,6 +40,7 @@ Vector/map implementations own placement and parallelism.
 | --- | --- |
 | `eigsolve` | `Lanczos`; Hermitian map |
 | `block_eigsolve` | `BlockLanczos`; Hermitian map, start block bounds resolvable multiplicity |
+| `davidson_eigsolve` | `Davidson`; Hermitian map, caller's `Preconditioner` (e.g. diagonal), start block |
 | `schursolve` | `Arnoldi`; general map, partial Schur form |
 | `arnoldi_eigsolve` / `realeigsolve` | `Arnoldi`; complex / real vector scalar respectively |
 | `svdsolve` | `Gkl`; adjoint map, start vector in the codomain |
@@ -57,7 +58,10 @@ Complex time requires a complex vector scalar (e.g. `t = -iτ` for real-time evo
 
 Cost and accuracy parameters are required: `new(krylovdim, maxiter, tol)` for
 `Lanczos`, `Arnoldi`, `Gkl` and `Gmres`; `BlockLanczos` also takes `qr_tol`,
-and `Cg::new(maxiter, tol)` needs no Krylov dimension. Where available,
+and `Cg::new(maxiter, tol)` needs no Krylov dimension.
+`Davidson::new(krylovdim, restartdim, blocksize, maxiter, tol, drop_tol)`
+also fixes the restart size, the corrections per pass and the relative drop
+tolerance. Where available,
 `.orth(Orth)` defaults to `Cgs2` (classical Gram–Schmidt with reorthogonalization)
 and `.eager(bool)` to `false`. Parameters are checked at the solver call;
 see [restricted inputs](krylovkit.md#restricted-inputs).
@@ -75,6 +79,7 @@ vector space. A custom `Basis` can be supplied through `Workspace::new`.
 | `Cg` | 0 (basis unused) |
 | `BlockLanczos`, start block size `b` | `krylovdim + b - 1` |
 | `Gkl` | `krylovdim` in each of two workspaces (codomain and domain) |
+| `Davidson` | `krylovdim` in each of two workspaces (basis and its images `A·V`) |
 | Others | `krylovdim` |
 
 Iterations and restarts construct no new vectors in crate code; results and
@@ -94,7 +99,10 @@ Eigen/SVD values follow `Which` order; `converged` counts the leading entries.
 Results can exceed `howmany` when more entries converge, or contain fewer
 when the subspace is exhausted. Real Schur results do not split conjugate
 pairs. `numops` counts map applications; `numiter` follows `maxiter`'s units.
-Lanczos `max_imag` records the largest discarded `|Im α|`.
+Lanczos `max_imag` records the largest discarded `|Im α|`. `davidson_eigsolve`
+returns at most `howmany` pairs (`min(howmany, q)`, `q` the final Ritz
+dimension) and reports stagnation, when every correction of a pass is
+dropped, through `info.converged`.
 Typed failures, including propagated vector errors, are defined by
 [`Error`](../src/error.rs); they are separate from non-convergence.
 

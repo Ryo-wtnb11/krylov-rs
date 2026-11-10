@@ -175,6 +175,46 @@ sign/phase convention differs. See [householder.rs](../src/dense/householder.rs)
   is `ZeroStartVector`; empty starts and ineffective restart sizes are
   `InvalidArgument`.
 
+## davidson_eigsolve
+
+KrylovKit v0.10.4 has no Davidson solver. The method follows block2's
+`davidson` (`src/core/iterative_matrix_functions.hpp`) with its plain
+diagonal correction (`DavidsonPrecond`); the API follows krylov's other
+eigensolvers.
+
+- **Not block2's default:** block2's DMRG default (`Normal`) is Olsen's
+  correction. Only the plain correction `M(θ)·r` is provided, through the
+  caller's `Preconditioner`; krylov owns no elementwise kernel, so the
+  diagonal `tᵢ = rᵢ/(θ − dᵢ)` (`rᵢ` kept where `|θ − dᵢ|` is at most the
+  caller's guard, `1e-12` in block2) is a documented closure.
+- **Stagnation:** the plain correction can lie in the current subspace. For
+  `A = diag(1, 3)` and `x0 = (1, 1)/√2`, `θ = 2`, `r = (−1, 1)/√2` and
+  `(θ − D)⁻¹·r = −x0`, which is dropped; the call returns unconverged
+  without an error. A diagonal very close to the spectrum also slows the
+  plain correction, because it then mostly reproduces the Ritz vector.
+- **Storage and work:** the basis, its images and the projected matrix stay
+  unrotated between restarts, and one column of `Vᴴ·A·V` is added per
+  accepted vector. block2 rotates both stores and recomputes the projection
+  on every pass, `Θ(k²)` vector operations instead of
+  `O((howmany + blocksize)·k)` per pass without a restart, at subspace size
+  `k`. Restarts rotate both stores to the kept Ritz vectors without
+  re-applying the map; between restarts at least `⌊(m − r)/b⌋` passes
+  follow from dimension `r`, while the initial block can restart at once.
+- **Blocks:** up to `blocksize` corrections per Rayleigh–Ritz pass, for the
+  leading unconverged Ritz pairs; `blocksize = 1` is block2's one vector per
+  pass. A converged root does not cost a pass: the next root is corrected
+  in the same pass.
+- **Orthogonalization and drops:** CGS2 (or MGS2) instead of one MGS pass,
+  with a relative `drop_tol` per candidate instead of block2's absolute
+  `1e-14` on `‖b‖²`, and non-finite guards (`NonFiniteIterate`).
+- **Parameters and results:** `tol` bounds `‖A·x − θ·x‖` (block2's
+  `conv_thrd` applies to its square, so `tol = √conv_thrd` at
+  `rel_conv_thrd = 0`). Sizes block2 adjusts silently are `InvalidArgument`;
+  non-convergence after `maxiter` restart cycles is reported in `info`
+  (block2 asserts). `which` selects among real Ritz values; block2's
+  `GreaterThan` is relative to a shift, not descending. No shift, projection
+  against other states, harmonic or non-Hermitian variants.
+
 ## svdsolve
 
 - **Full reorthogonalization on both sides:** each new vector is

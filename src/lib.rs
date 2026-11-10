@@ -12,8 +12,9 @@
 //! [`exponentiate`] with its generalization [`expintegrator`] to
 //! `φ`-function combinations. [`linsolve`] solves `(a₀ + a₁·A)·x = b` by
 //! [`Cg`] or [`Gmres`]. [`block_eigsolve`] handles degenerate
-//! spectra with [`BlockLanczos`]. [`svdsolve`] computes partial SVDs of an
-//! [`AdjointMap`] by [`Gkl`]. Non-Hermitian maps use the Krylov–Schur method
+//! spectra with [`BlockLanczos`]. [`davidson_eigsolve`] is the preconditioned
+//! block Davidson method ([`Davidson`], [`Preconditioner`]). [`svdsolve`]
+//! computes partial SVDs of an [`AdjointMap`] by [`Gkl`]. Non-Hermitian maps use the Krylov–Schur method
 //! with [`Arnoldi`]: [`schursolve`], [`arnoldi_eigsolve`] (complex vectors)
 //! and [`realeigsolve`] (real vectors); [`exponentiate`] and
 //! [`expintegrator`] take either process ([`KrylovProcess`]). KrylovKit's
@@ -78,6 +79,7 @@
 mod arnoldi;
 mod basis;
 mod block_lanczos;
+mod davidson;
 mod dense;
 mod eigsolve;
 mod error;
@@ -92,6 +94,7 @@ mod traits;
 pub use arnoldi::{Arnoldi, arnoldi_eigsolve, realeigsolve, schursolve};
 pub use basis::VecBasis;
 pub use block_lanczos::{BlockLanczos, block_eigsolve};
+pub use davidson::{Davidson, Preconditioner, davidson_eigsolve};
 pub use eigsolve::{ConvergenceInfo, Which, eigsolve};
 pub use error::Error;
 pub use exponentiate::{ExpInfo, KrylovProcess, expintegrator, exponentiate};
