@@ -7,6 +7,7 @@ use crate::dense::{Work, arrowhead_to_band};
 use crate::eigsolve::{ConvergenceInfo, Which, sort_eig};
 use crate::error::Error;
 use crate::orth::{Orth, orthogonalize};
+use crate::pow2::{ilogb, ldexp};
 use crate::scalar::sealed::{Ops as _, RealOps as _};
 use crate::scalar::{MatRef, Real, RealScalar, Scalar};
 use crate::traits::{Basis, LinearMap, Vector, Workspace};
@@ -664,26 +665,4 @@ fn scaled_norm<R: RealScalar>(xs: &[R]) -> R {
     let inv = ldexp(R::one(), -e);
     let ss = xs.iter().fold(R::zero(), |s, &x| s + (x * inv) * (x * inv));
     ldexp(ss.sqrt(), e)
-}
-
-/// `⌊log₂ x⌋` for finite `x > 0`, subnormals included.
-fn ilogb<R: RealScalar>(x: R) -> i32 {
-    let (m, e, _) = x.integer_decode();
-    i32::from(e) + 63 - m.leading_zeros() as i32
-}
-
-/// `x·2ᵉ`, in factors of at most `2^±60` (representable even in `f32`), so
-/// the result is exact whenever it is a normal number.
-fn ldexp<S: Scalar>(mut x: S, mut e: i32) -> S {
-    const STEP: i32 = 60;
-    let two = S::Real::from_f64(2.0);
-    while e > STEP {
-        x = x.mul_real(two.powi(STEP));
-        e -= STEP;
-    }
-    while e < -STEP {
-        x = x.mul_real(two.powi(-STEP));
-        e += STEP;
-    }
-    x.mul_real(two.powi(e))
 }

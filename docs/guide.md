@@ -63,8 +63,9 @@ and `Cg::new(maxiter, tol)` needs no Krylov dimension.
 also fixes the restart size, the corrections per pass and the relative drop
 tolerance. Where available,
 `.orth(Orth)` defaults to `Cgs2` (classical Gram–Schmidt with reorthogonalization)
-and `.eager(bool)` to `false`. Parameters are checked at the solver call;
-see [restricted inputs](krylovkit.md#restricted-inputs).
+and `.eager(bool)` to `false`; `Davidson::correction(Correction)` defaults to
+`Olsen` (`Plain` adds `M(θ)·r` with one preconditioner call per attempt).
+Parameters are checked at the solver call; see [restricted inputs](krylovkit.md#restricted-inputs).
 
 `maxiter` limits Krylov subspaces (GMRES restart cycles, exponential time
 steps), except for CG where it limits iterations. Tolerances must suit the

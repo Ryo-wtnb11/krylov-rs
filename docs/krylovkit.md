@@ -178,20 +178,31 @@ sign/phase convention differs. See [householder.rs](../src/dense/householder.rs)
 ## davidson_eigsolve
 
 KrylovKit v0.10.4 has no Davidson solver. The method follows block2's
-`davidson` (`src/core/iterative_matrix_functions.hpp`) with its plain
-diagonal correction (`DavidsonPrecond`); the API follows krylov's other
-eigensolvers.
+`davidson` (`src/core/iterative_matrix_functions.hpp`); the API follows
+krylov's other eigensolvers.
 
-- **Not block2's default:** block2's DMRG default (`Normal`) is Olsen's
-  correction. Only the plain correction `M(θ)·r` is provided, through the
-  caller's `Preconditioner`; krylov owns no elementwise kernel, so the
-  diagonal `tᵢ = rᵢ/(θ − dᵢ)` (`rᵢ` kept where `|θ − dᵢ|` is at most the
-  caller's guard, `1e-12` in block2) is a documented closure.
+- **Corrections:** `Correction::Olsen`, the default, is block2's `Normal`
+  (`olsen_precondition`, `iterative_matrix_functions.hpp:93-110`, selected
+  at 1086-1087): `t = M·r − ε·M·x` with `ε = ⟨x, M·r⟩/⟨x, M·x⟩`, both
+  inner products conjugating `x` as block2's `complex_dot` does.
+  `Correction::Plain` is block2's `DavidsonPrecond`, `t = M·r`. `M(θ)` is
+  the caller's `Preconditioner`, called on `r` and then on `x` under Olsen;
+  krylov owns no elementwise kernel, so the diagonal `tᵢ = rᵢ/(θ − dᵢ)`
+  (`rᵢ` kept where `|θ − dᵢ|` is at most the caller's guard, `1e-12` in
+  block2) is a documented closure.
+- **Olsen denominator:** block2 divides by `⟨x, M·x⟩` unguarded, producing
+  ±∞ or NaN at zero. krylov uses `w − (n/d)·M·x` for `|n| <= |d|`, the same
+  direction scaled as `(d/n)·w − M·x` for `|n| > |d|` (so `−M·x` at
+  `d = 0`) and `w = M·r` itself at `n = d = 0`, with `n = ⟨x, w⟩` and
+  `d = ⟨x, M·x⟩`. The quotient is taken after scaling `n` and `d` by a
+  common power of two, so it neither over- nor underflows in range.
+  Non-finite `n` or `d` is `NonFiniteIterate`.
 - **Stagnation:** the plain correction can lie in the current subspace. For
   `A = diag(1, 3)` and `x0 = (1, 1)/√2`, `θ = 2`, `r = (−1, 1)/√2` and
   `(θ − D)⁻¹·r = −x0`, which is dropped; the call returns unconverged
   without an error. A diagonal very close to the spectrum also slows the
   plain correction, because it then mostly reproduces the Ritz vector.
+  Olsen's correction avoids the first case; it is not uniformly faster.
 - **Storage and work:** the basis, its images and the projected matrix stay
   unrotated between restarts, and one column of `Vᴴ·A·V` is added per
   accepted vector. block2 rotates both stores and recomputes the projection
