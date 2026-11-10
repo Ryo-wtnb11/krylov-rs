@@ -651,6 +651,16 @@ fn block_residuals_are_exact_at_extreme_scales() {
         rel(v[0], 1e200, 1e190, false) && rel(v[1], 1e200, 1e190, false),
         "{v:?}"
     );
+    // Near-underflow and subnormal s·(J − I), eigenvalues s·[-1, -1, 2]: the
+    // full space is the first block, so the recurrence residual is zero and
+    // only a correct projected spectrum gives the true residuals.
+    for s in [2e-308, 1e-310] {
+        let m: Vec<Vec<f64>> = (0..3)
+            .map(|i| (0..3).map(|j| if i == j { 0.0 } else { s }).collect())
+            .collect();
+        let v = run(&m, 3, BlockLanczos::new(4, 1, 1e-320, 0.0), false);
+        assert!(rel(v[0], 2.0 * s, 1e-320, false), "s = {s:e}: {v:?}");
+    }
     // Single precision: squares of 1e∓30 leave the f32 range.
     let v = run(&pair(1e-30), 1, BlockLanczos::new(2, 1, 1e-37, 0.0), true);
     assert!(rel(v[0], 1e-30, 1e-37, true), "{v:?}");

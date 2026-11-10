@@ -37,7 +37,7 @@ pub(crate) mod sealed {
     use num_complex::Complex;
     use num_traits::Float;
 
-    use crate::dense::Work;
+    use crate::dense::{Problem, Work};
 
     /// Internal scalar helpers; unnameable outside the crate, which also
     /// seals [`Scalar`](super::Scalar).
@@ -55,7 +55,7 @@ pub(crate) mod sealed {
         fn mul_real(self, r: R) -> Self;
         /// Eigendecomposition of the Hermitian `n × n` matrix `a` (upper
         /// triangle read, destroyed): ascending `eig`, eigenvectors in `z`.
-        /// LAPACK `xSYEVR` for real, `xHEEVR` for complex scalars.
+        /// Sequential faer self-adjoint EVD (KrylovKit uses SYEVR/HEEVR).
         fn heig(
             a: &mut [Self],
             n: usize,
@@ -63,24 +63,26 @@ pub(crate) mod sealed {
             z: &mut [Self],
             w: &mut Work<Self, R>,
         ) -> Result<(), ()>;
-        /// `xGEBAL('B')` on the `n × n` matrix `a` (balanced in place):
-        /// returns the 0-based `(ilo, ihi)`; `scale` (`n`) holds the scaling
-        /// factors inside `ilo..=ihi` and the 1-based permutation indices
-        /// outside it, as LAPACK stores them.
-        fn gebal(a: &mut [Self], n: usize, scale: &mut [R]) -> Result<(usize, usize), ()>;
-        /// `xGESV`: `b ← A⁻¹·b` for the `n × n` `a` (overwritten by its LU
-        /// factors) and the `nrhs` columns of `b`; `ipiv` holds `n` entries.
-        /// `Err(())` also for an exactly singular `a` (`info > 0`).
+        /// Balance `a` in place; return the half-open active interval.
+        /// `perm[i]` is the original index and `scale[i]` the diagonal scale.
+        fn gebal(
+            a: &mut [Self],
+            n: usize,
+            scale: &mut [R],
+            perm: &mut [usize],
+        ) -> Result<(usize, usize), ()>;
+        /// `b ← A⁻¹·b` using faer pivoted LU and retained scratch.
+        /// `a` is overwritten; exactly zero pivots return `Err(())`.
         fn gesv(
             a: &mut [Self],
             b: &mut [Self],
             n: usize,
             nrhs: usize,
-            ipiv: &mut [i32],
+            w: &mut Work<Self, R>,
         ) -> Result<(), ()>;
         /// Whether the type is complex (its Schur factors are triangular).
         const COMPLEX: bool;
-        /// Raw LAPACK `xHSEQR(job='S', compz='V')` on the `n × n` upper
+        /// Raw faer Hessenberg Schur decomposition on the `n × n` upper
         /// Hessenberg `h` (column-major): `h ← T`, `z ← z·Q`, eigenvalues in
         /// `ev` (a real complex pair `+im` first).
         fn hseqr_raw(
@@ -90,8 +92,7 @@ pub(crate) mod sealed {
             ev: &mut [Complex<R>],
             w: &mut Work<Self, R>,
         ) -> Result<(), ()>;
-        /// LAPACK `xTREXC(compq='V')`, 0-based block positions. `Err` when
-        /// the real swap is rejected as too ill-conditioned (`info = 1`).
+        /// faer Schur block move, 0-based positions. `Err` on rejected real swaps.
         fn trexc(
             t: &mut [Self],
             q: &mut [Self],
@@ -100,7 +101,7 @@ pub(crate) mod sealed {
             ilst: usize,
             w: &mut Work<Self, R>,
         ) -> Result<(), ()>;
-        /// LAPACK `xTREVC(side='R', howmny='A')` on the Schur factor `t`.
+        /// faer right eigenvectors of the Schur factor `t` (no back-transform).
         fn trevc(
             t: &mut [Self],
             n: usize,
@@ -111,6 +112,10 @@ pub(crate) mod sealed {
 
     /// Internal real helpers; seals [`RealScalar`](super::RealScalar).
     pub trait RealOps: Float {
+        /// Scratch query hook for the four built-in scalar types.
+        fn work_req(_n: usize, _problem: Problem, _complex: bool) -> faer::dyn_stack::StackReq {
+            faer::dyn_stack::StackReq::EMPTY
+        }
         /// `sqrt(a² + b²)` without undue overflow, using only `sqrt`.
         fn hypot2(self, b: Self) -> Self {
             let (a, b) = (self.abs(), b.abs());
@@ -128,10 +133,9 @@ pub(crate) mod sealed {
             <Self as num_traits::NumCast>::from(n).unwrap_or_else(Self::nan)
         }
 
-        // LAPACK hooks, implemented in `dense/lapack.rs`. `Err(())` is a
-        // nonzero LAPACK `info`.
+        // Dense hooks implemented in `dense/backend.rs`; Err is a backend failure.
 
-        /// `xSTEGR`: eigenvalues of the symmetric tridiagonal matrix with
+        /// Tridiagonal EVD: eigenvalues of the symmetric tridiagonal matrix with
         /// diagonal `d` and off-diagonal `e[..n-1]` (`e.len() >= n`, destroyed)
         /// into `d` (ascending), eigenvectors into `z` (`n × n`).
         fn stegr(
@@ -140,18 +144,17 @@ pub(crate) mod sealed {
             z: &mut [Self],
             w: &mut Work<Self, Self>,
         ) -> Result<(), ()>;
-        /// `xBDSQR` on the `n × n` lower (`lower`) or upper bidiagonal matrix
-        /// with diagonal `d`, off-diagonal `e[..n-1]`: `B = U·diag(d)·VT` with
-        /// `d` descending, `U ← U·Q` and `VT ← Pᵀ·VT` (`n × n` each).
+        /// SVD of lower (`lower`) or upper bidiagonal input: `B = U·diag(d)·Vᵀ`.
+        /// `d` is descending; `u` and `v` are overwritten with vector columns.
         fn bdsqr(
             lower: bool,
             d: &mut [Self],
             e: &mut [Self],
-            vt: &mut [Self],
+            v: &mut [Self],
             u: &mut [Self],
             w: &mut Work<Self, Self>,
         ) -> Result<(), ()>;
-        /// `xSYEVR` (see [`Ops::heig`]).
+        /// Real Hermitian EVD (see [`Ops::heig`]).
         fn syevr(
             a: &mut [Self],
             n: usize,
@@ -159,7 +162,7 @@ pub(crate) mod sealed {
             z: &mut [Self],
             w: &mut Work<Self, Self>,
         ) -> Result<(), ()>;
-        /// `xHEEVR` (see [`Ops::heig`]).
+        /// Complex Hermitian EVD (see [`Ops::heig`]).
         fn heevr(
             a: &mut [Complex<Self>],
             n: usize,
@@ -167,31 +170,37 @@ pub(crate) mod sealed {
             z: &mut [Complex<Self>],
             w: &mut Work<Complex<Self>, Self>,
         ) -> Result<(), ()>;
-        /// `xGEBAL('B')` for real matrices (see [`Ops::gebal`]).
-        fn gebal_r(a: &mut [Self], n: usize, scale: &mut [Self]) -> Result<(usize, usize), ()>;
-        /// `xGEBAL('B')` for complex matrices (see [`Ops::gebal`]).
+        /// Balancing for real matrices (see [`Ops::gebal`]).
+        fn gebal_r(
+            a: &mut [Self],
+            n: usize,
+            scale: &mut [Self],
+            perm: &mut [usize],
+        ) -> Result<(usize, usize), ()>;
+        /// Balancing for complex matrices (see [`Ops::gebal`]).
         fn gebal_c(
             a: &mut [Complex<Self>],
             n: usize,
             scale: &mut [Self],
+            perm: &mut [usize],
         ) -> Result<(usize, usize), ()>;
-        /// `xGESV` for real matrices (see [`Ops::gesv`]).
+        /// Pivoted LU for real matrices (see [`Ops::gesv`]).
         fn gesv_r(
             a: &mut [Self],
             b: &mut [Self],
             n: usize,
             nrhs: usize,
-            ipiv: &mut [i32],
+            w: &mut Work<Self, Self>,
         ) -> Result<(), ()>;
-        /// `xGESV` for complex matrices (see [`Ops::gesv`]).
+        /// Pivoted LU for complex matrices (see [`Ops::gesv`]).
         fn gesv_c(
             a: &mut [Complex<Self>],
             b: &mut [Complex<Self>],
             n: usize,
             nrhs: usize,
-            ipiv: &mut [i32],
+            w: &mut Work<Complex<Self>, Self>,
         ) -> Result<(), ()>;
-        /// Real `xHSEQR(job='S', compz='V')` on the `n × n` Hessenberg `h`.
+        /// Real Hessenberg Schur on the `n × n` Hessenberg `h`.
         fn hseqr(
             h: &mut [Self],
             z: &mut [Self],
@@ -199,7 +208,7 @@ pub(crate) mod sealed {
             ev: &mut [Complex<Self>],
             w: &mut Work<Self, Self>,
         ) -> Result<(), ()>;
-        /// Complex `xHSEQR(job='S', compz='V')`.
+        /// Complex Hessenberg Schur.
         fn chseqr(
             h: &mut [Complex<Self>],
             z: &mut [Complex<Self>],
@@ -207,7 +216,7 @@ pub(crate) mod sealed {
             ev: &mut [Complex<Self>],
             w: &mut Work<Complex<Self>, Self>,
         ) -> Result<(), ()>;
-        /// Real `xTREXC(compq='V')`, 0-based `ifst`/`ilst`.
+        /// Real Schur move, 0-based `ifst`/`ilst`.
         fn trexc(
             t: &mut [Self],
             q: &mut [Self],
@@ -216,7 +225,7 @@ pub(crate) mod sealed {
             ilst: usize,
             w: &mut Work<Self, Self>,
         ) -> Result<(), ()>;
-        /// Complex `xTREXC(compq='V')`, 0-based `ifst`/`ilst`.
+        /// Complex Schur move, 0-based `ifst`/`ilst`.
         fn ctrexc(
             t: &mut [Complex<Self>],
             q: &mut [Complex<Self>],
@@ -224,11 +233,11 @@ pub(crate) mod sealed {
             ifst: usize,
             ilst: usize,
         ) -> Result<(), ()>;
-        /// Real `xTREVC(side='R', howmny='A')`: right eigenvectors of the
+        /// Real Schur right eigenvectors: right eigenvectors of the
         /// quasi-triangular `t` into `vr` (`n × n`).
         fn trevc(t: &[Self], n: usize, vr: &mut [Self], w: &mut Work<Self, Self>)
         -> Result<(), ()>;
-        /// Complex `xTREVC(side='R', howmny='A')`.
+        /// Complex Schur right eigenvectors.
         fn ctrevc(
             t: &mut [Complex<Self>],
             n: usize,
@@ -274,17 +283,22 @@ macro_rules! real_scalar {
             ) -> Result<(), ()> {
                 <$t as sealed::RealOps>::syevr(a, n, eig, z, w)
             }
-            fn gebal(a: &mut [Self], n: usize, scale: &mut [$t]) -> Result<(usize, usize), ()> {
-                <$t as sealed::RealOps>::gebal_r(a, n, scale)
+            fn gebal(
+                a: &mut [Self],
+                n: usize,
+                scale: &mut [$t],
+                perm: &mut [usize],
+            ) -> Result<(usize, usize), ()> {
+                <$t as sealed::RealOps>::gebal_r(a, n, scale, perm)
             }
             fn gesv(
                 a: &mut [Self],
                 b: &mut [Self],
                 n: usize,
                 nrhs: usize,
-                ipiv: &mut [i32],
+                w: &mut crate::dense::Work<Self, $t>,
             ) -> Result<(), ()> {
-                <$t as sealed::RealOps>::gesv_r(a, b, n, nrhs, ipiv)
+                <$t as sealed::RealOps>::gesv_r(a, b, n, nrhs, w)
             }
             const COMPLEX: bool = false;
             fn hseqr_raw(
@@ -354,17 +368,22 @@ macro_rules! real_scalar {
             ) -> Result<(), ()> {
                 <$t as sealed::RealOps>::heevr(a, n, eig, z, w)
             }
-            fn gebal(a: &mut [Self], n: usize, scale: &mut [$t]) -> Result<(usize, usize), ()> {
-                <$t as sealed::RealOps>::gebal_c(a, n, scale)
+            fn gebal(
+                a: &mut [Self],
+                n: usize,
+                scale: &mut [$t],
+                perm: &mut [usize],
+            ) -> Result<(usize, usize), ()> {
+                <$t as sealed::RealOps>::gebal_c(a, n, scale, perm)
             }
             fn gesv(
                 a: &mut [Self],
                 b: &mut [Self],
                 n: usize,
                 nrhs: usize,
-                ipiv: &mut [i32],
+                w: &mut crate::dense::Work<Self, $t>,
             ) -> Result<(), ()> {
-                <$t as sealed::RealOps>::gesv_c(a, b, n, nrhs, ipiv)
+                <$t as sealed::RealOps>::gesv_c(a, b, n, nrhs, w)
             }
             const COMPLEX: bool = true;
             fn hseqr_raw(

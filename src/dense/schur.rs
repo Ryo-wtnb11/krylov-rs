@@ -1,5 +1,5 @@
-//! Schur form of the Arnoldi Rayleigh quotient: LAPACK `xHSEQR`, reordering
-//! (`xTREXC`) and eigenvectors (`xTREVC`), driven as KrylovKit v0.10.4
+//! Schur form, reordering and right eigenvectors via sequential faer,
+//! driven as KrylovKit v0.10.4
 //! `src/dense/linalg.jl` drives them.
 
 use num_complex::Complex;
@@ -12,10 +12,10 @@ use crate::scalar::sealed::RealOps as _;
 type R<S> = <S as Scalar>::Real;
 
 /// Schur form `h ← T = Qᴴ·H·Q`, `z ← z·Q` of the `n × n` upper Hessenberg
-/// `h` (column-major) by LAPACK `xHSEQR(job='S', compz='V')`, eigenvalues in
+/// `h` (column-major) by faer (KrylovKit uses HSEQR), eigenvalues in
 /// `ev` (real: 2×2 blocks in standard form, the `+im` eigenvalue first).
 ///
-/// `Err(())` on non-finite input or a LAPACK failure.
+/// `Err(())` on non-finite input or a backend failure.
 ///
 /// Unlike KrylovKit's bare `hseqr!` call, `h` is first scaled by a power of
 /// four into `[sqrt(SAFMIN)/ULP, its inverse]`, as `xGEEV`/`xGEES` do: LAHQR
@@ -126,7 +126,7 @@ fn repair_underflowed_blocks<S: Scalar>(
 /// `xTREXC` (KrylovKit `permuteschur!`). A real 2×2 block moves as a whole;
 /// `order` must list its two positions consecutively.
 ///
-/// `Err(())` when LAPACK rejects a swap or `order` would split a 2×2 block.
+/// `Err(())` when faer rejects a swap or `order` would split a 2×2 block.
 pub(crate) fn permute_schur<S: Scalar>(
     t: &mut [S],
     q: &mut [S],
@@ -296,7 +296,7 @@ mod tests {
             if i + 1 < n && t[(i + 1, i)] != 0.0 {
                 // Standardized 2×2 block holding a complex pair.
                 assert!(i + 2 >= n || t[(i + 2, i + 1)] == 0.0, "adjacent blocks");
-                assert_eq!(t[(i, i)], t[(i + 1, i + 1)]);
+                assert_eq!(t[(i, i)], t[(i + 1, i + 1)], "n={n}, block={i}");
                 assert_ne!(
                     t[(i, i + 1)].is_sign_negative(),
                     t[(i + 1, i)].is_sign_negative()
@@ -683,8 +683,8 @@ mod tests {
         }
     }
 
-    /// `real_schur` scales matrices near 1e-300 into range before the LAPACK
-    /// call: the Schur factorization of such a matrix is still a valid one
+    /// `real_schur` scales matrices near 1e-300 into range before the Schur
+    /// factorization: the Schur factorization of such a matrix is still a valid one
     /// (reconstruction and orthogonality) and its eigenvalues are the
     /// eigenvalues of the rescaled matrix, times the scale.
     #[test]
@@ -744,7 +744,7 @@ mod tests {
     }
 
     /// The range scaling must not touch inputs already inside the safe range:
-    /// the result is LAPACK's unscaled one, bit for bit.
+    /// the result is faer's unscaled one, bit for bit.
     #[test]
     fn range_scaling_is_the_identity_in_range() {
         let n = 20;

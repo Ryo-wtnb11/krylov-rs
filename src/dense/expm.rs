@@ -7,8 +7,8 @@
 //! `xGESV` solve, and undoing the balancing. The step controller reads one
 //! tiny entry of the result, so this module follows that sequence instead of
 //! another (equally valid) `exp` algorithm. Balancing and the solve are the
-//! LAPACK routines Julia calls (see `dense/lapack.rs`); the driver around
-//! them is implemented here.
+//! sequential faer routines (Julia uses LAPACK); the Padé driver around
+//! them is retained here. See `docs/krylovkit.md`.
 
 use num_traits::{Float, One, Zero};
 
@@ -27,7 +27,7 @@ pub(crate) struct ExpmWork<S: Scalar> {
     v: Vec<S>,
     t2: Vec<S>,
     tmp: Vec<S>,
-    ipiv: Vec<i32>,
+    lu: super::Work<S, S::Real>,
     scale: Vec<S::Real>,
     perm: Vec<usize>,
 }
@@ -46,7 +46,7 @@ impl<S: Scalar> ExpmWork<S> {
             v: m(),
             t2: m(),
             tmp: m(),
-            ipiv: Vec::with_capacity(nmax),
+            lu: super::Work::new(nmax, super::Problem::Lu),
             scale: Vec::with_capacity(nmax),
             perm: Vec::with_capacity(nmax),
         }
@@ -72,8 +72,6 @@ impl<S: Scalar> ExpmWork<S> {
             b.clear();
             b.resize(n * n, S::zero());
         }
-        self.ipiv.clear();
-        self.ipiv.resize(n, 0);
         self.scale.clear();
         self.scale.resize(n, S::Real::one());
         self.perm.clear();
@@ -223,7 +221,7 @@ fn expm_impl<S: Scalar>(a: &mut [S], n: usize, w: &mut ExpmWork<S>) -> Result<(u
         }
         (13, si)
     };
-    bal.undo(&mut w.x, n, &w.scale, &w.perm);
+    bal.undo(&mut w.x, n, &w.scale, &w.perm, &mut w.p);
     Ok((degree, si))
 }
 
@@ -276,67 +274,44 @@ fn pade_solve<S: Scalar>(w: &mut ExpmWork<S>, n: usize) -> Result<(), ()> {
         *d = v - u;
         *x = v + u;
     }
-    S::gesv(&mut w.tmp, &mut w.x, n, n, &mut w.ipiv)
+    S::gesv(&mut w.tmp, &mut w.x, n, n, &mut w.lu)
 }
 
-/// Balancing `D⁻¹·Pᵀ·A·P·D` from `xGEBAL('B')`, kept to undo it; the factors
-/// and the permutation live in the caller's `scale` and `perm`.
+/// Balancing `D⁻¹·Pᵀ·A·P·D`, with explicit permutation and scales.
 struct Balance {
     ilo: usize,
     ihi: usize,
 }
 
 impl Balance {
-    /// LAPACK `xGEBAL('B')` on `a`; the permutation indices LAPACK stores in
-    /// `scale` outside `ilo..=ihi` go to `perm` (0-based).
     fn new<S: Scalar>(
         a: &mut [S],
         n: usize,
         scale: &mut [S::Real],
         perm: &mut [usize],
     ) -> Result<Self, ()> {
-        let (ilo, ihi) = S::gebal(a, n, scale)?;
-        for (j, p) in perm.iter_mut().enumerate() {
-            if j < ilo || j > ihi {
-                let idx = num_traits::ToPrimitive::to_usize(&scale[j]).ok_or(())?;
-                if idx == 0 || idx > n {
-                    return Err(());
-                }
-                *p = idx - 1;
-            }
-        }
+        let (ilo, ihi) = S::gebal(a, n, scale, perm)?;
         Ok(Self { ilo, ihi })
     }
 
-    /// Julia `exp!`: `X ← D·X·D⁻¹`, then the lower permutations in reverse
-    /// and the upper ones in forward order.
-    fn undo<S: Scalar>(&self, x: &mut [S], n: usize, scale: &[S::Real], perm: &[usize]) {
-        for j in self.ilo..=self.ihi {
-            // Real factors scale component-wise, as Julia's `X[j,i] *= scj`
-            // does, so an overflowed `Inf + 0i` entry stays `Inf + 0i`. The
-            // GEBAL factors are powers of two, so 1/scale is exact.
-            let (sc, inv) = (scale[j], S::Real::one() / scale[j]);
+    fn undo<S: Scalar>(
+        &self,
+        x: &mut [S],
+        n: usize,
+        scale: &[S::Real],
+        perm: &[usize],
+        tmp: &mut [S],
+    ) {
+        debug_assert!(self.ilo <= self.ihi && self.ihi <= n);
+        for j in 0..n {
             for i in 0..n {
-                x[j + i * n] = x[j + i * n].mul_real(sc);
-            }
-            for i in 0..n {
-                x[i + j * n] = x[i + j * n].mul_real(inv);
+                // Separate component-wise scalings preserve Inf + 0i.
+                tmp[perm[i] + perm[j] * n] = x[i + j * n]
+                    .mul_real(scale[i])
+                    .mul_real(S::Real::one() / scale[j]);
             }
         }
-        let rcswap = |x: &mut [S], i: usize, j: usize| {
-            for k in 0..n {
-                x.swap(k + i * n, k + j * n);
-            }
-            for k in 0..n {
-                x.swap(i + k * n, j + k * n);
-            }
-        };
-        for (j, &pj) in perm[..self.ilo].iter().enumerate().rev() {
-            rcswap(x, j, pj);
-        }
-        for (j, &pj) in perm.iter().enumerate().skip(self.ihi + 1) {
-            rcswap(x, j, pj);
-        }
+        x.copy_from_slice(&tmp[..n * n]);
     }
 }
 
@@ -608,9 +583,79 @@ mod tests {
         let pt = DMatrix::from_fn(n, n, |i, j| t[(p[i], p[j])]);
         let mut tmp: Vec<Complex64> = pt.iter().copied().collect();
         let bal = Balance::new(&mut tmp, n, &mut vec![1.0; n], &mut vec![0; n]).unwrap();
-        assert!(bal.ilo > 0 || bal.ihi < n - 1, "permutation exercised");
+        assert!(bal.ilo > 0 || bal.ihi < n, "permutation exercised");
         let (x, _, _) = ours(&pt, false);
         assert!(rel(&x, &taylor(&pt)) < 1e-13);
+    }
+
+    #[test]
+    fn explicit_balancing_similarity_and_three_cycle_undo() {
+        let c = |x| Complex64::new(x, 0.);
+        // Two isolated eigenvalues surround a badly scaled coupled block.
+        let a = DMatrix::from_row_slice(
+            4,
+            4,
+            &[
+                7.,
+                0.,
+                0.,
+                0.,
+                5.,
+                1.,
+                1024.,
+                2.,
+                6.,
+                1. / 1024.,
+                2.,
+                3.,
+                0.,
+                0.,
+                0.,
+                9.,
+            ],
+        )
+        .map(c);
+        let mut b = a.as_slice().to_vec();
+        let mut scale = [1.; 4];
+        let mut perm = [0; 4];
+        let bal = Balance::new(&mut b, 4, &mut scale, &mut perm).unwrap();
+        assert_eq!(bal.ihi - bal.ilo, 2);
+        assert!(scale.iter().any(|s| *s != 1.));
+        for j in 0..4 {
+            for i in 0..4 {
+                assert!(
+                    (b[i + j * 4] * scale[i] / scale[j] - a[(perm[i], perm[j])]).norm() < 1e-14
+                );
+            }
+        }
+        let x = DMatrix::from_fn(3, 3, |i, j| {
+            Complex64::new((1 + i + 3 * j) as f64, (i as f64) - (j as f64) * 2.)
+        });
+        let scale = [2., 0.5, 4.];
+        let perm = [1, 2, 0];
+        let p = DMatrix::from_fn(3, 3, |i, j| c(if i == perm[j] { 1. } else { 0. }));
+        let d = DMatrix::from_diagonal(&nalgebra::DVector::from_iterator(3, scale.map(c)));
+        let di = DMatrix::from_diagonal(&nalgebra::DVector::from_iterator(
+            3,
+            scale.map(|s| c(1. / s)),
+        ));
+        let expected = &p * &d * &x * &di * p.transpose();
+        let mut restored = x.as_slice().to_vec();
+        Balance { ilo: 0, ihi: 3 }.undo(
+            &mut restored,
+            3,
+            &scale,
+            &perm,
+            &mut [Complex64::default(); 9],
+        );
+        let restored = DMatrix::from_column_slice(3, 3, &restored);
+        assert!((&restored - &expected).norm() < 1e-14);
+        assert!((&p * &di * &x * &d * p.transpose() - &expected).norm() > 1.); // inverse scale ratio
+        assert!((p.transpose() * &d * &x * &di * &p - &expected).norm() > 1.); // inverse permutation
+        // Empty active intervals for diagonal input remain valid.
+        let mut diag = [1., 0., 0., 2.];
+        let b = Balance::new(&mut diag, 2, &mut [1.; 2], &mut [0; 2]).unwrap();
+        assert_eq!(b.ilo, b.ihi);
     }
 
     #[test]
@@ -708,13 +753,13 @@ mod tests {
         let b = random(&mut g, 7, true);
         let (mut aa, mut bb): (Vec<Complex64>, Vec<Complex64>) =
             (a.iter().copied().collect(), b.iter().copied().collect());
-        let mut ipiv = [0i32; 7];
-        Complex64::gesv(&mut aa, &mut bb, 7, 7, &mut ipiv).unwrap();
+        let mut lu = super::super::Work::default();
+        Complex64::gesv(&mut aa, &mut bb, 7, 7, &mut lu).unwrap();
         let x = a.clone().lu().solve(&b).unwrap();
         assert!(rel(&DMatrix::from_column_slice(7, 7, &bb), &x) < 1e-13);
         let mut s = vec![1.0, 2.0, 2.0, 4.0];
         let mut r = vec![1.0, 0.0, 0.0, 1.0];
-        assert!(f64::gesv(&mut s, &mut r, 2, 2, &mut ipiv).is_err());
+        assert!(f64::gesv(&mut s, &mut r, 2, 2, &mut super::super::Work::default()).is_err());
     }
 
     /// SplitMix64 mapped exactly to `k·2⁻⁵² - 1`, so the matrices below are

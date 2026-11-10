@@ -34,6 +34,59 @@ struct LowRank<S> {
     _s: std::marker::PhantomData<S>,
 }
 
+/// One-sided (Hestenes) Jacobi SVD `X·V = W` with orthogonal columns of `W`
+/// (`‖wᵢ‖ = σᵢ`), so `X = W·Vᴴ`. Written here so that the truncation does not
+/// share code with faer, krylov's dense backend; nalgebra 0.35's `svd`
+/// returns singular vectors that do not reconstruct an exactly rank-2
+/// 16 × 16 matrix (`‖U·Σ·Vᴴ − X‖ ≈ ‖X‖`). Returns `(W, V)` with columns
+/// sorted by descending `σᵢ`.
+fn jacobi_svd(x: &DMatrix<Complex64>) -> (DMatrix<Complex64>, DMatrix<Complex64>) {
+    let (m, n) = x.shape();
+    let (mut w, mut v) = (x.clone(), DMatrix::<Complex64>::identity(n, n));
+    let rotate =
+        |a: &mut [Complex64], rows: usize, p: usize, q: usize, c: f64, s: f64, ph: Complex64| {
+            let (left, right) = a.split_at_mut(q * rows);
+            for (a, b) in left[p * rows..(p + 1) * rows]
+                .iter_mut()
+                .zip(&mut right[..rows])
+            {
+                let (x, y) = (*a, *b * ph);
+                *a = x * c - y * s;
+                *b = x * s + y * c;
+            }
+        };
+    for sweep in 0.. {
+        assert!(sweep < 60, "one-sided Jacobi did not converge");
+        let mut rotated = false;
+        for p in 0..n {
+            for q in p + 1..n {
+                let col = |k: usize| &w.as_slice()[k * m..(k + 1) * m];
+                let alpha: f64 = col(p).iter().map(|z| z.norm_sqr()).sum();
+                let beta: f64 = col(q).iter().map(|z| z.norm_sqr()).sum();
+                let gamma: Complex64 = col(p).iter().zip(col(q)).map(|(a, b)| a.conj() * b).sum();
+                if gamma.norm() <= f64::EPSILON * (alpha * beta).sqrt() {
+                    continue;
+                }
+                rotated = true;
+                // With the phase of γ moved into column q the pair is real:
+                // the classical rotation of Hestenes' method orthogonalizes it.
+                let ph = (gamma / gamma.norm()).conj();
+                let zeta = (beta - alpha) / (2.0 * gamma.norm());
+                let t = zeta.signum() / (zeta.abs() + (1.0 + zeta * zeta).sqrt());
+                let c = 1.0 / (1.0 + t * t).sqrt();
+                rotate(w.as_mut_slice(), m, p, q, c, c * t, ph);
+                rotate(v.as_mut_slice(), n, p, q, c, c * t, ph);
+            }
+        }
+        if !rotated {
+            break;
+        }
+    }
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&i, &j| w.column(j).norm().total_cmp(&w.column(i).norm()));
+    (w.select_columns(&order), v.select_columns(&order))
+}
+
 impl<S: TestScalar> LowRank<S> {
     fn new(x: DMatrix<Complex64>, tau: f64) -> Self {
         let mut v = Self {
@@ -46,56 +99,15 @@ impl<S: TestScalar> LowRank<S> {
     }
 
     /// Keeps the fewest singular triplets whose discarded weight is
-    /// `<= τ·‖X‖_F`. Uses LAPACK `zgesvd`: nalgebra 0.35's `svd` returned
-    /// singular vectors that do not reconstruct an exactly rank-2 16 × 16
-    /// matrix (`‖U·Σ·Vᵀ − X‖ ≈ ‖X‖`).
+    /// `<= τ·‖X‖_F`.
     fn truncate(&mut self) {
-        let (m, n) = (self.x.nrows(), self.x.ncols());
-        let k = m.min(n);
-        let mut a = self.x.as_slice().to_vec();
-        let mut s = vec![0.0; k];
-        let mut u = vec![Complex64::default(); m * k];
-        let mut vt = vec![Complex64::default(); k * n];
-        let mut rwork = vec![0.0; 5 * k];
-        let mut info = 0;
-        let (mi, ni, ki) = (m as i32, n as i32, k as i32);
-        let mut query = [Complex64::default()];
-        // SAFETY: every buffer has the length zgesvd requires for jobu =
-        // jobvt = 'S' with the leading dimensions passed.
-        unsafe {
-            lapack::zgesvd(
-                b'S', b'S', mi, ni, &mut a, mi, &mut s, &mut u, mi, &mut vt, ki, &mut query, -1,
-                &mut rwork, &mut info,
-            );
-        }
-        let lwork = query[0].re as usize;
-        let mut work = vec![Complex64::default(); lwork];
-        // SAFETY: as above, with `work` of the queried length.
-        unsafe {
-            lapack::zgesvd(
-                b'S',
-                b'S',
-                mi,
-                ni,
-                &mut a,
-                mi,
-                &mut s,
-                &mut u,
-                mi,
-                &mut vt,
-                ki,
-                &mut work,
-                lwork as i32,
-                &mut rwork,
-                &mut info,
-            );
-        }
-        assert_eq!(info, 0, "zgesvd failed");
+        let (w, v) = jacobi_svd(&self.x);
+        let s: Vec<f64> = w.column_iter().map(|c| c.norm()).collect();
         // s is descending.
         let total: f64 = s.iter().map(|x| x * x).sum();
         let budget = self.tau * self.tau * total;
         let mut tail = 0.0;
-        let mut r = k;
+        let mut r = s.len();
         while r > 0 && tail + s[r - 1] * s[r - 1] <= budget {
             tail += s[r - 1] * s[r - 1];
             r -= 1;
@@ -104,12 +116,7 @@ impl<S: TestScalar> LowRank<S> {
             DROPS.with(|c| c.set(c.get() + 1));
         }
         MAX_RANK.with(|c| c.set(c.get().max(r)));
-        let u = DMatrix::from_column_slice(m, k, &u);
-        let vt = DMatrix::from_column_slice(k, n, &vt);
-        let mut y = DMatrix::<Complex64>::zeros(m, n);
-        for (i, &si) in s.iter().enumerate().take(r) {
-            y += u.column(i) * Complex64::new(si, 0.0) * vt.row(i);
-        }
+        let mut y = w.columns(0, r) * v.columns(0, r).adjoint();
         if !<S as TestScalar>::COMPLEX {
             y.apply(|z| *z = Complex64::new(z.re, 0.0));
         }
@@ -499,5 +506,44 @@ fn gmres_coarse_truncation_sets_the_accuracy_floor() {
             "error {} should exceed tol",
             r.err
         );
+    }
+}
+
+#[test]
+fn jacobi_truncation_recovers_a_constructed_svd() {
+    // X = U·diag(σ)·Vᴴ with U, V orthonormal columns of nalgebra QR factors
+    // and known σ, rectangular full rank and exactly rank two.
+    let mut g = SplitMix(84);
+    for (m, n, sigma) in [(5, 3, vec![4., 2., 0.5]), (5, 4, vec![3., 1., 0., 0.])] {
+        let u = unitary(&mut g, m, true).columns(0, n).into_owned();
+        let v = unitary(&mut g, n, true);
+        let d = |k: usize| {
+            DMatrix::from_diagonal(&nalgebra::DVector::from_iterator(
+                k,
+                sigma[..k].iter().map(|&s| Complex64::new(s, 0.)),
+            ))
+        };
+        let x = &u * d(n) * v.adjoint();
+        let bound = rounding::<Complex64>(m, x.norm());
+        let (w, vj) = jacobi_svd(&x);
+        for (wi, &si) in w.column_iter().zip(&sigma) {
+            within((wi.norm() - si).abs(), bound, "singular values");
+        }
+        within((&w * vj.adjoint() - &x).norm(), bound, "X = W·Vᴴ");
+        within(
+            (vj.adjoint() * &vj - DMatrix::identity(n, n)).norm(),
+            rounding::<Complex64>(n, 1.0),
+            "V orthonormal",
+        );
+        assert!((&w * vj.transpose() - &x).norm() > 0.1 * x.norm()); // Vᵀ misses conjugation
+        // τ just above σ_last/‖σ‖ drops exactly the smallest nonzero triplet.
+        let r = sigma.iter().filter(|&&s| s > 0.).count() - 1;
+        let tau = 1.01 * sigma[r] / x.norm();
+        let want = u.columns(0, r) * d(r) * v.columns(0, r).adjoint();
+        let truncated = LowRank::<Complex64>::new(x.clone(), tau);
+        within((&truncated.x - &want).norm(), bound, "truncated sum");
+        assert!((&truncated.x - &x).norm() <= tau * x.norm());
+        let over = u.columns(0, r - 1) * d(r - 1) * v.columns(0, r - 1).adjoint();
+        assert!((over - &x).norm() > tau * x.norm()); // negative control: overtruncation
     }
 }

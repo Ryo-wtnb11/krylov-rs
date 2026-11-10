@@ -1,4 +1,4 @@
-//! Bidiagonal SVD (LAPACK `xBDSQR`) and thick-restart restoration of GKL.
+//! Bidiagonal SVD (faer) and thick-restart restoration of GKL.
 
 use super::{Work, householder};
 use crate::scalar::RealScalar;
@@ -24,8 +24,8 @@ fn rot_cols<R: RealScalar>(m: &mut [R], n: usize, j: usize, k: usize, c: R, s: R
 }
 
 /// SVD `B = U·diag(d)·Vᵀ` of the real `n × n` lower (`lower`) or upper
-/// bidiagonal matrix with diagonal `d` and off-diagonal `e[..n-1]`, by LAPACK
-/// `xBDSQR` as KrylovKit v0.10.4 `src/dense/linalg.jl:bidiagsvd!` calls it.
+/// bidiagonal matrix with diagonal `d` and off-diagonal `e[..n-1]`, by faer
+/// (KrylovKit v0.10.4 uses `xBDSQR`; see `docs/krylovkit.md`).
 ///
 /// `d` gets the singular values in descending order and `u`, `v` (`n × n`,
 /// overwritten) the singular vectors as columns; `e` is destroyed.
@@ -37,21 +37,7 @@ pub(crate) fn bidiag_svd<R: RealScalar>(
     v: &mut [R],
     w: &mut Work<R, R>,
 ) -> Result<(), ()> {
-    let n = d.len();
-    for m in [&mut *u, &mut *v] {
-        m[..n * n].fill(R::zero());
-        for i in 0..n {
-            m[i + i * n] = R::one();
-        }
-    }
-    // v holds Vᵀ on return from LAPACK; transpose it in place.
-    R::bdsqr(lower, d, e, v, u, w)?;
-    for j in 0..n {
-        for i in 0..j {
-            v.swap(i + j * n, j + i * n);
-        }
-    }
-    Ok(())
+    R::bdsqr(lower, d, e, v, u, w)
 }
 
 /// SVD `B̃ = P·diag(s)·Yᵀ` of the `(k+1) × k` lower bidiagonal matrix with

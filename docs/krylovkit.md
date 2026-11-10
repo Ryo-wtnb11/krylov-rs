@@ -56,7 +56,34 @@ complex vectors, avoiding a later attempt to split real 2×2 Schur blocks.
 
 ## Dense kernels
 
-Small projected problems use LAPACK; krylov never selects its provider.
+Small projected problems use sequential `t4a-faer` 0.33.0 rather than
+KrylovKit's LAPACK kernels, removing external provider linkage. Its
+QR/divide-and-conquer eigensolvers and SVD replace STEGR/SYEVR/HEEVR/BDSQR;
+Hessenberg Schur, block moves, right eigenvectors, balancing and pivoted LU
+use the matching public faer operations. Signs/phases and unsorted dense
+output order can differ. After real QR the reported real parts are taken from
+the authoritative T diagonal: faer's QR eigenvalue array can differ by one ulp
+from that diagonal after deflation updates. Stable `Which` sorting, real-pair completion and
+existing iteration/application-count contracts remain enforced.
+
+The adapters preserve upper-triangle Hermitian authority by reflecting it
+with conjugation into faer's lower triangle. As LAPACK `xSYEVR`/`xHEEVR` do
+internally, a Hermitian matrix whose max-abs entry lies outside
+`[sqrt(SAFMIN/EPS), min(sqrt(EPS/SAFMIN), SAFMIN^(-1/4))]` is scaled into that
+range before faer's reduction and its eigenvalues are scaled back; faer's
+reduction alone loses subnormal couplings. Bidiagonal SVD returns V directly;
+Schur vectors accumulate into the supplied Z; eigenvectors are right vectors
+of T before the caller's back-transformation. Balancing uses faer's explicit
+permutation, scales and half-open active interval; matrix functions are
+restored by `X[perm[i],perm[j]] = scale[i]*X_bal[i,j]/scale[j]`. LU rejects
+exactly zero pivots explicitly. Dense failures retain `DenseNoConvergence`,
+and rejected real block moves retain `SchurReorderFailed`.
+
+Private scratch is pre-sized across supported dimensions and reused for the
+whole solver invocation, including exponential trials. Peak scratch is higher
+than KrylovKit's LAPACK workspaces: faer requires additional square
+temporaries for Schur vectors, bidiagonal SVD and LU RHS permutation.
+
 Givens rotations, φ functions, restart restoration and the matrix-exponential
 driver live in crate code (see [src/dense](../src/dense)).
 
@@ -69,7 +96,7 @@ sign/phase convention differs. See [householder.rs](../src/dense/householder.rs)
 ## Lanczos and the exponential integrator
 
 - **Lanczos projected functions:** `exp`/φ use the tridiagonal
-  eigendecomposition (`stegr`) rather than an augmented Padé exponential.
+  eigendecomposition (faer tridiagonal EVD) rather than an augmented Padé exponential.
   This reduces evaluation to scalar φ functions. For small steps the
   error-estimate entry uses a Taylor series to preserve relative accuracy below the
   eigendecomposition's resolution. [tests/krylovkit.rs](../tests/krylovkit.rs)
