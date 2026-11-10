@@ -221,7 +221,7 @@ where
     let mut a = vec![szero; kmax * kmax];
     let mut u = vec![szero; kmax * kmax];
     let mut xs = vec![szero; kmax];
-    let mut lw = Work::default();
+    let mut lw = Work::new(kmax, crate::dense::Problem::Hermitian);
     let mut gram = vec![szero; bs0 * bs0];
     let mut wbuf = vec![szero; bs0];
     let mut normres = vec![zero; kmax];
