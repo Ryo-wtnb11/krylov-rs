@@ -13,9 +13,9 @@ use std::marker::PhantomData;
 
 use common::*;
 use krylov::{
-    AdjointMap, Arnoldi, BlockLanczos, Cg, Error, Gkl, Gmres, Lanczos, LinearMap, Orth,
-    RestartResidual, Vector, Which, Workspace, arnoldi_eigsolve, block_eigsolve, eigsolve,
-    expintegrator, exponentiate, linsolve, realeigsolve, schursolve, svdsolve,
+    AdjointMap, Arnoldi, BlockLanczos, Cg, Davidson, Error, Gkl, Gmres, Lanczos, LinearMap, Orth,
+    RestartResidual, Vector, Which, Workspace, arnoldi_eigsolve, block_eigsolve, davidson_eigsolve,
+    eigsolve, expintegrator, exponentiate, linsolve, realeigsolve, schursolve, svdsolve,
 };
 use nalgebra::DMatrix;
 use num_complex::Complex64;
@@ -249,6 +249,29 @@ fn hermitian_solvers_forward_the_context_and_propagate_failures() {
         let mut ws = Workspace::with_capacity(cx, &x0[0], 7).map_err(Error::Vector)?;
         let mut op = Mat::new(&a);
         let (_, _, info) = block_eigsolve(cx, &mut op, &x0, 2, Which::LargestReal, &alg, &mut ws)?;
+        Ok(info.numops)
+    });
+
+    // The preconditioner runs on the context too, so failures injected into
+    // its vector operation propagate as well.
+    let alg = Davidson::new(6, 2, 2, 3, 1e-14, 1e-12);
+    sweep::<f64>("davidson_eigsolve", |cx| {
+        let x0 = [cx.input(&starts[0]), cx.input(&starts[1])];
+        let mut ws = Workspace::with_capacity(cx, &x0[0], 6).map_err(Error::Vector)?;
+        let mut ws_av = Workspace::with_capacity(cx, &x0[0], 6).map_err(Error::Vector)?;
+        let mut precond =
+            |cx: &mut Arena<f64>, _: f64, r: &H<f64>, t: &mut H<f64>| t.copy_from(cx, r);
+        let (_, _, info) = davidson_eigsolve(
+            cx,
+            &mut Mat::new(&a),
+            &mut precond,
+            &x0,
+            2,
+            Which::SmallestReal,
+            &alg,
+            &mut ws,
+            &mut ws_av,
+        )?;
         Ok(info.numops)
     });
 

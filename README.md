@@ -14,6 +14,10 @@ convergence tests and restarts. Callers own vector storage and map operations
 through `Vector`, `Basis` and `LinearMap`, run on a caller-held execution
 context (`Vector::Context`, `()` for host vectors) passed to every call.
 
+A preconditioned block Davidson eigensolver (`davidson_eigsolve`, no
+KrylovKit counterpart) takes the caller's preconditioner, for example a
+diagonal one.
+
 Intentional differences include caller-owned workspaces, explicit cost and
 accuracy parameters, CGS2 orthogonalization by default, and typed failures.
 See the [KrylovKit correspondence](docs/krylovkit.md) for details and reasons.

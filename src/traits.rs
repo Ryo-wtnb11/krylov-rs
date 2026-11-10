@@ -76,6 +76,11 @@ pub trait Vector: Sized {
 
 /// Storage for an orthonormal basis `V = [v₀ … v_{len-1}]`.
 ///
+/// [`davidson_eigsolve`](crate::davidson_eigsolve) also stores the images
+/// `A·V`, which are not orthonormal, in a `Basis`; it uses only `push`,
+/// `truncate`, `combine_into` and `rotate` (with orthonormal `Q`) on them,
+/// and those must not assume orthonormal columns.
+///
 /// All operations that act on the basis as a block live here, so a device or
 /// distributed implementation can map [`project`](Basis::project) to one GEMV
 /// and [`rotate`](Basis::rotate) to one GEMM.
