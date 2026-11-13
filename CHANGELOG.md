@@ -4,6 +4,7 @@
 
 ### Changed
 
+- The declared MSRV is Rust 1.100 (previously 1.99).
 - The small dense problems depend on `colmat` 0.34.0, the renamed
   `t4a-faer` (previously 0.33.0). krylov does not re-export its types.
   colmat 0.34.0 also changes the bidiagonal SVD (recursive from n = 40)

@@ -29,7 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # The library and its dense backend must build on the declared MSRV.
-      - uses: dtolnay/rust-toolchain@1.99
+      - uses: dtolnay/rust-toolchain@1.100
       - run: cargo build --locked
 
   # Reporting only: main-push, never gates a PR.
