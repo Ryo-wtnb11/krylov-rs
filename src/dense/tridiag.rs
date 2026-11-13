@@ -1,5 +1,5 @@
 //! Lanczos thick-restart restoration (the tridiagonal eigenproblem itself is
-//! faer tridiagonal EVD through `RealOps::stegr`).
+//! colmat tridiagonal EVD through `RealOps::stegr`).
 
 use super::arrowhead_to_band;
 use crate::scalar::RealScalar;

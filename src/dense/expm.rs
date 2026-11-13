@@ -7,7 +7,7 @@
 //! `xGESV` solve, and undoing the balancing. The step controller reads one
 //! tiny entry of the result, so this module follows that sequence instead of
 //! another (equally valid) `exp` algorithm. Balancing and the solve are the
-//! sequential faer routines (Julia uses LAPACK); the Padé driver around
+//! sequential colmat routines (Julia uses LAPACK); the Padé driver around
 //! them is retained here. See `docs/krylovkit.md`.
 
 use num_traits::{Float, One, Zero};

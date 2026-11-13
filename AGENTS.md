@@ -6,8 +6,8 @@
   backend adapters (symtn, tenferro, CUDA, MPI live with their owners),
   threading, caches or global state.
 - **Dependencies.** Runtime: `num-traits`, `num-complex` and
-  `faer = { package = "t4a-faer", version = "=0.33.0", default-features = false, features = ["std", "linalg"] }`.
-  Small dense problems use sequential borrowed faer views and a private
+  `colmat = { version = "=0.34.0", default-features = false, features = ["std", "linalg"] }`.
+  Small dense problems use sequential borrowed colmat views and a private
   per-invocation arena; no BLAS/LAPACK provider is linked. Crate code is kept
   where KrylovKit has its own Julia code (Givens, φ functions, Householder
   restart restoration). Dev-dependencies may include one dense reference

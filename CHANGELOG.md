@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Changed
+
+- The small dense problems depend on `colmat` 0.34.0, the renamed
+  `t4a-faer` (previously 0.33.0). krylov does not re-export its types.
+  colmat 0.34.0 also changes the bidiagonal SVD (recursive from n = 40)
+  and the tridiagonal deflation test, so singular and Ritz values can
+  differ in the last bits; tests pass at their existing tolerances.
+
 ### Added
 
 - `davidson_eigsolve` with `Davidson` settings and the `Preconditioner`

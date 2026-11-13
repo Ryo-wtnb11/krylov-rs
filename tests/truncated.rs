@@ -36,7 +36,7 @@ struct LowRank<S> {
 
 /// One-sided (Hestenes) Jacobi SVD `X·V = W` with orthogonal columns of `W`
 /// (`‖wᵢ‖ = σᵢ`), so `X = W·Vᴴ`. Written here so that the truncation does not
-/// share code with faer, krylov's dense backend; nalgebra 0.35's `svd`
+/// share code with colmat, krylov's dense backend; nalgebra 0.35's `svd`
 /// returns singular vectors that do not reconstruct an exactly rank-2
 /// 16 × 16 matrix (`‖U·Σ·Vᴴ − X‖ ≈ ‖X‖`). Returns `(W, V)` with columns
 /// sorted by descending `σᵢ`.

@@ -21,7 +21,7 @@
 //! `RealVec` (real-linear maps on complex vectors) is not supported; the
 //! vector type's scalar decides which entry points apply.
 //!
-//! The small projected problems use sequential pure-Rust `t4a-faer` 0.33.0
+//! The small projected problems use sequential pure-Rust `colmat` 0.34.0
 //! routines, with scratch reused within each solver invocation. No external
 //! BLAS/LAPACK provider is needed. The dense algorithms differ from KrylovKit's
 //! LAPACK routines; see `docs/krylovkit.md` for the numerical boundary.
