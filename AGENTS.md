@@ -31,7 +31,7 @@
   No generator scripts, Julia environments or fixture files are committed. Allocation
   contracts are tested by counting vector constructions, not by timing.
 - **Gates.** `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
-  `cargo test`, `cargo doc` with `-D warnings`, and an MSRV (1.99) build.
+  `cargo test`, `cargo doc` with `-D warnings`, and an MSRV (1.100) build.
 
 ## Test style
 
