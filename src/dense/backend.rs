@@ -1,19 +1,19 @@
-//! Borrowed, sequential faer adapters for the small projected problems.
+//! Borrowed, sequential colmat adapters for the small projected problems.
 //! Scratch belongs to one solver invocation and is reused across iterations.
 
 use crate::scalar::{RealScalar, Scalar, sealed::RealOps};
-use core::marker::PhantomData;
-use faer::dyn_stack::{MemBuffer, MemStack, StackReq};
-use faer::linalg::{
+use colmat::dyn_stack::{MemBuffer, MemStack, StackReq};
+use colmat::linalg::{
     evd,
     lu::partial_pivoting::{factor, solve},
     svd,
 };
-use faer::{
+use colmat::{
     ColMut, MatMut, MatRef, Par, ParShape,
     diag::{DiagMut, DiagRef},
     prelude::{Reborrow, ReborrowMut},
 };
+use core::marker::PhantomData;
 use num_complex::Complex;
 
 /// Private dense-workspace families (the containing module is private).
@@ -77,7 +77,7 @@ impl<S: Scalar<Real = R>, R: RealScalar> Work<S, R> {
     }
 }
 
-fn schur_req<T: faer::traits::ComplexField>(n: usize) -> StackReq {
+fn schur_req<T: colmat::traits::ComplexField>(n: usize) -> StackReq {
     StackReq::any_of(&[
         StackReq::all_of(&[
             StackReq::new::<T::Real>(2 * n),
@@ -88,7 +88,7 @@ fn schur_req<T: faer::traits::ComplexField>(n: usize) -> StackReq {
     ])
 }
 
-fn tri_req<T: faer::traits::RealField>(n: usize) -> StackReq {
+fn tri_req<T: colmat::traits::RealField>(n: usize) -> StackReq {
     StackReq::all_of(&[
         StackReq::new::<T>(n),
         evd::tridiagonal_self_adjoint_evd_scratch::<T>(
@@ -100,7 +100,7 @@ fn tri_req<T: faer::traits::RealField>(n: usize) -> StackReq {
     ])
 }
 
-fn heig_req<T: faer::traits::ComplexField>(n: usize) -> StackReq {
+fn heig_req<T: colmat::traits::ComplexField>(n: usize) -> StackReq {
     StackReq::all_of(&[
         StackReq::new::<T>(n),
         evd::self_adjoint_evd_scratch::<T>(
@@ -112,7 +112,7 @@ fn heig_req<T: faer::traits::ComplexField>(n: usize) -> StackReq {
     ])
 }
 
-fn lu_req<T: faer::traits::ComplexField>(n: usize, nrhs: usize) -> StackReq {
+fn lu_req<T: colmat::traits::ComplexField>(n: usize, nrhs: usize) -> StackReq {
     StackReq::all_of(&[
         StackReq::new::<usize>(n).array(2),
         StackReq::any_of(&[
@@ -122,7 +122,7 @@ fn lu_req<T: faer::traits::ComplexField>(n: usize, nrhs: usize) -> StackReq {
     ])
 }
 
-fn balance<T: faer::traits::ComplexField>(
+fn balance<T: colmat::traits::ComplexField>(
     a: &mut [T],
     n: usize,
     scale: &mut [T::Real],
@@ -143,7 +143,7 @@ fn balance<T: faer::traits::ComplexField>(
 /// Factor that brings a Hermitian matrix with max-abs entry `anrm` into
 /// `[RMIN, RMAX]`, or `None` when it already lies there.
 ///
-/// Why not hand faer the matrix as is: its dense Hermitian reduction flushes
+/// Why not hand colmat the matrix as is: its dense Hermitian reduction flushes
 /// subnormal Householder heads and tails to zero (`householder.rs`
 /// `make_householder_imp`) and still reports success, so a tiny matrix comes
 /// back with a wrong spectrum; its later tridiagonal range normalization
@@ -164,7 +164,7 @@ fn evr_scale<T: num_traits::Float>(anrm: T) -> Option<T> {
     }
 }
 
-fn gesv<T: faer::traits::ComplexField, R>(
+fn gesv<T: colmat::traits::ComplexField, R>(
     a: &mut [T],
     b: &mut [T],
     n: usize,
@@ -190,7 +190,7 @@ fn gesv<T: faer::traits::ComplexField, R>(
         stack,
         Default::default(),
     );
-    if (0..n).any(|i| a[(i, i)] == faer::traits::math_utils::zero::<T>()) {
+    if (0..n).any(|i| a[(i, i)] == colmat::traits::math_utils::zero::<T>()) {
         return Err(());
     }
     solve::solve_in_place(a.rb(), a.rb(), p, b, Par::Seq, stack);

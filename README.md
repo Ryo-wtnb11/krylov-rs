@@ -29,7 +29,7 @@ See the [KrylovKit correspondence](docs/krylovkit.md) for details and reasons.
 krylov = "0.3"
 ```
 
-Small projected problems use sequential `t4a-faer` 0.33.0, with default
+Small projected problems use sequential `colmat` 0.34.0, with default
 features disabled (`std`, `linalg` only). No external BLAS/LAPACK provider or
 system library installation is required. Scratch is allocated per solver call
 and reused across iterations; large-vector arithmetic remains caller-owned.
@@ -46,7 +46,10 @@ and reused across iterations; large-vector arithmetic remains caller-owned.
 The API, the algorithms and their result semantics are modelled on
 [KrylovKit.jl](https://github.com/Jutho/KrylovKit.jl) by Jutho Haegeman and
 contributors (reference revision: v0.10.4), and the vector interface on
-[VectorInterface.jl](https://github.com/Jutho/VectorInterface.jl).
+[VectorInterface.jl](https://github.com/Jutho/VectorInterface.jl). The small
+dense problems run on `colmat`, tensor4all's fork of
+[faer](https://github.com/sarah-quinones/faer-rs) by Sarah Quiñones (El Kazdadi)
+and contributors.
 
 ## Citation
 

@@ -12,7 +12,7 @@ categories = ["mathematics", "science", "algorithms"]
 exclude = ["AGENTS.md", ".github"]
 
 [dependencies]
-faer = { package = "t4a-faer", version = "=0.33.0", default-features = false, features = ["std", "linalg"] }
+colmat = { version = "=0.34.0", default-features = false, features = ["std", "linalg"] }
 num-complex = "0.4.6"
 num-traits = { version = "0.2.19", default-features = false, features = ["std"] }
 

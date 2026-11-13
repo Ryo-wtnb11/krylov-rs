@@ -56,6 +56,44 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
+name = "colmat"
+version = "0.34.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "377a0236b482724d72c85121804a30499ac73a38ae3d6b7a5e0e54a0e90264fc"
+dependencies = [
+ "bytemuck",
+ "colmat-traits",
+ "dyn-stack",
+ "equator 0.6.0",
+ "generativity",
+ "libm",
+ "nano-gemm",
+ "num-complex",
+ "num-traits",
+ "pulp",
+ "reborrow",
+ "t4a-gemm",
+ "t4a-private-gemm-x86",
+]
+
+[[package]]
+name = "colmat-traits"
+version = "0.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8bbf08552b8f5b652984a82f5e67a4560528fdbe70db32f19fc3f6cb7b49414c"
+dependencies = [
+ "bytemuck",
+ "dyn-stack",
+ "generativity",
+ "libm",
+ "num-complex",
+ "num-traits",
+ "pulp",
+ "qd",
+ "reborrow",
+]
+
+[[package]]
 name = "crunchy"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -200,10 +238,10 @@ dependencies = [
 name = "krylov"
 version = "0.3.0"
 dependencies = [
+ "colmat",
  "nalgebra",
  "num-complex",
  "num-traits",
- "t4a-faer",
 ]
 
 [[package]]
@@ -556,44 +594,6 @@ dependencies = [
  "libc",
  "thiserror",
  "walkdir",
-]
-
-[[package]]
-name = "t4a-faer"
-version = "0.33.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fbb418322be3bde5413613ec9dfcaa8c7e764ac8e17fd513ceba6942e9bfcbc7"
-dependencies = [
- "bytemuck",
- "dyn-stack",
- "equator 0.6.0",
- "generativity",
- "libm",
- "nano-gemm",
- "num-complex",
- "num-traits",
- "pulp",
- "reborrow",
- "t4a-faer-traits",
- "t4a-gemm",
- "t4a-private-gemm-x86",
-]
-
-[[package]]
-name = "t4a-faer-traits"
-version = "0.24.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d0ac00f8eac55b87f2609e232ed97179783cd57a14ce3a007e6c45b2bda0b84"
-dependencies = [
- "bytemuck",
- "dyn-stack",
- "generativity",
- "libm",
- "num-complex",
- "num-traits",
- "pulp",
- "qd",
- "reborrow",
 ]
 
 [[package]]

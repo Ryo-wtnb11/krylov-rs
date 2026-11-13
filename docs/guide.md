@@ -109,12 +109,12 @@ Typed failures, including propagated vector errors, are defined by
 
 ## Dense backend
 
-Small projected problems use `t4a-faer` 0.33.0 with `Par::Seq`, without a
+Small projected problems use `colmat` 0.34.0 with `Par::Seq`, without a
 BLAS/LAPACK provider. Its default features are disabled (`std`, `linalg` only).
 Private aligned scratch is pre-sized per solver invocation and reused through
 iterations, restarts and exponential step-size trials. Public `Workspace`
 owns only vectors and basis storage. Once warm, the tridiagonal, Hermitian and
-bidiagonal projected solves allocate nothing inside faer, and the arena does
+bidiagonal projected solves allocate nothing inside colmat, and the arena does
 not grow during iterations or trials.
 See [the correspondence](krylovkit.md#dense-kernels) for numerical differences.
 

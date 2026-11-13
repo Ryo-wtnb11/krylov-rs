@@ -55,7 +55,7 @@ pub(crate) mod sealed {
         fn mul_real(self, r: R) -> Self;
         /// Eigendecomposition of the Hermitian `n × n` matrix `a` (upper
         /// triangle read, destroyed): ascending `eig`, eigenvectors in `z`.
-        /// Sequential faer self-adjoint EVD (KrylovKit uses SYEVR/HEEVR).
+        /// Sequential colmat self-adjoint EVD (KrylovKit uses SYEVR/HEEVR).
         fn heig(
             a: &mut [Self],
             n: usize,
@@ -71,7 +71,7 @@ pub(crate) mod sealed {
             scale: &mut [R],
             perm: &mut [usize],
         ) -> Result<(usize, usize), ()>;
-        /// `b ← A⁻¹·b` using faer pivoted LU and retained scratch.
+        /// `b ← A⁻¹·b` using colmat pivoted LU and retained scratch.
         /// `a` is overwritten; exactly zero pivots return `Err(())`.
         fn gesv(
             a: &mut [Self],
@@ -82,7 +82,7 @@ pub(crate) mod sealed {
         ) -> Result<(), ()>;
         /// Whether the type is complex (its Schur factors are triangular).
         const COMPLEX: bool;
-        /// Raw faer Hessenberg Schur decomposition on the `n × n` upper
+        /// Raw colmat Hessenberg Schur decomposition on the `n × n` upper
         /// Hessenberg `h` (column-major): `h ← T`, `z ← z·Q`, eigenvalues in
         /// `ev` (a real complex pair `+im` first).
         fn hseqr_raw(
@@ -92,7 +92,7 @@ pub(crate) mod sealed {
             ev: &mut [Complex<R>],
             w: &mut Work<Self, R>,
         ) -> Result<(), ()>;
-        /// faer Schur block move, 0-based positions. `Err` on rejected real swaps.
+        /// colmat Schur block move, 0-based positions. `Err` on rejected real swaps.
         fn trexc(
             t: &mut [Self],
             q: &mut [Self],
@@ -101,7 +101,7 @@ pub(crate) mod sealed {
             ilst: usize,
             w: &mut Work<Self, R>,
         ) -> Result<(), ()>;
-        /// faer right eigenvectors of the Schur factor `t` (no back-transform).
+        /// colmat right eigenvectors of the Schur factor `t` (no back-transform).
         fn trevc(
             t: &mut [Self],
             n: usize,
@@ -113,8 +113,8 @@ pub(crate) mod sealed {
     /// Internal real helpers; seals [`RealScalar`](super::RealScalar).
     pub trait RealOps: Float {
         /// Scratch query hook for the four built-in scalar types.
-        fn work_req(_n: usize, _problem: Problem, _complex: bool) -> faer::dyn_stack::StackReq {
-            faer::dyn_stack::StackReq::EMPTY
+        fn work_req(_n: usize, _problem: Problem, _complex: bool) -> colmat::dyn_stack::StackReq {
+            colmat::dyn_stack::StackReq::EMPTY
         }
         /// `sqrt(a² + b²)` without undue overflow, using only `sqrt`.
         fn hypot2(self, b: Self) -> Self {

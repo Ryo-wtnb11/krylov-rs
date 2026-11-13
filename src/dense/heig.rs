@@ -1,5 +1,5 @@
 //! Block thick-restart restoration (the dense Hermitian eigenproblem itself
-//! uses faer through `Ops::heig`).
+//! uses colmat through `Ops::heig`).
 
 use super::householder;
 use crate::scalar::Scalar;

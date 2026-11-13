@@ -1,4 +1,4 @@
-//! Schur form, reordering and right eigenvectors via sequential faer,
+//! Schur form, reordering and right eigenvectors via sequential colmat,
 //! driven as KrylovKit v0.10.4
 //! `src/dense/linalg.jl` drives them.
 
@@ -12,7 +12,7 @@ use crate::scalar::sealed::RealOps as _;
 type R<S> = <S as Scalar>::Real;
 
 /// Schur form `h ← T = Qᴴ·H·Q`, `z ← z·Q` of the `n × n` upper Hessenberg
-/// `h` (column-major) by faer (KrylovKit uses HSEQR), eigenvalues in
+/// `h` (column-major) by colmat (KrylovKit uses HSEQR), eigenvalues in
 /// `ev` (real: 2×2 blocks in standard form, the `+im` eigenvalue first).
 ///
 /// `Err(())` on non-finite input or a backend failure.
@@ -126,7 +126,7 @@ fn repair_underflowed_blocks<S: Scalar>(
 /// `xTREXC` (KrylovKit `permuteschur!`). A real 2×2 block moves as a whole;
 /// `order` must list its two positions consecutively.
 ///
-/// `Err(())` when faer rejects a swap or `order` would split a 2×2 block.
+/// `Err(())` when colmat rejects a swap or `order` would split a 2×2 block.
 pub(crate) fn permute_schur<S: Scalar>(
     t: &mut [S],
     q: &mut [S],
@@ -744,7 +744,7 @@ mod tests {
     }
 
     /// The range scaling must not touch inputs already inside the safe range:
-    /// the result is faer's unscaled one, bit for bit.
+    /// the result is colmat's unscaled one, bit for bit.
     #[test]
     fn range_scaling_is_the_identity_in_range() {
         let n = 20;

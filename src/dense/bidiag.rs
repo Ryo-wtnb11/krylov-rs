@@ -1,4 +1,4 @@
-//! Bidiagonal SVD (faer) and thick-restart restoration of GKL.
+//! Bidiagonal SVD (colmat) and thick-restart restoration of GKL.
 
 use super::{Work, householder};
 use crate::scalar::RealScalar;
@@ -24,7 +24,7 @@ fn rot_cols<R: RealScalar>(m: &mut [R], n: usize, j: usize, k: usize, c: R, s: R
 }
 
 /// SVD `B = U·diag(d)·Vᵀ` of the real `n × n` lower (`lower`) or upper
-/// bidiagonal matrix with diagonal `d` and off-diagonal `e[..n-1]`, by faer
+/// bidiagonal matrix with diagonal `d` and off-diagonal `e[..n-1]`, by colmat
 /// (KrylovKit v0.10.4 uses `xBDSQR`; see `docs/krylovkit.md`).
 ///
 /// `d` gets the singular values in descending order and `u`, `v` (`n × n`,
