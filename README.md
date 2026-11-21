@@ -26,7 +26,7 @@ See the [KrylovKit correspondence](docs/krylovkit.md) for details and reasons.
 
 ```toml
 [dependencies]
-krylov = "0.3"
+krylov = "0.4"
 ```
 
 Small projected problems use sequential `colmat` 0.34.0, with default
